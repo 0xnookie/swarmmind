@@ -6,6 +6,16 @@ Built with Electron + React + TypeScript.
 
 ---
 
+## Download
+
+Prebuilt executables for **Windows**, **macOS**, and **Linux** are attached to each [GitHub Release](https://github.com/0xnookie/swarmmind/releases):
+
+- **Windows** — `.exe` installer (NSIS) or portable `.zip`
+- **macOS** — `.dmg` (x64 + Apple Silicon; unsigned, so right-click → Open on first launch)
+- **Linux** — `.AppImage` (x64)
+
+---
+
 ## Features
 
 - **Multi-pane terminals** — split panes horizontally/vertically (Allotment layout); each pane runs a full xterm.js terminal wired to a real PTY.
