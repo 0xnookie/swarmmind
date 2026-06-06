@@ -6,6 +6,7 @@ import { type AgentId } from '../memory/queries'
 import { readAgentConfig } from './agent-config'
 import { getMcpPort, getMcpToken } from '../mcp/server'
 import { eventEmit } from '../memory/events'
+import { runWithWorkspace } from '../memory/db'
 import { startPaneWatcher, stopPaneWatcher, stopAllWatchers } from './file-watcher'
 
 export type PtyStatus = 'idle' | 'running' | 'exited'
@@ -188,8 +189,11 @@ function buildLaunchArgs(agentId: AgentId, resume: boolean, sessionId: string | 
   return [...defaultArgs]
 }
 
-function injectMcpConfig(agentId: AgentId, cwd: string, mcpUrl: string): void {
-  const sseUrl = `${mcpUrl}/mcp/sse?token=${getMcpToken()}`
+function injectMcpConfig(agentId: AgentId, cwd: string, mcpUrl: string, workspaceId: string): void {
+  // `ws` tells the MCP server which workspace this agent belongs to, so its
+  // tool calls route to the right DB even after the user switches workspaces
+  // (the agent keeps running in the background).
+  const sseUrl = `${mcpUrl}/mcp/sse?token=${getMcpToken()}&ws=${encodeURIComponent(workspaceId)}`
 
   if (agentId === 'claude') {
     const claudeDir = join(cwd, '.claude')
@@ -258,7 +262,8 @@ function attachPty(paneId: string, ptyProcess: pty.IPty, win: BrowserWindow, age
       if (!win.isDestroyed()) win.webContents.send('pty:attention', paneId)
       // Log it to the swarm timeline so "needs you" moments are reviewable later.
       if (entry.workspaceId) {
-        eventEmit(entry.workspaceId, 'agent_question', { agentId: entry.agentId, paneId })
+        runWithWorkspace(entry.workspaceId, () =>
+          eventEmit(entry.workspaceId!, 'agent_question', { agentId: entry.agentId, paneId }))
       }
       // Only pop an OS notification when the window isn't focused.
       if (!win.isDestroyed() && !win.isFocused() && Notification.isSupported()) {
@@ -284,11 +289,13 @@ function attachPty(paneId: string, ptyProcess: pty.IPty, win: BrowserWindow, age
         const usd = parseCostUsd(entry.recentOutput)
         if (usd !== null && usd > (entry.lastCostUsd ?? -1) + 1e-9) {
           entry.lastCostUsd = usd
-          eventEmit(entry.workspaceId, 'cost', {
-            agentId: entry.agentId,
-            paneId,
-            payload: { usd, tokens: parseTokens(entry.recentOutput) ?? undefined },
-          })
+          const tokens = parseTokens(entry.recentOutput ?? '') ?? undefined
+          runWithWorkspace(entry.workspaceId, () =>
+            eventEmit(entry.workspaceId!, 'cost', {
+              agentId: entry.agentId,
+              paneId,
+              payload: { usd, tokens },
+            }))
         }
       }
     }
@@ -299,7 +306,8 @@ function attachPty(paneId: string, ptyProcess: pty.IPty, win: BrowserWindow, age
     if (entry.idleTimer) clearTimeout(entry.idleTimer)
     if (entry.replaced) return  // silently replaced — don't notify the renderer
     if (entry.agentId && entry.workspaceId) {
-      eventEmit(entry.workspaceId, 'agent_exit', { agentId: entry.agentId, paneId, payload: { exitCode } })
+      runWithWorkspace(entry.workspaceId, () =>
+        eventEmit(entry.workspaceId!, 'agent_exit', { agentId: entry.agentId, paneId, payload: { exitCode } }))
     }
     stopPaneWatcher(paneId)
     if (!win.isDestroyed()) win.webContents.send('pty:exit', paneId, exitCode)
@@ -357,7 +365,7 @@ export function ptyCreate(
   const port = getMcpPort()
   const mcpUrl = `http://127.0.0.1:${port ?? 57400}`
 
-  injectMcpConfig(agentId, cwd, mcpUrl)
+  injectMcpConfig(agentId, cwd, mcpUrl, workspaceId)
 
   const storedConfig = readAgentConfig(workspaceId, agentId)
   const defaults = AGENT_DEFAULTS[agentId]
@@ -406,7 +414,7 @@ export function ptyCreate(
   }
 
   attachPty(paneId, ptyProcess, win, agentId, workspaceId)
-  eventEmit(workspaceId, 'agent_spawn', { agentId, paneId, payload: { resume } })
+  runWithWorkspace(workspaceId, () => eventEmit(workspaceId, 'agent_spawn', { agentId, paneId, payload: { resume } }))
   // Watch this agent's working directory for the shared-world-model / contention
   // surface. Best-effort; degrades to no awareness if the FS can't be watched.
   startPaneWatcher(paneId, cwd, workspaceId, agentId)
@@ -441,9 +449,30 @@ export function ptyStatus(paneId: string): PtyStatus {
   return processes.get(paneId)?.status ?? 'idle'
 }
 
+// Running coding agents per workspace (bare shells excluded). Agents keep
+// running when the user switches workspaces, so this lets the sidebar show a
+// live count for inactive workspaces too — not just the active one.
+export function agentCountsByWorkspace(): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const entry of processes.values()) {
+    if (entry.status === 'running' && entry.agentId && entry.workspaceId) {
+      counts[entry.workspaceId] = (counts[entry.workspaceId] ?? 0) + 1
+    }
+  }
+  return counts
+}
+
+// Kill every pty belonging to one workspace (e.g. when it's deleted). Silent so
+// the renderer doesn't try to respawn shells for panes that are going away.
+export function killWorkspaceAgents(workspaceId: string): void {
+  for (const [paneId, entry] of processes) {
+    if (entry.workspaceId === workspaceId) ptyKill(paneId, true)
+  }
+}
+
 // Kill silently: suppress pty:exit so the renderer doesn't react (respawn a
-// shell / clear the persisted agentRunning flag). Used on app quit and on
-// workspace switch — in both cases the saved layout's resume flags must survive.
+// shell / clear the persisted agentRunning flag). Used on app quit; the saved
+// layout's resume flags must survive so sessions resume on next launch.
 export function killAll(): void {
   for (const paneId of processes.keys()) ptyKill(paneId, true)
   stopAllWatchers()

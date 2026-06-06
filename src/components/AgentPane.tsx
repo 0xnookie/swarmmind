@@ -388,10 +388,21 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     // runs mount→cleanup→mount, so cancelling the timer in cleanup would kill the
     // only scheduled spawn while the ref guard blocks a reschedule — the agent
     // would never launch. Guard the callback with mountedRef for real unmounts.
-    setTimeout(() => {
+    setTimeout(async () => {
       if (!mountedRef.current) return
       fit()
-      handleSpawn(doResume)
+      // If this pane's agent is still alive (it kept running while the user was
+      // in another workspace), reconnect to it rather than respawning — a
+      // respawn would kill the live session. usePty replays the cached output
+      // and the live pty resumes streaming once its listener re-attaches.
+      const alive = await window.swarmmind.ptyStatus(paneId)
+      if (!mountedRef.current) return
+      if (alive === 'running') {
+        setPtyStatus(paneId, 'running')
+        setAgentRunning(paneId, true)
+      } else {
+        handleSpawn(doResume)
+      }
       clearPendingAutoSpawn(paneId)
     }, 200)
   }, [pendingAutoSpawn, agentId, effectiveCwd, resumeOnSpawn])

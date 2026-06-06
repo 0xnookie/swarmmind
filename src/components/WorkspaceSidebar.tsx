@@ -7,6 +7,7 @@ interface RemoteWorkspace {
   id: string
   name: string
   root_path: string
+  created_at: number
   updated_at: number
 }
 
@@ -189,10 +190,13 @@ function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, onClick, o
         </span>
       )}
 
+      {/* Running-agent count, tinted with this workspace's own colour. Only the
+          active workspace has live agents (others are killed on switch), so in
+          practice this shows on the active row — in its colour, not a fixed green. */}
       {!editing && sessionCount > 0 && (
         <span style={{
           fontSize: 10, fontWeight: 600,
-          background: 'rgba(34,197,94,0.15)', color: '#22c55e',
+          background: `${dotColor}26`, color: dotColor,
           borderRadius: 9999, padding: '1px 5px', flexShrink: 0,
         }}>
           {sessionCount}
@@ -296,6 +300,9 @@ function IconBtn({
 
 export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarProps) {
   const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([])
+  // Running agent counts per workspace id, from the main process. Agents keep
+  // running across workspace switches, so inactive workspaces have live counts.
+  const [agentCounts, setAgentCounts] = useState<Record<string, number>>({})
   const [workspaceOrder, setWorkspaceOrder] = useState<string[]>([])
   const [workspaceColors, setWorkspaceColors] = useState<Record<string, string>>({})
   const [draggedId, setDraggedId] = useState<string | null>(null)
@@ -319,6 +326,13 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     } catch { /* silently ignore */ }
   }
 
+  async function fetchAgentCounts() {
+    try {
+      const counts = await window.swarmmind.agentCounts()
+      if (counts && typeof counts === 'object') setAgentCounts(counts)
+    } catch { /* silently ignore */ }
+  }
+
   useEffect(() => {
     Promise.all([
       window.swarmmind.getAppSetting('workspaceOrder').catch(() => null),
@@ -328,13 +342,24 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
       if (colorsJson) try { setWorkspaceColors(JSON.parse(colorsJson)) } catch {}
     })
     fetchWorkspaces()
-    intervalRef.current = setInterval(fetchWorkspaces, 5000)
+    fetchAgentCounts()
+    intervalRef.current = setInterval(() => { fetchWorkspaces(); fetchAgentCounts() }, 5000)
     return () => { if (intervalRef.current !== null) clearInterval(intervalRef.current) }
   }, [])
 
+  // Refetch the moment the active workspace changes — opening/creating one
+  // should appear in the list (and reflect agent counts) instantly, not after
+  // the next 5s poll tick.
+  useEffect(() => { fetchWorkspaces(); fetchAgentCounts() }, [activeId])
+
   const sortedWorkspaces = useMemo(() => {
-    if (workspaceOrder.length === 0) return workspaces
-    return [...workspaces].sort((a, b) => {
+    // Stable base order = creation order. The list query returns rows by
+    // updated_at DESC, which would shove the active workspace to the top every
+    // time it's opened (opening bumps updated_at); creation order keeps each
+    // workspace in a fixed place. Manual drag order, when set, overrides it.
+    const base = [...workspaces].sort((a, b) => a.created_at - b.created_at)
+    if (workspaceOrder.length === 0) return base
+    return base.sort((a, b) => {
       const ai = workspaceOrder.indexOf(a.id)
       const bi = workspaceOrder.indexOf(b.id)
       if (ai === -1 && bi === -1) return 0
@@ -434,7 +459,9 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
             active={ws.id === activeId}
             dotColor={workspaceColors[ws.id] ?? defaultColorFor(ws.id)}
             dragging={draggedId === ws.id}
-            sessionCount={ws.id === activeId ? runningCount : 0}
+            // Active workspace uses the live store count (instant); others use
+            // the polled per-workspace count from the main process.
+            sessionCount={ws.id === activeId ? runningCount : (agentCounts[ws.id] ?? 0)}
             onClick={() => handleSelectWorkspace(ws.id)}
             onDragStart={() => handleDragStart(ws.id)}
             onDragOver={e => handleDragOver(e, ws.id)}

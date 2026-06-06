@@ -1,11 +1,11 @@
 import { ipcMain, dialog, BrowserWindow, app } from 'electron'
 import { join, basename } from 'path'
 import { mkdirSync, existsSync } from 'fs'
-import { initWorkspaceDb } from '../../memory/db'
+import { initWorkspaceDb, closeWorkspaceDb } from '../../memory/db'
 import { upsertWorkspace, loadLayout, listWorkspaces, deleteWorkspace, renameWorkspace, getAppState, setAppState } from '../../memory/queries'
 import { eventPrune } from '../../memory/events'
 import { setActiveWorkspace } from '../../mcp/server'
-import { killAll } from '../pty-manager'
+import { killWorkspaceAgents } from '../pty-manager'
 
 interface WorkspaceInfo {
   id: string
@@ -26,14 +26,17 @@ export function getCurrentRootPath(): string | null {
 }
 
 function openWorkspaceDir(rootPath: string, name?: string): WorkspaceInfo {
-  killAll()
+  // No killAll() here: switching workspaces leaves the previous workspace's
+  // agents running in the background (so the sidebar shows their live count and
+  // they keep their own MCP/DB connection). Agents are only stopped on quit
+  // (main.ts) or when their workspace is deleted.
   const smDir = join(rootPath, '.swarmmind')
   if (!existsSync(smDir)) mkdirSync(smDir, { recursive: true })
 
-  const dbPath = join(smDir, 'memory.db')
-  initWorkspaceDb(dbPath)
-
+  // upsertWorkspace only touches the app DB, so resolve the id first and use it
+  // to open (or reuse) this workspace's own connection in the pool.
   const ws = upsertWorkspace(rootPath, name)
+  initWorkspaceDb(join(smDir, 'memory.db'), ws.id)
   activeWorkspaceId = ws.id
   activeRootPath = rootPath
   setActiveWorkspace(ws.id)
@@ -93,12 +96,13 @@ export function registerWorkspaceHandlers(getWin: () => BrowserWindow | null): v
   })
 
   ipcMain.handle('workspace:delete', (_event, id: string) => {
+    killWorkspaceAgents(id)          // stop only this workspace's agents
     if (activeWorkspaceId === id) {
-      killAll()
       activeWorkspaceId = null
       activeRootPath = null
       setActiveWorkspace('')
     }
+    closeWorkspaceDb(id)             // drop its pooled connection
     return deleteWorkspace(id)
   })
 

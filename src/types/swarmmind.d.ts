@@ -10,6 +10,7 @@ declare global {
       ptyResize: (paneId: string, cols: number, rows: number) => void
       ptyKill: (paneId: string) => Promise<{ ok: boolean }>
       ptyStatus: (paneId: string) => Promise<string>
+      agentCounts: () => Promise<Record<string, number>>
       onPtyOutput: (cb: (paneId: string, data: string) => void) => () => void
       onPtyExit: (cb: (paneId: string, code: number) => void) => () => void
       onPtyState: (cb: (paneId: string, state: 'working' | 'waiting') => void) => () => void

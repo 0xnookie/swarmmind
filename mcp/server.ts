@@ -5,6 +5,7 @@ import { Server, createServer } from 'http'
 import { randomBytes } from 'crypto'
 import { registerTools } from './tools'
 import { registerResources } from './resources'
+import { runWithWorkspace, getRequestWorkspaceId } from '../memory/db'
 
 // Preferred port; we fall back to OS-assigned if it's blocked
 const PREFERRED_PORT = 57400
@@ -57,10 +58,16 @@ export function startMcpServer(): Promise<void> {
       version: '0.1.0'
     })
 
-    registerTools(mcpServer, () => activeWorkspaceId)
-    registerResources(mcpServer, () => activeWorkspaceId)
+    // Each tool call resolves its workspace from the per-request context (the
+    // calling agent's own workspace, bound below), falling back to the
+    // foreground workspace for any call made outside a bound request.
+    registerTools(mcpServer, () => getRequestWorkspaceId() ?? activeWorkspaceId)
+    registerResources(mcpServer, () => getRequestWorkspaceId() ?? activeWorkspaceId)
 
-    const transports = new Map<string, SSEServerTransport>()
+    // Keyed by the transport's own sessionId (a UUID) — that's the id the client
+    // posts back to /mcp/messages. `ws` is the agent's workspace, injected into
+    // its MCP URL at spawn, so a background agent's calls still target its own DB.
+    const transports = new Map<string, { transport: SSEServerTransport; ws: string | null }>()
 
     app.get('/mcp/sse', async (req, res) => {
       // Gate session establishment on the bearer token. /mcp/messages is
@@ -69,18 +76,25 @@ export function startMcpServer(): Promise<void> {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
+      const ws = typeof req.query.ws === 'string' && req.query.ws ? req.query.ws : null
       const transport = new SSEServerTransport('/mcp/messages', res)
-      const id = Date.now().toString()
-      transports.set(id, transport)
-      res.on('close', () => transports.delete(id))
+      transports.set(transport.sessionId, { transport, ws })
+      res.on('close', () => transports.delete(transport.sessionId))
       await mcpServer.connect(transport)
     })
 
     app.post('/mcp/messages', async (req, res) => {
       const sessionId = req.query.sessionId as string
-      const transport = transports.get(sessionId)
-      if (!transport) { res.status(400).json({ error: 'Unknown session' }); return }
-      await transport.handlePostMessage(req, res)
+      const entry = transports.get(sessionId)
+      if (!entry) { res.status(400).json({ error: 'Unknown session' }); return }
+      // Bind this request to the agent's workspace so getWorkspaceDb() and event
+      // emits route to the correct DB. No binding when the workspace is unknown.
+      const targetWs = entry.ws ?? activeWorkspaceId
+      if (targetWs) {
+        await runWithWorkspace(targetWs, () => entry.transport.handlePostMessage(req, res))
+      } else {
+        await entry.transport.handlePostMessage(req, res)
+      }
     })
 
     app.get('/health', (_req, res) => res.json({ ok: true, workspace: activeWorkspaceId, port: actualPort }))

@@ -1,5 +1,5 @@
 import { ipcMain, BrowserWindow } from 'electron'
-import { ptyCreate, ptyCreateShell, ptyInput, ptyResize, ptyKill, ptyStatus, type ShellStyle } from '../pty-manager'
+import { ptyCreate, ptyCreateShell, ptyInput, ptyResize, ptyKill, ptyStatus, agentCountsByWorkspace, type ShellStyle } from '../pty-manager'
 import { type AgentId } from '../../memory/queries'
 
 export function registerPtyHandlers(getWin: () => BrowserWindow | null, getWorkspaceId: () => string | null): void {
@@ -41,5 +41,11 @@ export function registerPtyHandlers(getWin: () => BrowserWindow | null, getWorks
 
   ipcMain.handle('pty:status', (_event, paneId: string) => {
     return ptyStatus(paneId)
+  })
+
+  // Running agent counts keyed by workspace id — for the sidebar's per-workspace
+  // badge (agents persist across workspace switches).
+  ipcMain.handle('pty:agentCounts', () => {
+    return agentCountsByWorkspace()
   })
 }

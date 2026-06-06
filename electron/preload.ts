@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('swarmmind', {
     ipcRenderer.invoke('pty:kill', paneId),
   ptyStatus: (paneId: string) =>
     ipcRenderer.invoke('pty:status', paneId),
+  agentCounts: () =>
+    ipcRenderer.invoke('pty:agentCounts'),
   onPtyOutput: (cb: (paneId: string, data: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, paneId: string, data: string) => cb(paneId, data)
     ipcRenderer.on('pty:output', handler)

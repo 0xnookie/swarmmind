@@ -1,11 +1,38 @@
 import Database from 'better-sqlite3'
+import { AsyncLocalStorage } from 'async_hooks'
 
 // ── Two separate DB connections ────────────────────────────────────────────────
 // appDb       → userData/app.db        : workspaces registry, skills, app_state
 // workspaceDb → .swarmmind/memory.db   : tasks, memory entries, layouts, agent configs
 
 let appDb: Database.Database | null = null
+// The foreground (active) workspace connection — what the renderer/IPC layer
+// reads and writes.
 let workspaceDb: Database.Database | null = null
+
+// All open workspace connections, keyed by workspace id. Agents in a workspace
+// keep running after the user switches away (their PTYs aren't killed), so each
+// such workspace keeps its own live connection rather than everyone sharing the
+// single foreground one — otherwise a background agent's MCP write would land in
+// whatever workspace happens to be active.
+const workspaceConnections = new Map<string, Database.Database>()
+
+// Per-request workspace override. MCP tool calls run inside `runWithWorkspace`
+// so getWorkspaceDb() resolves to the *calling agent's* workspace. Renderer/IPC
+// calls run with no context, so they keep using the foreground connection.
+const workspaceCtx = new AsyncLocalStorage<{ workspaceId: string }>()
+
+// Run `fn` with the workspace context bound to `workspaceId`. Used by the MCP
+// server (per request) and by background event emits so writes route to the
+// right workspace DB regardless of which one is in the foreground.
+export function runWithWorkspace<T>(workspaceId: string, fn: () => T): T {
+  return workspaceCtx.run({ workspaceId }, fn)
+}
+
+// The workspace id bound to the current async context, if any (MCP request).
+export function getRequestWorkspaceId(): string | null {
+  return workspaceCtx.getStore()?.workspaceId ?? null
+}
 
 // ── Schemas ───────────────────────────────────────────────────────────────────
 
@@ -119,6 +146,15 @@ export function getAppDb(): Database.Database {
 }
 
 export function getWorkspaceDb(): Database.Database {
+  // Inside an MCP request (or a background event emit), route to the calling
+  // agent's workspace connection. Outside one — the renderer/IPC path — use the
+  // foreground connection. Fall back to foreground if the context's connection
+  // isn't open, so a stale context can never throw mid-tool-call.
+  const ctx = workspaceCtx.getStore()
+  if (ctx) {
+    const scoped = workspaceConnections.get(ctx.workspaceId)
+    if (scoped) return scoped
+  }
   if (!workspaceDb) throw new Error('No workspace open — call initWorkspaceDb first')
   return workspaceDb
 }
@@ -185,9 +221,24 @@ function stripWorkspaceFk(
   } catch { /* migration not needed or already applied */ }
 }
 
-export function initWorkspaceDb(dbPath: string): Database.Database {
-  workspaceDb?.close()
-  workspaceDb = new Database(dbPath)
+// Open (or reuse) the connection for a workspace and make it the foreground one.
+// Connections are kept open in `workspaceConnections` so a workspace whose agents
+// keep running in the background still has a valid DB after the user switches
+// away. `closeAll()` (on quit) and `closeWorkspaceDb()` (on delete) free them.
+export function initWorkspaceDb(dbPath: string, workspaceId: string): Database.Database {
+  let db = workspaceConnections.get(workspaceId)
+  if (!db) {
+    db = new Database(dbPath)
+    applyWorkspaceSchema(db)
+    workspaceConnections.set(workspaceId, db)
+  }
+  workspaceDb = db
+  return db
+}
+
+// Apply the workspace schema + idempotent migrations to a freshly-opened
+// connection. Run once per connection when it's first opened.
+function applyWorkspaceSchema(workspaceDb: Database.Database): void {
   workspaceDb.pragma('journal_mode = WAL')
   workspaceDb.pragma('foreign_keys = ON')
   workspaceDb.exec(WORKSPACE_SCHEMA)
@@ -276,11 +327,23 @@ export function initWorkspaceDb(dbPath: string): Database.Database {
   stripWorkspaceFk(workspaceDb, 'pane_layouts',
     `CREATE TABLE IF NOT EXISTS pane_layouts (workspace_id TEXT PRIMARY KEY, layout_json TEXT NOT NULL);`,
     ['workspace_id', 'layout_json'], [])
-  return workspaceDb
+}
+
+// Close one workspace's connection (e.g. when it's deleted). Drops it from the
+// pool and clears the foreground pointer if it was the active one.
+export function closeWorkspaceDb(workspaceId: string): void {
+  const db = workspaceConnections.get(workspaceId)
+  if (!db) return
+  if (workspaceDb === db) workspaceDb = null
+  workspaceConnections.delete(workspaceId)
+  try { db.close() } catch { /* already closed */ }
 }
 
 export function closeAll(): void {
-  workspaceDb?.close()
+  for (const db of workspaceConnections.values()) {
+    try { db.close() } catch { /* already closed */ }
+  }
+  workspaceConnections.clear()
   workspaceDb = null
   appDb?.close()
   appDb = null
