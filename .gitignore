@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+out/
+dist/
+
+# Generated assets (recreated by postinstall: scripts/copy-ort-wasm.js)
+public/ort/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
+
+# Databases (app.db and per-workspace memory.db)
+*.db
+*.db-shm
+*.db-wal
+
+# Per-workspace runtime state
+.swarmmind/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# AI assistant tooling state (not part of the app)
+.omc/
+.claude/settings.local.json
+.claude/*.backup.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

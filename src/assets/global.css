@@ -1,0 +1,416 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Fira+Code:wght@400;500&display=swap');
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  /* Warm dark backgrounds */
+  --bg-base:       #161412;
+  --bg-panel:      #1c1a18;
+  --bg-elevated:   #222019;
+  --bg-elevated-2: #2a2722;
+  --bg-terminal:   #121110;
+  --bg-input:      #1e1c1a;
+
+  /* Warm borders */
+  --border-subtle: #242018;
+  --border:        #2e2b24;
+  --border-strong: #3a362e;
+  --border-active: #524d43;
+
+  /* Warm text */
+  --text-primary:   #ece7e0;
+  --text-secondary: #a89e94;
+  --text-muted:     #6b6259;
+  --text-dim:       #3d3830;
+
+  /* Accent — warm Claude orange */
+  --accent:        #d4845a;
+  --accent-hover:  #e0956a;
+  --accent-subtle: rgba(212,132,90,0.12);
+  --accent-glow:   rgba(212,132,90,0.28);
+  /* Legible text/icon colour on an --accent fill. Recomputed per-accent from its
+     luminance in applyAccent(); this value is only the pre-JS default. */
+  --accent-fg:     #fff;
+
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --error:   #f87171;
+  --cyan:    #38bdf8;
+  /* Dim translucent success fill (button/badge backgrounds). */
+  --success-dim: color-mix(in srgb, var(--success) 16%, transparent);
+
+  /* Neutral hover/active overlays. Mixing the themed --text-primary into
+     transparency means they darken on light themes and lighten on dark ones,
+     instead of a fixed white wash that vanishes on the Paper theme. */
+  --overlay-hover:  color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --overlay-active: color-mix(in srgb, var(--text-primary) 14%, transparent);
+
+  /* Surface/border aliases referenced by some components. Indirection through the
+     themed vars keeps them correct on every preset. */
+  --bg-active:  var(--bg-elevated-2);
+  --bg-card:    var(--bg-elevated);
+  --border-mid: var(--border-strong);
+
+  /* Agent brand identity colours — kept constant across themes. */
+  --agent-claude:   #c084fc;
+  --agent-codex:    #34d399;
+  --agent-cursor:   #60a5fa;
+  --agent-windsurf: #fb923c;
+  --agent-kilo:     #fbbf24;
+  --agent-opencode: #f472b6;
+  --agent-cline:    #a78bfa;
+
+  --tag-security:  #4ade80;
+  --tag-growth:    #2dd4bf;
+  --tag-workflow:  #fbbf24;
+  --tag-memory:    #c084fc;
+  --tag-knowledge: #60a5fa;
+
+  --font-ui:     'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono:   'SF Mono', 'SFMono-Regular', Menlo, Monaco, 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace;
+  --font-editor: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+  --radius:    6px;
+  --radius-lg: 10px;
+  --titlebar-height: 32px;
+
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.6);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.7);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.85);
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-active); }
+
+/* Button base reset */
+button { font-family: inherit; font-size: inherit; }
+button:disabled { opacity: 0.38; cursor: not-allowed; }
+
+/* xterm.js overrides — do NOT add padding here; it breaks FitAddon's dimension math */
+.xterm { height: 100%; }
+.xterm-viewport { overflow-y: hidden !important; }
+.xterm-screen canvas { display: block; }
+
+/* Allotment overrides */
+.split-view-view { overflow: hidden; }
+.sash { background: var(--border-subtle) !important; transition: background 150ms; }
+.sash:hover { background: var(--accent) !important; opacity: 0.7; }
+
+/* SwarmVoice — waveform bar fallback animation */
+@keyframes voice-bar-pulse {
+  from { transform: scaleY(0.25) }
+  to   { transform: scaleY(1) }
+}
+/* SwarmVoice — transcribing spinner */
+@keyframes voice-spin {
+  from { transform: rotate(0deg) }
+  to   { transform: rotate(360deg) }
+}
+
+/* ── Start screen ──────────────────────────────────── */
+@keyframes start-logo-glow {
+  0%, 100% { filter: drop-shadow(0 0 18px var(--accent-glow)); }
+  50%      { filter: drop-shadow(0 0 38px var(--accent-glow)); }
+}
+@keyframes start-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes start-aurora {
+  0%   { transform: translate(-12%, -8%) scale(1); }
+  50%  { transform: translate(10%, 6%) scale(1.15); }
+  100% { transform: translate(-12%, -8%) scale(1); }
+}
+.start-fade { animation: start-fade-up 600ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.start-recent-card {
+  transition: background 140ms ease-out, border-color 140ms ease-out, transform 140ms ease-out;
+}
+.start-recent-card:hover {
+  background: var(--bg-elevated) !important;
+  border-color: var(--border-active) !important;
+  transform: translateY(-2px);
+}
+.start-cta {
+  transition: background 140ms ease-out, transform 120ms ease-out, box-shadow 140ms ease-out;
+}
+.start-cta:hover {
+  background: var(--accent-hover) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px var(--accent-glow);
+}
+.start-cta:active { transform: translateY(0); }
+
+/* Drag-over state */
+[data-drag-over="true"] {
+  background: var(--accent-subtle);
+  border-color: var(--accent) !important;
+}
+
+/* ── Status dot ────────────────────────────────────── */
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.35; }
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  transition: background 300ms;
+}
+.status-dot--running { animation: status-pulse 1.8s ease-in-out infinite; }
+
+/* ── Pane action buttons ────────────────────────────── */
+.pane-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 7px;
+  border-radius: var(--radius);
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: color 90ms, background 90ms;
+}
+.pane-action-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--overlay-hover);
+}
+.pane-action-btn:active:not(:disabled) {
+  background: var(--overlay-active);
+}
+/* danger variant — kill, close */
+.pane-action-btn[data-variant="danger"] { color: var(--text-muted); }
+.pane-action-btn[data-variant="danger"]:hover:not(:disabled) {
+  color: var(--error);
+  background: rgba(248, 113, 113, 0.12);
+}
+/* success variant — spawn */
+.pane-action-btn[data-variant="success"]:hover:not(:disabled) {
+  color: var(--success);
+  background: rgba(74, 222, 128, 0.1);
+}
+.pane-action-btn:disabled { opacity: 0.28; cursor: not-allowed; }
+
+/* ── Context menu items ─────────────────────────────── */
+.ctx-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 7px 14px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: inherit;
+  transition: color 90ms, background 90ms;
+}
+.ctx-menu-item:hover { background: var(--overlay-hover); }
+.ctx-menu-item[data-variant="danger"]:hover {
+  color: var(--error);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+/* Focus ring */
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Input base */
+input, select, textarea {
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+input::placeholder { color: var(--text-dim); }
+
+/* ── Settings modal ─────────────────────────────────── */
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: background 90ms, color 90ms;
+}
+.settings-nav-item:hover { background: var(--overlay-hover); color: var(--text-primary); }
+.settings-nav-item[aria-selected="true"] {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+.settings-nav-item .nav-icon { flex-shrink: 0; opacity: 0.85; }
+
+/* unsaved-changes dot on a nav item */
+.settings-dirty-dot {
+  margin-left: auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+/* toggle switch */
+.settings-toggle {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-base);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 140ms, border-color 140ms;
+}
+.settings-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 140ms, background 140ms;
+}
+.settings-toggle[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.settings-toggle[aria-checked="true"]::after {
+  transform: translateX(16px);
+  background: var(--accent-fg);
+}
+
+/* selectable card (shell style) */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 11px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: border-color 110ms, background 110ms;
+}
+.settings-card:hover { border-color: var(--border-active); }
+.settings-card[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+/* accent colour swatch */
+.accent-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 90ms, box-shadow 90ms;
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+.accent-swatch:hover { transform: scale(1.1); }
+.accent-swatch[aria-pressed="true"] {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--bg-panel), 0 0 0 3px var(--accent);
+}
+
+/* key-capture button (shortcuts) */
+.settings-keycap {
+  min-width: 92px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 10px;
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 110ms, color 110ms, background 110ms;
+}
+.settings-keycap:hover { border-color: var(--border-active); }
+.settings-keycap[data-recording="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-subtle);
+}
+
+/* ── Preview browser ────────────────────────────────── */
+@keyframes preview-loadbar {
+  0%   { left: -35%; width: 35%; }
+  50%  { width: 50%; }
+  100% { left: 100%; width: 35%; }
+}
+.preview-loadbar {
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 0 8px var(--accent-glow);
+  animation: preview-loadbar 1.05s ease-in-out infinite;
+}
+.preview-port-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 6px 12px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  transition: background 90ms, color 90ms;
+}
+.preview-port-item:hover { background: var(--overlay-hover); color: var(--text-primary); }
+.preview-port-item .port-host { color: var(--text-dim); }
