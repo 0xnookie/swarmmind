@@ -36,6 +36,13 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      # node-pty is compiled from source via node-gyp, whose bundled gyp imports
+      # distutils — removed from Python 3.12. Pin 3.11 (still ships distutils).
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies
         run: npm ci
 
