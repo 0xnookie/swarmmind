@@ -13,6 +13,7 @@ import { registerGitHandlers } from './ipc/git'
 import { registerAgentSkillHandlers } from './ipc/agent-skills'
 import { registerEventHandlers } from './ipc/events'
 import { registerCheckpointHandlers } from './ipc/checkpoints'
+import { registerUpdater } from './updater'
 import { killAll } from './pty-manager'
 import { existsSync, mkdirSync } from 'fs'
 
@@ -157,6 +158,10 @@ app.whenReady().then(async () => {
 
   buildMenu()
   mainWindow = createWindow()
+
+  // Auto-update (packaged builds only; inert in dev). Registered after the
+  // window exists so status events have somewhere to go.
+  registerUpdater(() => mainWindow)
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()

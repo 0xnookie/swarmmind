@@ -91,8 +91,20 @@ declare global {
       checkpointList: () => Promise<CheckpointRecord[]>
       checkpointRestore: (id: string) => Promise<{ ok: true; restored: number; errors: string[] } | { error: string }>
       checkpointDelete: (id: string) => Promise<boolean>
+      // Auto-update
+      updateCheck: () => Promise<{ supported: boolean }>
+      updateInstall: () => Promise<void>
+      onUpdateStatus: (cb: (status: UpdateStatus) => void) => () => void
     }
   }
+
+  type UpdateStatus =
+    | { state: 'checking' }
+    | { state: 'available'; version: string }
+    | { state: 'none' }
+    | { state: 'downloading'; percent: number }
+    | { state: 'ready'; version: string }
+    | { state: 'error'; message: string }
 
   interface ScoredMemoryEntry {
     id: string

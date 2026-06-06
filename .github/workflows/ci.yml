@@ -32,3 +32,37 @@ jobs:
 
       - name: Type-check (web + node)
         run: npm run typecheck
+
+  smoke:
+    name: Smoke (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # node-pty compiles from source via node-gyp; distutils was removed from
+      # Python 3.12, so pin 3.11 (matches the release workflow).
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Rebuild node-pty / better-sqlite3 against the Electron ABI so they load
+      # when the smoke test launches the app (npm ci builds them for Node).
+      - name: Rebuild native modules for Electron
+        run: npm run rebuild
+
+      - name: Build (renderer + main)
+        run: npm run build
+
+      - name: Smoke test (boot the app)
+        run: npm run smoke

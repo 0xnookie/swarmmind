@@ -4,6 +4,10 @@ const config: Configuration = {
   appId: 'dev.swarmmind.app',
   productName: 'SwarmMind',
   copyright: 'Copyright © 2025 SwarmMind',
+  // Update feed: embeds app-update.yml in the build and emits latest*.yml into
+  // dist/ so electron-updater can find new releases. Publishing itself is done
+  // by the release workflow (build runs with --publish never).
+  publish: { provider: 'github', owner: '0xnookie', repo: 'swarmmind' },
   directories: {
     output: 'dist',
     buildResources: 'resources'

@@ -69,6 +69,8 @@ jobs:
             dist/*.AppImage
             dist/*.deb
             dist/*.snap
+            dist/latest*.yml
+            dist/*.blockmap
 
   release:
     name: Publish Release

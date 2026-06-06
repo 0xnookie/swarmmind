@@ -7,6 +7,7 @@
     "dev": "electron-vite dev",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "build": "electron-vite build",
+    "smoke": "node tests/smoke.mjs",
     "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
@@ -27,6 +28,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "better-sqlite3": "^11.10.0",
+    "electron-updater": "^6.8.9",
     "express": "^4.21.2",
     "node-pty": "^1.0.0",
     "uuid": "^10.0.0"
@@ -55,6 +57,7 @@
     "electron": "^32.2.7",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
+    "playwright-core": "^1.60.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "to-ico": "^1.1.5",

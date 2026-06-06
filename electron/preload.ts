@@ -143,6 +143,15 @@ contextBridge.exposeInMainWorld('swarmmind', {
     const handler = () => cb()
     ipcRenderer.on('menu:openWorkspace', handler)
     return () => ipcRenderer.off('menu:openWorkspace', handler)
+  },
+
+  // Auto-update
+  updateCheck: () => ipcRenderer.invoke('update:check'),
+  updateInstall: () => ipcRenderer.invoke('update:install'),
+  onUpdateStatus: (cb: (status: unknown) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: unknown) => cb(status)
+    ipcRenderer.on('update:status', handler)
+    return () => ipcRenderer.off('update:status', handler)
   }
 })
 

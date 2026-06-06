@@ -15,6 +15,7 @@ import { StartScreen } from './components/StartScreen'
 import { SettingsModal } from './components/SettingsModal'
 import { WorkspaceSetupModal } from './components/WorkspaceSetupModal'
 import { CommandPalette } from './components/CommandPalette'
+import { UpdateBanner } from './components/UpdateBanner'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { useConductor } from './hooks/useConductor'
 import { useWorkspaceStore, buildLayoutForCount, type AgentId, type ShellStyle } from './store/workspace'
@@ -259,6 +260,7 @@ export default function App() {
         <WorkspaceSetupModal onComplete={handleSetupComplete} onClose={closeSetupModal} />
       )}
       <CommandPalette />
+      <UpdateBanner />
     </div>
   )
 }
