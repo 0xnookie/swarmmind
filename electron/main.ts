@@ -149,6 +149,8 @@ app.whenReady().then(async () => {
   registerGitHandlers()
   registerAgentSkillHandlers()
 
+  ipcMain.handle('app:version', () => app.getVersion())
+
   ipcMain.on('window:minimize', () => mainWindow?.minimize())
   ipcMain.on('window:maximize', () => {
     if (mainWindow?.isMaximized()) mainWindow.unmaximize()

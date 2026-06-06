@@ -67,6 +67,8 @@ declare global {
       windowClose: () => void
       // Platform
       platform: string
+      // App version (from Electron app.getVersion())
+      getAppVersion: () => Promise<string>
       // Menu events
       onMenuOpenWorkspace: (cb: () => void) => () => void
       // File system

@@ -303,6 +303,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
   // Running agent counts per workspace id, from the main process. Agents keep
   // running across workspace switches, so inactive workspaces have live counts.
   const [agentCounts, setAgentCounts] = useState<Record<string, number>>({})
+  const [appVersion, setAppVersion] = useState<string>('')
   const [workspaceOrder, setWorkspaceOrder] = useState<string[]>([])
   const [workspaceColors, setWorkspaceColors] = useState<Record<string, string>>({})
   const [draggedId, setDraggedId] = useState<string | null>(null)
@@ -343,6 +344,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     })
     fetchWorkspaces()
     fetchAgentCounts()
+    window.swarmmind.getAppVersion().then(setAppVersion).catch(() => {})
     intervalRef.current = setInterval(() => { fetchWorkspaces(); fetchAgentCounts() }, 5000)
     return () => { if (intervalRef.current !== null) clearInterval(intervalRef.current) }
   }, [])
@@ -476,6 +478,14 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
             No workspaces yet
           </div>
         )}
+      </div>
+
+      {/* Footer — app version */}
+      <div style={{
+        flexShrink: 0, padding: '8px 16px', borderTop: '1px solid var(--border-subtle)',
+        fontSize: 11, color: 'var(--text-dim)', letterSpacing: '0.02em',
+      }}>
+        SwarmMind{appVersion ? ` v${appVersion}` : ''}
       </div>
     </aside>
   )

@@ -141,6 +141,8 @@ contextBridge.exposeInMainWorld('swarmmind', {
 
   platform: process.platform,
 
+  getAppVersion: () => ipcRenderer.invoke('app:version'),
+
   onMenuOpenWorkspace: (cb: () => void) => {
     const handler = () => cb()
     ipcRenderer.on('menu:openWorkspace', handler)
