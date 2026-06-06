@@ -37,7 +37,10 @@ const config: Configuration = {
     oneClick: false,
     allowToChangeInstallationDirectory: true,
     createDesktopShortcut: true,
-    shortcutName: 'SwarmMind'
+    shortcutName: 'SwarmMind',
+    installerIcon: 'resources/icons/icon.ico',
+    uninstallerIcon: 'resources/icons/icon.ico',
+    installerHeaderIcon: 'resources/icons/icon.ico'
   },
   mac: {
     target: [{ target: 'dmg', arch: ['x64', 'arm64'] }],

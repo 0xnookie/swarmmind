@@ -9,11 +9,13 @@
  *   resources/icons/icon.ico    multi-size ICO (16…256) for win.icon / BrowserWindow
  *   src/assets/logo.png         512²  — in-app brand mark (TopBar)
  *
- * sharp can't emit .ico, so we assemble one by hand: modern Windows accepts
- * PNG-encoded entries inside an ICO container, so each size is just a PNG blob
- * referenced from the icon directory.
+ * to-ico assembles the container: it stores small sizes (<256) as classic
+ * BMP entries and 256 as PNG. This matters on Windows — the shell (desktop
+ * shortcut, taskbar) renders the small BMP entries reliably, whereas a
+ * PNG-only ICO can fall back to the default icon at 16/32/48 px.
  */
 const sharp = require('sharp')
+const toIco = require('to-ico')
 const { mkdirSync, writeFileSync } = require('fs')
 const { join, resolve } = require('path')
 
@@ -28,29 +30,7 @@ async function buildIco(src) {
       sharp(src).resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer()
     )
   )
-
-  const header = Buffer.alloc(6)
-  header.writeUInt16LE(0, 0)            // reserved
-  header.writeUInt16LE(1, 2)            // type: 1 = icon
-  header.writeUInt16LE(pngs.length, 4)  // image count
-
-  const dir = Buffer.alloc(16 * pngs.length)
-  let offset = header.length + dir.length
-  pngs.forEach((png, i) => {
-    const size = ICO_SIZES[i]
-    const e = i * 16
-    dir.writeUInt8(size >= 256 ? 0 : size, e + 0)   // width (0 ⇒ 256)
-    dir.writeUInt8(size >= 256 ? 0 : size, e + 1)   // height (0 ⇒ 256)
-    dir.writeUInt8(0, e + 2)                         // palette colours
-    dir.writeUInt8(0, e + 3)                         // reserved
-    dir.writeUInt16LE(1, e + 4)                      // colour planes
-    dir.writeUInt16LE(32, e + 6)                     // bits per pixel
-    dir.writeUInt32LE(png.length, e + 8)             // bytes in resource
-    dir.writeUInt32LE(offset, e + 12)                // offset to data
-    offset += png.length
-  })
-
-  return Buffer.concat([header, dir, ...pngs])
+  return toIco(pngs)
 }
 
 async function main() {
