@@ -9,10 +9,16 @@
  *   resources/icons/icon.ico    multi-size ICO (16…256) for win.icon / BrowserWindow
  *   src/assets/logo.png         512²  — in-app brand mark (TopBar)
  *
- * to-ico assembles the container: it stores small sizes (<256) as classic
- * BMP entries and 256 as PNG. This matters on Windows — the shell (desktop
- * shortcut, taskbar) renders the small BMP entries reliably, whereas a
- * PNG-only ICO can fall back to the default icon at 16/32/48 px.
+ * We ship a hybrid ICO — the most broadly compatible form on Windows:
+ *   - sizes <256 as classic BMP entries: the shell (desktop shortcut,
+ *     taskbar) renders these reliably, whereas a PNG-only ICO can fall back
+ *     to the default icon at 16/32/48 px.
+ *   - 256 as a PNG-compressed entry: Vista+ expects the 256px slot to be PNG;
+ *     a raw 256² BMP (~256 KB) can make the shell reject the whole icon group
+ *     and show the default icon for every size.
+ *
+ * to-ico packs every size as BMP, so we let it build the container, then swap
+ * the 256px payload for a PNG and rebuild the directory + offsets.
  */
 const sharp = require('sharp')
 const toIco = require('to-ico')
@@ -30,7 +36,48 @@ async function buildIco(src) {
       sharp(src).resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer()
     )
   )
-  return toIco(pngs)
+  const ico = await toIco(pngs)
+  return repack256AsPng(ico, pngs[ICO_SIZES.indexOf(256)])
+}
+
+// Rewrite the 256x256 entry of a to-ico container so its payload is the PNG
+// blob instead of a raw BMP, then rebuild the directory with fresh offsets.
+// Small entries are copied through untouched (their BMP form is what the
+// shell wants); only the 256 slot and all data offsets change.
+function repack256AsPng(ico, png256) {
+  const count = ico.readUInt16LE(4)
+  const entries = []
+  for (let i = 0; i < count; i++) {
+    const e = 6 + i * 16
+    const width = ico[e] === 0 ? 256 : ico[e]   // width byte 0 ⇒ 256
+    const dir = Buffer.from(ico.subarray(e, e + 16))
+    let data = ico.subarray(ico.readUInt32LE(e + 12), ico.readUInt32LE(e + 12) + ico.readUInt32LE(e + 8))
+    if (width === 256) {
+      data = png256
+      dir.writeUInt8(0, 0)            // width  (0 ⇒ 256)
+      dir.writeUInt8(0, 1)            // height (0 ⇒ 256)
+      dir.writeUInt8(0, 2)            // palette colours
+      dir.writeUInt16LE(1, 4)         // colour planes
+      dir.writeUInt16LE(32, 6)        // bits per pixel
+    }
+    entries.push({ dir, data })
+  }
+
+  const header = Buffer.alloc(6)
+  header.writeUInt16LE(1, 2)          // type: 1 = icon
+  header.writeUInt16LE(count, 4)
+
+  let offset = 6 + count * 16
+  const dirs = []
+  const datas = []
+  for (const { dir, data } of entries) {
+    dir.writeUInt32LE(data.length, 8)   // bytes in resource
+    dir.writeUInt32LE(offset, 12)       // offset to data
+    dirs.push(dir)
+    datas.push(data)
+    offset += data.length
+  }
+  return Buffer.concat([header, ...dirs, ...datas])
 }
 
 async function main() {
