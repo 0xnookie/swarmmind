@@ -12,8 +12,20 @@ const config: Configuration = {
     'out/**/*',
     'memory/**/*',
     'mcp/**/*',
-    '!**/*.map'
+    '!**/*.map',
+    // Native-addon debug symbols (node-pty ships ~54 MB of .pdb in its
+    // per-platform prebuilds, better-sqlite3 a few more). Never loaded at
+    // runtime — the loader resolves build/Release first.
+    '!**/*.pdb',
+    // C/C++ sources & build intermediates for the two native addons; only
+    // needed by node-gyp at rebuild time, not once build/Release/*.node exists.
+    // Scoped to these packages so we never strip a JS dep that runs from src/.
+    '!**/node_modules/node-pty/{deps,third_party,src,scripts}/**',
+    '!**/node_modules/better-sqlite3/{deps,src}/**',
+    '!**/*.{o,obj,a,lib}'
   ],
+  // Trade a little build time for a noticeably smaller installer/download.
+  compression: 'maximum',
   extraResources: [
     { from: 'memory/schema.sql', to: 'memory/schema.sql' },
     // Shipped so the main process can set the BrowserWindow icon at runtime
