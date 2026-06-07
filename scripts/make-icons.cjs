@@ -83,14 +83,26 @@ function repack256AsPng(ico, png256) {
 async function main() {
   mkdirSync(join(root, 'resources', 'icons'), { recursive: true })
   mkdirSync(join(root, 'src', 'assets'), { recursive: true })
+  // electron-builder discovers the *app* icon (the one baked into the .exe and
+  // the mac/linux bundles) only by convention — it scans build/ and the project
+  // root for icon.ico / icon.png / icon.icns and IGNORES win.icon for this step.
+  // So the canonical icons must live in build/, or every platform ships the
+  // default Electron icon regardless of win.icon / installerIcon.
+  mkdirSync(join(root, 'build'), { recursive: true })
 
-  await sharp(source).resize(1024, 1024, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
-    .png().toFile(join(root, 'resources', 'icon.png'))
+  const png1024 = await sharp(source)
+    .resize(1024, 1024, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .png().toBuffer()
+
+  writeFileSync(join(root, 'resources', 'icon.png'), png1024)
+  writeFileSync(join(root, 'build', 'icon.png'), png1024)        // linux/mac app icon (electron-builder convention)
 
   await sharp(source).resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
     .png().toFile(join(root, 'src', 'assets', 'logo.png'))
 
-  writeFileSync(join(root, 'resources', 'icons', 'icon.ico'), await buildIco(source))
+  const ico = await buildIco(source)
+  writeFileSync(join(root, 'resources', 'icons', 'icon.ico'), ico)
+  writeFileSync(join(root, 'build', 'icon.ico'), ico)            // windows app icon (electron-builder convention)
 
   console.log('Icons generated from', source)
 }
