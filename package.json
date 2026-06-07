@@ -1,6 +1,7 @@
 {
   "name": "swarmmind",
-  "version": "0.1.5",
+  "productName": "SwarmMind",
+  "version": "0.1.6",
   "description": "Multi-agent AI coding workspace with shared MCP memory",
   "main": "out/main/index.js",
   "scripts": {

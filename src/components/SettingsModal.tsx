@@ -353,6 +353,8 @@ export function SettingsModal() {
                     <kbd style={styles.kbd}>Shift</kbd>+<kbd style={styles.kbd}>V</kbd>.
                   </p>
                 </Group>
+
+                <UpdatesSection />
               </div>
             )}
 
@@ -620,6 +622,87 @@ export function SettingsModal() {
         </div>
       </div>
     </div>
+  )
+}
+
+/* ── Updates ──────────────────────────────────────────── */
+
+// Self-contained: it subscribes to `update:status` and triggers manual checks
+// directly, outside the modal's draft/Save model (an update isn't a "setting").
+// Surfaces every state — checking / up-to-date / available / downloading /
+// ready / error — that the silent UpdateBanner deliberately hides.
+function UpdatesSection() {
+  const [status, setStatus] = useState<UpdateStatus | null>(null)
+  const [version, setVersion] = useState('')
+  const [unsupported, setUnsupported] = useState(false)
+
+  useEffect(() => window.swarmmind.onUpdateStatus(setStatus), [])
+  useEffect(() => { window.swarmmind.getAppVersion().then(setVersion).catch(() => {}) }, [])
+
+  const check = useCallback(async () => {
+    setStatus({ state: 'checking' })
+    try {
+      const { supported } = await window.swarmmind.updateCheck()
+      if (!supported) { setUnsupported(true); setStatus(null) }
+      // When supported, the main process drives further status via update:status.
+    } catch (err) {
+      setStatus({ state: 'error', message: err instanceof Error ? err.message : String(err) })
+    }
+  }, [])
+
+  const busy = status?.state === 'checking' || status?.state === 'downloading'
+
+  const line = (() => {
+    if (unsupported) return 'Automatic updates are only available in the installed app.'
+    switch (status?.state) {
+      case 'checking': return 'Checking for updates…'
+      case 'none': return "You're on the latest version."
+      case 'available': return `Update ${status.version} found — downloading in the background…`
+      case 'downloading': return `Downloading update… ${status.percent}%`
+      case 'ready': return `Update ${status.version} downloaded — restart to install.`
+      case 'error': return `Update check failed: ${status.message}`
+      default: return 'SwarmMind checks for updates automatically every few hours.'
+    }
+  })()
+
+  return (
+    <Group title="Updates">
+      <div style={styles.rowBetween}>
+        <div style={{ minWidth: 0 }}>
+          <FieldLabel>Current version</FieldLabel>
+          <p style={{ ...styles.desc, marginTop: 2 }}>
+            SwarmMind{version ? ` v${version}` : ''}
+          </p>
+        </div>
+        {status?.state === 'ready' ? (
+          <button
+            className="settings-card"
+            style={styles.inlineBtn}
+            onClick={() => window.swarmmind.updateInstall()}
+          >
+            Restart to install
+          </button>
+        ) : (
+          <button
+            className="settings-card"
+            style={styles.inlineBtn}
+            disabled={busy}
+            onClick={check}
+          >
+            {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
+          </button>
+        )}
+      </div>
+      <p
+        style={{
+          ...styles.desc,
+          color: status?.state === 'error' ? 'var(--warning)' : styles.desc.color,
+        }}
+        role="status"
+      >
+        {line}
+      </p>
+    </Group>
   )
 }
 
