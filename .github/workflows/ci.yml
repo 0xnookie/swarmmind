@@ -28,7 +28,17 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        # sharp (pulled in by @xenova/transformers) downloads its libvips
+        # binary at install time, and that download is flaky on CI runners.
+        # Retry so a transient timeout doesn't fail the run.
+        run: |
+          for n in 1 2 3; do
+            npm ci && exit 0
+            echo "npm ci failed (attempt $n); retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
       - name: Type-check (web + node)
         run: npm run typecheck
@@ -54,7 +64,17 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        # sharp (pulled in by @xenova/transformers) downloads its libvips
+        # binary at install time, and that download is flaky on CI runners.
+        # Retry so a transient timeout doesn't fail the run.
+        run: |
+          for n in 1 2 3; do
+            npm ci && exit 0
+            echo "npm ci failed (attempt $n); retrying in 15s..."
+            sleep 15
+          done
+          exit 1
 
       # Rebuild node-pty / better-sqlite3 against the Electron ABI so they load
       # when the smoke test launches the app (npm ci builds them for Node).
