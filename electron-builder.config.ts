@@ -30,6 +30,13 @@ const config: Configuration = {
   ],
   // Trade a little build time for a noticeably smaller installer/download.
   compression: 'maximum',
+  // Artifact names MUST contain no spaces. electron-builder's default NSIS name is
+  // "${productName} Setup ${version}.${ext}" (with spaces); on upload GitHub turns
+  // spaces into dots ("SwarmMind.Setup.0.1.7.exe") while electron-updater turns
+  // them into dashes when building the download URL ("SwarmMind-Setup-0.1.7.exe"),
+  // so auto-update 404s. Dash-only templates keep the on-disk file, latest*.yml,
+  // and the uploaded asset byte-identical, so the updater always resolves them.
+  artifactName: '${productName}-${version}-${arch}.${ext}',
   extraResources: [
     { from: 'memory/schema.sql', to: 'memory/schema.sql' },
     // Shipped so the main process can set the BrowserWindow icon at runtime
@@ -50,6 +57,8 @@ const config: Configuration = {
     ]
   },
   nsis: {
+    // Override the space-containing default ("${productName} Setup ${version}").
+    artifactName: '${productName}-Setup-${version}.${ext}',
     oneClick: false,
     allowToChangeInstallationDirectory: true,
     createDesktopShortcut: true,
