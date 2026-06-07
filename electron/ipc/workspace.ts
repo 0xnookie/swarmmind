@@ -97,10 +97,17 @@ export function registerWorkspaceHandlers(getWin: () => BrowserWindow | null): v
 
   ipcMain.handle('workspace:delete', (_event, id: string) => {
     killWorkspaceAgents(id)          // stop only this workspace's agents
+    // Resolve the path before deleting so we can clear lastWorkspacePath if it
+    // points here — otherwise workspace:openLast re-creates the deleted row on
+    // next startup (the folder on disk still exists) and it reappears.
+    const ws = listWorkspaces().find(w => w.id === id)
     if (activeWorkspaceId === id) {
       activeWorkspaceId = null
       activeRootPath = null
       setActiveWorkspace('')
+    }
+    if (ws && getAppState('lastWorkspacePath') === ws.root_path) {
+      setAppState('lastWorkspacePath', '')
     }
     closeWorkspaceDb(id)             // drop its pooled connection
     return deleteWorkspace(id)
