@@ -1,8 +1,17 @@
 # SwarmMind
 
+[![Version](https://img.shields.io/badge/Version-0.1.6-e8956b)](https://github.com/0xnookie/swarmmind/releases)
+[![License](https://img.shields.io/badge/License-MIT-3fb950)](./LICENSE)
+[![Electron](https://img.shields.io/badge/Electron-32-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#download)
+
 A desktop workspace that runs multiple AI coding CLI agents side-by-side in resizable terminal panes, coordinated through a shared MCP memory server so agents can exchange context, hand off tasks, and message one another.
 
 Built with Electron + React + TypeScript.
+
+![SwarmMind start screen](./docs/startscreen.png)
 
 ---
 
