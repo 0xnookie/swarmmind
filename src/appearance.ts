@@ -23,7 +23,7 @@ export interface AppearanceSettings {
 }
 
 export const DEFAULT_APPEARANCE: AppearanceSettings = {
-  themePreset: 'warm',
+  themePreset: 'mono',
   accentColor: null,
   uiDensity: 'default',
   uiFont: 'inter',
@@ -72,7 +72,7 @@ export const THEMES: Record<ThemePreset, ThemeDef> = {
   warm: {
     id: 'warm',
     label: 'Warm Dark',
-    desc: 'Default Claude palette',
+    desc: 'Claude palette',
     vars: {
       '--bg-base': '#161412', '--bg-panel': '#1c1a18', '--bg-elevated': '#222019',
       '--bg-elevated-2': '#2a2722', '--bg-terminal': '#121110', '--bg-input': '#1e1c1a',
