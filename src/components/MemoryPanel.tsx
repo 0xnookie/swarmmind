@@ -5,6 +5,7 @@ import { useMemory, type MemoryEntry, type Task } from '../hooks/useMemory'
 const STATUS_COLORS: Record<string, string> = {
   pending: 'var(--text-dim)',
   in_progress: 'var(--accent)',
+  needs_review: 'var(--warning)',
   done: 'var(--success)',
   failed: 'var(--error)'
 }
@@ -164,7 +165,7 @@ function TasksTab({ tasks, refresh, workspaceId }: { tasks: Task[]; refresh: () 
     refresh()
   }
 
-  const columns: Array<Task['status']> = ['pending', 'in_progress', 'done', 'failed']
+  const columns: Array<Task['status']> = ['pending', 'in_progress', 'needs_review', 'done', 'failed']
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>

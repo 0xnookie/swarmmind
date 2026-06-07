@@ -9,8 +9,8 @@ contextBridge.exposeInMainWorld('swarmmind', {
     ipcRenderer.send('pty:input', paneId, data),
   ptyResize: (paneId: string, cols: number, rows: number) =>
     ipcRenderer.send('pty:resize', paneId, cols, rows),
-  ptyKill: (paneId: string) =>
-    ipcRenderer.invoke('pty:kill', paneId),
+  ptyKill: (paneId: string, silent?: boolean) =>
+    ipcRenderer.invoke('pty:kill', paneId, silent),
   ptyStatus: (paneId: string) =>
     ipcRenderer.invoke('pty:status', paneId),
   agentCounts: () =>

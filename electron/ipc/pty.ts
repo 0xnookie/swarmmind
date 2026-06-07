@@ -34,8 +34,8 @@ export function registerPtyHandlers(getWin: () => BrowserWindow | null, getWorks
     ptyResize(paneId, cols, rows)
   })
 
-  ipcMain.handle('pty:kill', (_event, paneId: string) => {
-    ptyKill(paneId)
+  ipcMain.handle('pty:kill', (_event, paneId: string, silent?: boolean) => {
+    ptyKill(paneId, silent === true)
     return { ok: true }
   })
 

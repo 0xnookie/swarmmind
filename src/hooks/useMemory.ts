@@ -17,7 +17,7 @@ export interface Task {
   title: string
   description: string | null
   notes: string | null
-  status: 'pending' | 'in_progress' | 'done' | 'failed'
+  status: 'pending' | 'in_progress' | 'needs_review' | 'done' | 'failed'
   assigned_agent: string | null
   created_by: string
   created_at: number

@@ -8,7 +8,7 @@ declare global {
       ptyCreateShell: (paneId: string, cwd: string, shellStyle: string, cols?: number, rows?: number) => Promise<{ ok?: boolean; error?: string }>
       ptyInput: (paneId: string, data: string) => void
       ptyResize: (paneId: string, cols: number, rows: number) => void
-      ptyKill: (paneId: string) => Promise<{ ok: boolean }>
+      ptyKill: (paneId: string, silent?: boolean) => Promise<{ ok: boolean }>
       ptyStatus: (paneId: string) => Promise<string>
       agentCounts: () => Promise<Record<string, number>>
       onPtyOutput: (cb: (paneId: string, data: string) => void) => () => void

@@ -26,6 +26,7 @@ const TYPE_COLOR: Record<string, string> = {
 const STATUS_COLOR: Record<string, string> = {
   pending: '#9b8f82',
   in_progress: '#e8956b',
+  needs_review: '#fbbf24',
   done: '#34d399',
   failed: '#f87171',
 }

@@ -144,7 +144,7 @@ export function registerTools(server: McpServer, getWorkspaceId: () => string | 
     'Update the status, assignment, or notes of a task',
     {
       id: z.string().describe('Task ID'),
-      status: z.enum(['pending', 'in_progress', 'done', 'failed']).describe('New status'),
+      status: z.enum(['pending', 'in_progress', 'needs_review', 'done', 'failed']).describe('New status'),
       assigned_agent: z.string().optional().describe('Reassign to agent'),
       notes: z.string().optional().describe('Replace the task notes (use task_note to append instead)')
     },
@@ -210,7 +210,7 @@ export function registerTools(server: McpServer, getWorkspaceId: () => string | 
     'task_list',
     'List tasks in the shared task queue',
     {
-      status: z.enum(['pending', 'in_progress', 'done', 'failed']).optional().describe('Filter by status'),
+      status: z.enum(['pending', 'in_progress', 'needs_review', 'done', 'failed']).optional().describe('Filter by status'),
       assigned_agent: z.string().optional().describe('Filter by assigned agent')
     },
     async ({ status, assigned_agent }) => {

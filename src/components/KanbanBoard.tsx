@@ -288,6 +288,7 @@ export function KanbanBoard() {
 const COL_COLORS: Record<string, string> = {
   pending: 'var(--text-dim)',
   in_progress: 'var(--accent)',
+  needs_review: 'var(--warning)',
   done: 'var(--success)',
   failed: 'var(--error)'
 }

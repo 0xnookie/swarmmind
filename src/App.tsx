@@ -130,6 +130,11 @@ export default function App() {
     // overlays aren't open (drives the TopBar cost pill and contention dot).
     const unsubEvent = window.swarmmind.onSwarmEvent((ev) => {
       if (!ev) return
+      // Background-workspace agents keep running and still emit events, but the
+      // cost pill and contention dot are about the *foreground* workspace. Ignore
+      // events from other workspaces so they don't pollute the displayed totals.
+      const activeWs = useWorkspaceStore.getState().workspace?.id
+      if (activeWs && ev.workspace_id !== activeWs) return
       if (ev.type === 'cost' && ev.pane_id) {
         const usd = Number((ev.payload as { usd?: number } | null)?.usd ?? 0)
         const tokens = Number((ev.payload as { tokens?: number } | null)?.tokens ?? 0)

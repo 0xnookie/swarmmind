@@ -442,7 +442,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   orchestratorProposal: null,
   orchestratorLog: [],
 
-  setWorkspace: (ws) => set({ workspace: ws }),
+  setWorkspace: (ws) => set(s => {
+    // On an actual switch (not a rename of the current workspace), clear the
+    // cost/contention display state — it's scoped to the previous workspace's
+    // panes and would otherwise leak into the new one (e.g. the TopBar cost pill
+    // summing a different workspace's spend). Guarded on id change so renaming the
+    // active workspace (setWorkspace with the same id) doesn't wipe live totals.
+    if (ws?.id === s.workspace?.id) return { workspace: ws }
+    return { workspace: ws, paneCost: {}, contendedPaths: [] }
+  }),
 
   setLayout: (root) => {
     set({ rootPane: root })
@@ -573,6 +581,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set(s => {
       const result = findParent(s.rootPane, paneId)
       if (!result) return s
+      // The pane is being destroyed (not just unmounted for a workspace switch),
+      // so kill its PTY — otherwise the node-pty process leaks in the main process
+      // and keeps streaming output / running a file watcher until app quit. Silent
+      // so no pty:exit fires for the pane we're removing (no respawn/exit handler).
+      window.swarmmind.ptyKill(paneId, true).catch(() => {})
       const { parent } = result
       const newChildren = parent.children.filter(c => c.id !== paneId)
       const updatedParent = { ...parent, children: newChildren }
