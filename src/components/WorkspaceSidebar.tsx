@@ -267,7 +267,7 @@ function IconBtn({
 }: {
   label: string
   children: React.ReactNode
-  onClick?: () => void
+  onClick?: (e: React.MouseEvent) => void
 }) {
   const [hovered, setHovered] = useState(false)
   return (
@@ -296,6 +296,58 @@ function IconBtn({
   )
 }
 
+// ── Workspace menu (the header chevron dropdown) ──────────────────────────────
+
+function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
+        padding: '6px 10px', fontSize: 13, fontFamily: 'inherit', borderRadius: 5,
+        border: 'none', cursor: 'pointer',
+        background: hovered ? 'var(--bg-elevated-2)' : 'transparent',
+        color: hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+interface WorkspaceMenuProps {
+  onSortName: () => void
+  onSortRecent: () => void
+  onResetOrder: () => void
+  onRefresh: () => void
+}
+
+function WorkspaceMenu({ onSortName, onSortRecent, onResetOrder, onRefresh }: WorkspaceMenuProps) {
+  return (
+    <div
+      onClick={e => e.stopPropagation()}
+      style={{
+        position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 200,
+        minWidth: 184, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+        borderRadius: 8, padding: 4, boxShadow: '0 6px 16px rgba(0,0,0,0.4)',
+        display: 'flex', flexDirection: 'column', gap: 1,
+      }}
+    >
+      <div style={{ fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: 'var(--text-dim)', padding: '4px 10px 2px', fontWeight: 600 }}>
+        Sort
+      </div>
+      <MenuItem onClick={onSortName}>Name (A–Z)</MenuItem>
+      <MenuItem onClick={onSortRecent}>Recently used</MenuItem>
+      <MenuItem onClick={onResetOrder}>Reset to default order</MenuItem>
+      <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 2px' }} />
+      <MenuItem onClick={onRefresh}>Refresh list</MenuItem>
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarProps) {
@@ -307,6 +359,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
   const [workspaceOrder, setWorkspaceOrder] = useState<string[]>([])
   const [workspaceColors, setWorkspaceColors] = useState<Record<string, string>>({})
   const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
   const activeId = useWorkspaceStore(s => s.workspace?.id)
   const runningCount = useWorkspaceStore(s => {
     function countRunning(node: import('../store/workspace').PaneNode): number {
@@ -353,6 +406,15 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
   // should appear in the list (and reflect agent counts) instantly, not after
   // the next 5s poll tick.
   useEffect(() => { fetchWorkspaces(); fetchAgentCounts() }, [activeId])
+
+  // Close the header menu on any outside click. The chevron toggle stops
+  // propagation so opening it doesn't immediately re-close it.
+  useEffect(() => {
+    if (!menuOpen) return
+    const handler = () => setMenuOpen(false)
+    window.addEventListener('click', handler)
+    return () => window.removeEventListener('click', handler)
+  }, [menuOpen])
 
   const sortedWorkspaces = useMemo(() => {
     // Stable base order = creation order. The list query returns rows by
@@ -403,6 +465,31 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     setDraggedId(null)
   }
 
+  // Menu actions reuse the same `workspaceOrder` setting that manual drag writes,
+  // so sorting and dragging are one consistent mechanism. Reset clears it, which
+  // falls back to creation order (see sortedWorkspaces).
+  const persistOrder = (ids: string[]) => {
+    setWorkspaceOrder(ids)
+    window.swarmmind.setAppSetting('workspaceOrder', JSON.stringify(ids)).catch(() => {})
+  }
+  const handleSortName = () => {
+    persistOrder([...workspaces].sort((a, b) => a.name.localeCompare(b.name)).map(w => w.id))
+    setMenuOpen(false)
+  }
+  const handleSortRecent = () => {
+    persistOrder([...workspaces].sort((a, b) => b.updated_at - a.updated_at).map(w => w.id))
+    setMenuOpen(false)
+  }
+  const handleResetOrder = () => {
+    persistOrder([])
+    setMenuOpen(false)
+  }
+  const handleRefresh = () => {
+    fetchWorkspaces()
+    fetchAgentCounts()
+    setMenuOpen(false)
+  }
+
   const handleColorChange = (wsId: string, color: string) => {
     const newColors = { ...workspaceColors, [wsId]: color }
     setWorkspaceColors(newColors)
@@ -446,9 +533,17 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
         <span style={{ fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: 'var(--text-muted)', fontWeight: 500 }}>
           Workspaces
         </span>
-        <div style={{ display: 'flex', gap: 4 }}>
+        <div style={{ display: 'flex', gap: 4, position: 'relative' }}>
           <IconBtn label="New workspace" onClick={onOpenWorkspace}><IconPlus /></IconBtn>
-          <IconBtn label="Workspace menu"><IconChevronDown /></IconBtn>
+          <IconBtn label="Workspace menu" onClick={e => { e.stopPropagation(); setMenuOpen(v => !v) }}><IconChevronDown /></IconBtn>
+          {menuOpen && (
+            <WorkspaceMenu
+              onSortName={handleSortName}
+              onSortRecent={handleSortRecent}
+              onResetOrder={handleResetOrder}
+              onRefresh={handleRefresh}
+            />
+          )}
         </div>
       </div>
 
