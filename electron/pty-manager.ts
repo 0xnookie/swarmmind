@@ -3,7 +3,7 @@ import { BrowserWindow, Notification } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { type AgentId } from '../memory/queries'
-import { readAgentConfig } from './agent-config'
+import { readAgentConfigForSpawn } from './agent-config'
 import { getMcpPort, getMcpToken } from '../mcp/server'
 import { eventEmit } from '../memory/events'
 import { runWithWorkspace } from '../memory/db'
@@ -26,6 +26,41 @@ export function resolveSpawn(cmd: string, shellStyle: ShellStyle): { file: strin
   // Non-Windows: run through a shell so quoted args and paths with spaces in
   // `cmd` survive (a naive whitespace split would mangle them).
   return { file: process.env.SHELL || '/bin/sh', args: ['-c', cmd] }
+}
+
+// Quote one argv token for the shell `resolveSpawn` wraps the command in. node-pty
+// can't spawn `.cmd`/`.ps1` shims directly on Windows, so the agent command is
+// always run through a shell — which makes escaping mandatory: an unescaped value
+// (e.g. a path or flag from a workspace config) could otherwise inject commands.
+function quoteForShell(token: string, shellStyle: ShellStyle): string {
+  if (process.platform !== 'win32') {
+    // POSIX `$SHELL -c <cmd>`: single-quote, ending the quote to emit a literal '.
+    return `'${token.replace(/'/g, `'\\''`)}'`
+  }
+  switch (shellStyle) {
+    case 'bash':
+      return `'${token.replace(/'/g, `'\\''`)}'`
+    case 'powershell':
+      // Single-quoted PowerShell string (embedded ' is doubled). node-pty wraps
+      // the whole -Command value in double quotes, so single quotes don't collide.
+      return `'${token.replace(/'/g, `''`)}'`
+    case 'cmd':
+      // cmd.exe can't compose with node-pty's double-quote escaping, so instead of
+      // quoting we caret-escape the metacharacters that enable command chaining and
+      // strip the few chars that can't be neutralized this way (" % newlines).
+      // Note: tokens are space-joined, so a cmd-shell path containing spaces still
+      // won't survive — a pre-existing limitation, but injection is prevented.
+      return token.replace(/["%\r\n]/g, '').replace(/[&|<>()^]/g, '^$&')
+  }
+}
+
+// Build the shell command string for `resolveSpawn` from an argv array, quoting
+// every token. PowerShell needs the call operator (&) so a quoted first token is
+// executed rather than echoed as a string literal.
+function buildShellCommand(argv: string[], shellStyle: ShellStyle): string {
+  const quoted = argv.map(a => quoteForShell(a, shellStyle)).join(' ')
+  if (process.platform === 'win32' && shellStyle === 'powershell') return `& ${quoted}`
+  return quoted
 }
 
 // Bare interactive shell (no agent command) — used to give an idle pane a real
@@ -193,7 +228,7 @@ function injectMcpConfig(agentId: AgentId, cwd: string, mcpUrl: string, workspac
   // `ws` tells the MCP server which workspace this agent belongs to, so its
   // tool calls route to the right DB even after the user switches workspaces
   // (the agent keeps running in the background).
-  const sseUrl = `${mcpUrl}/mcp/sse?token=${getMcpToken()}&ws=${encodeURIComponent(workspaceId)}`
+  const sseUrl = `${mcpUrl}/mcp/sse?token=${getMcpToken(workspaceId)}&ws=${encodeURIComponent(workspaceId)}`
 
   if (agentId === 'claude') {
     const claudeDir = join(cwd, '.claude')
@@ -367,12 +402,14 @@ export function ptyCreate(
 
   injectMcpConfig(agentId, cwd, mcpUrl, workspaceId)
 
-  const storedConfig = readAgentConfig(workspaceId, agentId)
+  // readAgentConfigForSpawn drops executablePath/extraFlags/env unless they were
+  // signed by this install, so an untrusted workspace DB can't dictate the command.
+  const storedConfig = readAgentConfigForSpawn(workspaceId, agentId)
   const defaults = AGENT_DEFAULTS[agentId]
   const baseCmd = storedConfig.executablePath ?? defaults.cmd
   const baseArgs = buildLaunchArgs(agentId, resume, sessionId, defaults.args)
   const allArgs = [...baseArgs, ...(storedConfig.extraFlags ?? [])]
-  const fullCmd = [baseCmd, ...allArgs].join(' ')
+  const fullCmd = buildShellCommand([baseCmd, ...allArgs], shellStyle)
   const { file: spawnFile, args: spawnArgs } = resolveSpawn(fullCmd, shellStyle)
 
   const env: NodeJS.ProcessEnv = {
@@ -380,7 +417,7 @@ export function ptyCreate(
     TERM: 'xterm-256color',
     COLORTERM: 'truecolor',
     SWARMMIND_MCP_URL: mcpUrl,
-    SWARMMIND_MCP_TOKEN: getMcpToken(),
+    SWARMMIND_MCP_TOKEN: getMcpToken(workspaceId),
     KILOCODE_MCP_URL: mcpUrl,
     CODEX_MCP_URL: mcpUrl,
     CLINE_MCP_URL: mcpUrl,

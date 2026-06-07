@@ -52,6 +52,12 @@ export interface AgentConfig {
   extraFlags?: string[]
   executablePath?: string
   env?: Record<string, string>
+  // HMAC over the spawn-affecting fields (executablePath/extraFlags/env), set by
+  // writeAgentConfig using a per-install key stored in app.db. The PTY spawn path
+  // only honors those fields when this verifies, so a cloned/untrusted repo's
+  // workspace memory.db can't inject a malicious launch command. See
+  // electron/agent-config.ts::readAgentConfigForSpawn.
+  _sig?: string
 }
 
 // ── Workspaces ────────────────────────────────────────────────────────────────

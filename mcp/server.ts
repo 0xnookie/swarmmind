@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js'
 import express, { type Express } from 'express'
 import { Server, createServer } from 'http'
-import { randomBytes } from 'crypto'
+import { randomBytes, createHmac, timingSafeEqual } from 'crypto'
 import { registerTools } from './tools'
 import { registerResources } from './resources'
 import { runWithWorkspace, getRequestWorkspaceId } from '../memory/db'
@@ -14,13 +14,26 @@ let httpServer: Server | null = null
 let actualPort: number | null = null
 let activeWorkspaceId: string | null = null
 
-// Per-run bearer token. The server binds to 127.0.0.1, but any local process
-// could otherwise read/write workspace memory and tasks; requiring this token
+// Per-run master secret. The server binds to 127.0.0.1, but any local process
+// could otherwise read/write workspace memory and tasks; requiring a token
 // (handed only to agents we spawn, via their injected config) closes that gap.
-const authToken = randomBytes(24).toString('hex')
+// Tokens are derived per workspace so a token issued for one workspace can't be
+// replayed against another by swapping the `?ws=` query param — each token only
+// authorizes its own workspace's DB.
+const masterSecret = randomBytes(32)
 
-export function getMcpToken(): string {
-  return authToken
+export function getMcpToken(workspaceId: string): string {
+  return createHmac('sha256', masterSecret).update(workspaceId).digest('hex')
+}
+
+// Constant-time comparison of two hex token strings.
+function tokensMatch(a: unknown, expected: string): boolean {
+  if (typeof a !== 'string' || a.length !== expected.length) return false
+  try {
+    return timingSafeEqual(Buffer.from(a), Buffer.from(expected))
+  } catch {
+    return false
+  }
 }
 
 export function setActiveWorkspace(id: string | null): void {
@@ -70,13 +83,15 @@ export function startMcpServer(): Promise<void> {
     const transports = new Map<string, { transport: SSEServerTransport; ws: string | null }>()
 
     app.get('/mcp/sse', async (req, res) => {
-      // Gate session establishment on the bearer token. /mcp/messages is
+      // Gate session establishment on the per-workspace token. The token must
+      // match the one derived for the requested `ws`, so a client can only open a
+      // session against the workspace it was issued for. /mcp/messages is
       // implicitly protected: it requires a sessionId only handed out here.
-      if (req.query.token !== authToken) {
+      const ws = typeof req.query.ws === 'string' && req.query.ws ? req.query.ws : null
+      if (!ws || !tokensMatch(req.query.token, getMcpToken(ws))) {
         res.status(401).json({ error: 'Unauthorized' })
         return
       }
-      const ws = typeof req.query.ws === 'string' && req.query.ws ? req.query.ws : null
       const transport = new SSEServerTransport('/mcp/messages', res)
       transports.set(transport.sessionId, { transport, ws })
       res.on('close', () => transports.delete(transport.sessionId))
