@@ -68,7 +68,7 @@ export function startMcpServer(): Promise<void> {
 
     const mcpServer = new McpServer({
       name: 'swarmmind',
-      version: '0.1.8'
+      version: '0.1.9'
     })
 
     // Each tool call resolves its workspace from the per-request context (the
