@@ -89,6 +89,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Needed so the per-release notes can be pulled from CHANGELOG.md below.
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -104,6 +108,38 @@ jobs:
             echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
+      # Build the release body from the matching CHANGELOG.md section (the
+      # curated "what changed / new features" for this version), then append the
+      # static downloads footer. action-gh-release additionally appends the
+      # auto-generated commit list (generate_release_notes). If no section is
+      # found the body still has the intro + downloads, so the release never
+      # fails on an empty body.
+      - name: Build release notes
+        shell: bash
+        run: |
+          TAG="${{ steps.tag.outputs.name }}"
+          VER="${TAG#v}"
+          SECTION=$(awk -v hdr="## [$VER]" '
+            index($0, hdr)==1 {cap=1; next}
+            cap && /^## \[/ {cap=0}
+            cap && /^\[[A-Za-z0-9.]+\]: http/ {next}
+            cap {print}
+          ' CHANGELOG.md)
+          {
+            echo "Desktop workspace for running multiple AI coding CLI agents side-by-side with shared MCP memory."
+            echo ""
+            if [ -n "$SECTION" ]; then
+              echo "## What's new in $TAG"
+              echo "$SECTION"
+            fi
+            echo "### Downloads"
+            echo "- **Windows** — \`.exe\` installer (NSIS) or portable \`.zip\`"
+            echo "- **macOS** — \`.dmg\` (x64 + Apple Silicon; unsigned — right-click → Open on first launch)"
+            echo "- **Linux** — \`.AppImage\` (x64)"
+            echo ""
+            echo "See the [README](https://github.com/0xnookie/swarmmind#readme) for setup."
+          } > RELEASE_NOTES.md
+
       - name: Create / update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -114,19 +150,4 @@ jobs:
           fail_on_unmatched_files: true
           generate_release_notes: true
           files: artifacts/**/*
-          body: |
-            Desktop workspace for running multiple AI coding CLI agents side-by-side with shared MCP memory.
-
-            ### Downloads
-            - **Windows** — `.exe` installer (NSIS) or portable `.zip`
-            - **macOS** — `.dmg` (x64 + Apple Silicon; unsigned — right-click → Open on first launch)
-            - **Linux** — `.AppImage` (x64)
-
-            ### Highlights
-            - Multi-pane terminals (xterm.js + node-pty) with per-pane agent selection (Claude Code, Codex, Kilo Code, OpenCode)
-            - Embedded MCP memory server — `memory_*`, `task_*`, `send_message` tools shared across agents
-            - Orchestration (Conductor + Lead) with dependency-aware task dispatch
-            - Session resume, git worktree review, memory graph & Kanban views
-            - Encrypted secret storage via Electron `safeStorage`
-
-            See the [README](https://github.com/0xnookie/swarmmind#readme) for setup.
+          body_path: RELEASE_NOTES.md
