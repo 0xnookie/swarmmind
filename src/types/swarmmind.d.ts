@@ -54,6 +54,7 @@ declare global {
       workspaceDelete: (id: string) => Promise<boolean>
       workspaceRename: (id: string, name: string) => Promise<boolean>
       workspaceOpenByPath: (rootPath: string, name?: string) => Promise<{ id: string; name: string; rootPath: string; savedLayout?: string; error?: string } | null>
+      workspaceReveal: (id: string) => Promise<{ ok?: boolean; error?: string }>
       folderPick: () => Promise<string | null>
       // Settings
       getAgentConfig: (agentId: string) => Promise<Record<string, unknown>>

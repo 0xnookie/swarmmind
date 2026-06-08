@@ -103,6 +103,7 @@ contextBridge.exposeInMainWorld('swarmmind', {
   workspaceDelete: (id: string) => ipcRenderer.invoke('workspace:delete', id),
   workspaceRename: (id: string, name: string) => ipcRenderer.invoke('workspace:rename', id, name),
   workspaceOpenByPath: (rootPath: string, name?: string) => ipcRenderer.invoke('workspace:openByPath', rootPath, name),
+  workspaceReveal: (id: string) => ipcRenderer.invoke('workspace:reveal', id),
   folderPick: () => ipcRenderer.invoke('folder:pick'),
 
   getAgentConfig: (agentId: string) => ipcRenderer.invoke('settings:getAgentConfig', agentId),

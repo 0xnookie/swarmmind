@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow, app } from 'electron'
+import { ipcMain, dialog, BrowserWindow, app, shell } from 'electron'
 import { join, basename } from 'path'
 import { mkdirSync, existsSync } from 'fs'
 import { initWorkspaceDb, closeWorkspaceDb } from '../../memory/db'
@@ -111,6 +111,14 @@ export function registerWorkspaceHandlers(getWin: () => BrowserWindow | null): v
     }
     closeWorkspaceDb(id)             // drop its pooled connection
     return deleteWorkspace(id)
+  })
+
+  ipcMain.handle('workspace:reveal', (_event, id: string) => {
+    const ws = listWorkspaces().find(w => w.id === id)
+    if (!ws) return { error: 'Not found' }
+    if (!existsSync(ws.root_path)) return { error: 'Directory no longer exists' }
+    shell.openPath(ws.root_path)
+    return { ok: true }
   })
 
   // Pick a folder (for per-pane CWD override)

@@ -19,14 +19,26 @@ export interface WorkspaceSidebarProps {
 
 const WORKSPACE_COLOR_PALETTE = [
   '#f59e0b', // amber
-  '#10b981', // emerald
-  '#3b82f6', // blue
-  '#a855f7', // purple
-  '#ef4444', // red
   '#f97316', // orange
-  '#14b8a6', // teal
+  '#ef4444', // red
+  '#f43f5e', // rose
   '#ec4899', // pink
+  '#d946ef', // fuchsia
+  '#a855f7', // purple
+  '#8b5cf6', // violet
+  '#6366f1', // indigo
+  '#3b82f6', // blue
+  '#0ea5e9', // sky
+  '#06b6d4', // cyan
+  '#14b8a6', // teal
+  '#10b981', // emerald
+  '#22c55e', // green
+  '#84cc16', // lime
+  '#eab308', // yellow
+  '#64748b', // slate
 ]
+
+const UNGROUPED_LABEL = 'Ungrouped'
 
 function defaultColorFor(id: string): string {
   let hash = 0
@@ -49,7 +61,7 @@ function ColorPicker({ onSelect }: { onSelect: (color: string) => void }) {
         position: 'absolute', left: 20, top: '50%', transform: 'translateY(-50%)',
         zIndex: 200, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
         borderRadius: 8, padding: 8, display: 'flex', flexWrap: 'wrap' as const,
-        gap: 4, width: 108, boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+        gap: 5, width: 162, boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
       }}
       onClick={e => e.stopPropagation()}
     >
@@ -84,24 +96,39 @@ function IconPencil() {
   )
 }
 
+function IconStar({ filled }: { filled?: boolean }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+    </svg>
+  )
+}
+
 interface WorkspaceRowProps {
   ws: RemoteWorkspace
   active: boolean
   dotColor: string
   dragging: boolean
   sessionCount: number
+  favorite: boolean
+  editRequested: boolean
+  colorPickerOpen: boolean
   onClick: () => void
   onDragStart: () => void
   onDragOver: (e: React.DragEvent) => void
   onDragEnd: () => void
+  onColorPickerToggle: () => void
+  onColorPickerClose: () => void
   onColorSelect: (color: string) => void
   onDelete: () => void
   onRename: (name: string) => void
+  onToggleFavorite: () => void
+  onContextMenu: (e: React.MouseEvent) => void
+  onEditConsume: () => void
 }
 
-function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, onClick, onDragStart, onDragOver, onDragEnd, onColorSelect, onDelete, onRename }: WorkspaceRowProps) {
+function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, favorite, editRequested, colorPickerOpen, onClick, onDragStart, onDragOver, onDragEnd, onColorPickerToggle, onColorPickerClose, onColorSelect, onDelete, onRename, onToggleFavorite, onContextMenu, onEditConsume }: WorkspaceRowProps) {
   const [hovered, setHovered] = useState(false)
-  const [colorPickerOpen, setColorPickerOpen] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(ws.name)
 
@@ -112,18 +139,21 @@ function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, onClick, o
     setEditing(false)
   }
 
-  // Close color picker when clicking outside
+  // Rename can be triggered from the context menu via `editRequested`. Consume
+  // the request so the parent can clear its flag.
   useEffect(() => {
-    if (!colorPickerOpen) return
-    const handler = () => setColorPickerOpen(false)
-    window.addEventListener('click', handler)
-    return () => window.removeEventListener('click', handler)
-  }, [colorPickerOpen])
+    if (editRequested) {
+      beginEdit()
+      onEditConsume()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editRequested])
 
   return (
     <div
       draggable={!editing}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDragEnd={onDragEnd}
@@ -151,10 +181,10 @@ function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, onClick, o
       <div style={{ position: 'relative', flexShrink: 0 }}>
         <WorkspaceDot color={dotColor} />
         <button
-          onClick={e => { e.stopPropagation(); setColorPickerOpen(v => !v) }}
+          onClick={e => { e.stopPropagation(); onColorPickerToggle() }}
           style={{ position: 'absolute', inset: -5, background: 'transparent', border: 'none', cursor: 'pointer', borderRadius: 9999 }}
         />
-        {colorPickerOpen && <ColorPicker onSelect={c => { onColorSelect(c); setColorPickerOpen(false) }} />}
+        {colorPickerOpen && <ColorPicker onSelect={c => { onColorSelect(c); onColorPickerClose() }} />}
       </div>
 
       {editing ? (
@@ -203,8 +233,29 @@ function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, onClick, o
         </span>
       )}
 
+      {/* Persistent favorite indicator when not hovered (hover surfaces the toggle button instead) */}
+      {!editing && favorite && !hovered && (
+        <span style={{ display: 'flex', alignItems: 'center', color: 'var(--accent)', flexShrink: 0 }}>
+          <IconStar filled />
+        </span>
+      )}
+
       {hovered && !editing && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+          <button
+            onClick={e => { e.stopPropagation(); onToggleFavorite() }}
+            title={favorite ? 'Remove from favorites' : 'Add to favorites'}
+            style={{
+              width: 20, height: 20,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: 'transparent', border: 'none', cursor: 'pointer',
+              color: favorite ? 'var(--accent)' : 'var(--text-dim)', borderRadius: 4, padding: 0,
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--accent)' }}
+            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = favorite ? 'var(--accent)' : 'var(--text-dim)' }}
+          >
+            <IconStar filled={favorite} />
+          </button>
           <button
             onClick={e => { e.stopPropagation(); beginEdit() }}
             title="Rename workspace"
@@ -298,7 +349,7 @@ function IconBtn({
 
 // ── Workspace menu (the header chevron dropdown) ──────────────────────────────
 
-function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
+function MenuItem({ children, onClick, danger }: { children: React.ReactNode; onClick: () => void; danger?: boolean }) {
   const [hovered, setHovered] = useState(false)
   return (
     <button
@@ -310,7 +361,9 @@ function MenuItem({ children, onClick }: { children: React.ReactNode; onClick: (
         padding: '6px 10px', fontSize: 13, fontFamily: 'inherit', borderRadius: 5,
         border: 'none', cursor: 'pointer',
         background: hovered ? 'var(--bg-elevated-2)' : 'transparent',
-        color: hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
+        color: danger
+          ? 'var(--error)'
+          : hovered ? 'var(--text-primary)' : 'var(--text-secondary)',
       }}
     >
       {children}
@@ -348,6 +401,198 @@ function WorkspaceMenu({ onSortName, onSortRecent, onResetOrder, onRefresh }: Wo
   )
 }
 
+// ── Per-row right-click context menu ──────────────────────────────────────────
+
+interface WorkspaceContextMenuProps {
+  x: number
+  y: number
+  favorite: boolean
+  groups: string[]
+  currentGroup: string | undefined
+  onReveal: () => void
+  onRename: () => void
+  onToggleFavorite: () => void
+  onMoveToGroup: (name: string | null) => void
+  onDelete: () => void
+}
+
+function WorkspaceContextMenu({ x, y, favorite, groups, currentGroup, onReveal, onRename, onToggleFavorite, onMoveToGroup, onDelete }: WorkspaceContextMenuProps) {
+  const [view, setView] = useState<'main' | 'groups'>('main')
+  const [adding, setAdding] = useState(false)
+  const [newGroup, setNewGroup] = useState('')
+
+  // Clamp to the viewport so the menu never opens off-screen.
+  const left = Math.min(x, window.innerWidth - 210)
+  const top = Math.min(y, window.innerHeight - 260)
+
+  return (
+    <div
+      onClick={e => e.stopPropagation()}
+      onContextMenu={e => { e.preventDefault(); e.stopPropagation() }}
+      style={{
+        position: 'fixed', left, top, zIndex: 300,
+        minWidth: 196, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+        borderRadius: 8, padding: 4, boxShadow: '0 6px 16px rgba(0,0,0,0.45)',
+        display: 'flex', flexDirection: 'column', gap: 1,
+      }}
+    >
+      {view === 'main' ? (
+        <>
+          <MenuItem onClick={onReveal}>Open in file explorer</MenuItem>
+          <MenuItem onClick={onRename}>Rename</MenuItem>
+          <MenuItem onClick={onToggleFavorite}>{favorite ? 'Remove from favorites' : 'Add to favorites'}</MenuItem>
+          <MenuItem onClick={() => { setView('groups'); setAdding(false); setNewGroup('') }}>Move to group…</MenuItem>
+          {currentGroup && <MenuItem onClick={() => onMoveToGroup(null)}>Remove from group</MenuItem>}
+          <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 2px' }} />
+          <MenuItem onClick={onDelete} danger>Delete</MenuItem>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: 'var(--text-dim)', padding: '4px 10px 2px', fontWeight: 600 }}>
+            Move to group
+          </div>
+          {groups.length === 0 && !adding && (
+            <div style={{ padding: '4px 10px', fontSize: 12, color: 'var(--text-dim)' }}>No groups yet</div>
+          )}
+          {groups.map(g => (
+            <MenuItem key={g} onClick={() => onMoveToGroup(g)}>
+              <span style={{ flex: 1 }}>{g}</span>
+              {g === currentGroup && <span style={{ color: 'var(--accent)', fontSize: 12 }}>✓</span>}
+            </MenuItem>
+          ))}
+          {adding ? (
+            <input
+              autoFocus
+              value={newGroup}
+              placeholder="New group name…"
+              onChange={e => setNewGroup(e.target.value)}
+              onKeyDown={e => {
+                e.stopPropagation()
+                if (e.key === 'Enter') {
+                  const trimmed = newGroup.trim()
+                  if (trimmed) onMoveToGroup(trimmed)
+                } else if (e.key === 'Escape') {
+                  setAdding(false)
+                  setNewGroup('')
+                }
+              }}
+              style={{
+                margin: '2px 4px', fontSize: 13, fontFamily: 'inherit',
+                color: 'var(--text-primary)', background: 'var(--bg-base)',
+                border: '1px solid var(--accent)', borderRadius: 5, padding: '5px 8px', outline: 'none',
+              }}
+            />
+          ) : (
+            <MenuItem onClick={() => setAdding(true)}>+ New group…</MenuItem>
+          )}
+          <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 2px' }} />
+          <MenuItem onClick={() => { setView('main'); setAdding(false) }}>← Back</MenuItem>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Collapsible section header ────────────────────────────────────────────────
+
+function SectionHeader({ label, count, collapsed, onToggle, dropActive, onDragOver, onDrop }: {
+  label: string
+  count: number
+  collapsed: boolean
+  onToggle: () => void
+  dropActive?: boolean
+  onDragOver?: (e: React.DragEvent) => void
+  onDrop?: (e: React.DragEvent) => void
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 6, width: '100%', textAlign: 'left',
+        padding: '6px 16px 4px', cursor: 'pointer',
+        border: '1px solid transparent',
+        borderColor: dropActive ? 'var(--accent)' : 'transparent',
+        background: dropActive ? 'rgba(232,149,107,0.14)' : 'transparent',
+        fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: '0.05em',
+        color: dropActive ? 'var(--accent)' : 'var(--text-dim)', fontWeight: 600, fontFamily: 'inherit',
+        transition: 'background 120ms ease-out, border-color 120ms ease-out',
+      }}
+    >
+      <span style={{
+        display: 'inline-flex', transition: 'transform 120ms ease-out',
+        transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
+      }}>
+        <IconChevronDown />
+      </span>
+      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+      <span style={{ color: 'var(--text-dim)' }}>{count}</span>
+    </button>
+  )
+}
+
+// ── Delete confirmation dialog ────────────────────────────────────────────────
+
+function ConfirmDeleteDialog({ name, onCancel, onConfirm }: { name: string; onCancel: () => void; onConfirm: () => void }) {
+  const [hoverDelete, setHoverDelete] = useState(false)
+  const [hoverCancel, setHoverCancel] = useState(false)
+  return (
+    <div
+      onClick={onCancel}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 400,
+        background: 'rgba(0,0,0,0.55)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: 340, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+          borderRadius: 10, padding: 20, boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+          display: 'flex', flexDirection: 'column', gap: 14,
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+          Delete workspace
+        </div>
+        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+          Delete workspace <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>&ldquo;{name}&rdquo;</span>? This removes it from SwarmMind.
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button
+            onClick={onCancel}
+            onMouseEnter={() => setHoverCancel(true)}
+            onMouseLeave={() => setHoverCancel(false)}
+            style={{
+              padding: '7px 14px', fontSize: 13, fontFamily: 'inherit', borderRadius: 6, cursor: 'pointer',
+              border: '1px solid var(--border)',
+              background: hoverCancel ? 'var(--bg-elevated-2)' : 'transparent',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            onMouseEnter={() => setHoverDelete(true)}
+            onMouseLeave={() => setHoverDelete(false)}
+            style={{
+              padding: '7px 14px', fontSize: 13, fontFamily: 'inherit', fontWeight: 600, borderRadius: 6, cursor: 'pointer',
+              border: '1px solid var(--error)',
+              background: hoverDelete ? 'var(--error)' : 'transparent',
+              color: hoverDelete ? '#fff' : 'var(--error)',
+            }}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarProps) {
@@ -358,7 +603,16 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
   const [appVersion, setAppVersion] = useState<string>('')
   const [workspaceOrder, setWorkspaceOrder] = useState<string[]>([])
   const [workspaceColors, setWorkspaceColors] = useState<Record<string, string>>({})
+  const [workspaceGroups, setWorkspaceGroups] = useState<Record<string, string>>({})
+  const [favorites, setFavorites] = useState<string[]>([])
+  const [searchQuery, setSearchQuery] = useState('')
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
+  const [contextMenu, setContextMenu] = useState<{ wsId: string; x: number; y: number } | null>(null)
+  const [pendingDelete, setPendingDelete] = useState<RemoteWorkspace | null>(null)
+  const [editRequestId, setEditRequestId] = useState<string | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [dragOverSection, setDragOverSection] = useState<string | null>(null)
+  const [colorPickerWsId, setColorPickerWsId] = useState<string | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const activeId = useWorkspaceStore(s => s.workspace?.id)
   const runningCount = useWorkspaceStore(s => {
@@ -391,9 +645,13 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     Promise.all([
       window.swarmmind.getAppSetting('workspaceOrder').catch(() => null),
       window.swarmmind.getAppSetting('workspaceColors').catch(() => null),
-    ]).then(([orderJson, colorsJson]) => {
+      window.swarmmind.getAppSetting('workspaceGroups').catch(() => null),
+      window.swarmmind.getAppSetting('workspaceFavorites').catch(() => null),
+    ]).then(([orderJson, colorsJson, groupsJson, favoritesJson]) => {
       if (orderJson) try { setWorkspaceOrder(JSON.parse(orderJson)) } catch {}
       if (colorsJson) try { setWorkspaceColors(JSON.parse(colorsJson)) } catch {}
+      if (groupsJson) try { setWorkspaceGroups(JSON.parse(groupsJson)) } catch {}
+      if (favoritesJson) try { setFavorites(JSON.parse(favoritesJson)) } catch {}
     })
     fetchWorkspaces()
     fetchAgentCounts()
@@ -416,6 +674,25 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     return () => window.removeEventListener('click', handler)
   }, [menuOpen])
 
+  // Close the per-row context menu on any outside click. Clicks inside the menu
+  // stop propagation, so navigating its submenus doesn't dismiss it.
+  useEffect(() => {
+    if (!contextMenu) return
+    const handler = () => setContextMenu(null)
+    window.addEventListener('click', handler)
+    return () => window.removeEventListener('click', handler)
+  }, [contextMenu])
+
+  // At most one color picker is open across the whole sidebar. The dot button
+  // and the picker popover both stop propagation, so an outside click clears the
+  // single shared id.
+  useEffect(() => {
+    if (!colorPickerWsId) return
+    const handler = () => setColorPickerWsId(null)
+    window.addEventListener('click', handler)
+    return () => window.removeEventListener('click', handler)
+  }, [colorPickerWsId])
+
   const sortedWorkspaces = useMemo(() => {
     // Stable base order = creation order. The list query returns rows by
     // updated_at DESC, which would shove the active workspace to the top every
@@ -433,6 +710,52 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     })
   }, [workspaces, workspaceOrder])
 
+  // Apply the case-insensitive search filter on top of the sorted order.
+  const filteredWorkspaces = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return sortedWorkspaces
+    return sortedWorkspaces.filter(w => w.name.toLowerCase().includes(q))
+  }, [sortedWorkspaces, searchQuery])
+
+  // Distinct, sorted list of group names actually in use (for the context menu).
+  const existingGroups = useMemo(() => {
+    const set = new Set<string>()
+    for (const g of Object.values(workspaceGroups)) {
+      const trimmed = g.trim()
+      if (trimmed) set.add(trimmed)
+    }
+    return [...set].sort((a, b) => a.localeCompare(b))
+  }, [workspaceGroups])
+
+  // Build the rendered sections: Favorites first, then groups (Ungrouped last).
+  // Each preserves the filtered+sorted order within it.
+  const sections = useMemo(() => {
+    const out: { key: string; label: string; items: RemoteWorkspace[] }[] = []
+    const favSet = new Set(favorites)
+    const favItems = filteredWorkspaces.filter(w => favSet.has(w.id))
+    const rest = filteredWorkspaces.filter(w => !favSet.has(w.id))
+    if (favItems.length > 0) out.push({ key: '__favorites__', label: 'Favorites', items: favItems })
+    const buckets = new Map<string, RemoteWorkspace[]>()
+    for (const w of rest) {
+      const g = (workspaceGroups[w.id] ?? '').trim()
+      const label = g || UNGROUPED_LABEL
+      const bucket = buckets.get(label)
+      if (bucket) bucket.push(w)
+      else buckets.set(label, [w])
+    }
+    const labels = [...buckets.keys()].sort((a, b) => {
+      if (a === UNGROUPED_LABEL) return 1
+      if (b === UNGROUPED_LABEL) return -1
+      return a.localeCompare(b)
+    })
+    for (const label of labels) out.push({ key: 'g:' + label, label, items: buckets.get(label)! })
+    return out
+  }, [filteredWorkspaces, favorites, workspaceGroups])
+
+  // Only show section headers once the user actually organizes things; otherwise
+  // keep the original flat list.
+  const showSections = favorites.length > 0 || existingGroups.length > 0
+
   const handleSelectWorkspace = async (id: string) => {
     try {
       const info = await window.swarmmind.workspaceOpenById(id)
@@ -448,6 +771,9 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
 
   const handleDragOver = (e: React.DragEvent, targetId: string) => {
     e.preventDefault()
+    // Dragging over a row is a reorder gesture, not a group drop — drop any
+    // pending section highlight so the two don't visually fight.
+    if (dragOverSection) setDragOverSection(null)
     if (!draggedId || draggedId === targetId) return
     const ids = sortedWorkspaces.map(w => w.id)
     const fromIdx = ids.indexOf(draggedId)
@@ -462,6 +788,33 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
   const handleDragEnd = () => {
     const newOrder = sortedWorkspaces.map(w => w.id)
     window.swarmmind.setAppSetting('workspaceOrder', JSON.stringify(newOrder)).catch(() => {})
+    setDraggedId(null)
+    setDragOverSection(null)
+  }
+
+  // A section header is a drop target while a workspace is being dragged. Only
+  // named groups and Ungrouped accept a drop; Favorites is left alone so a drop
+  // never silently favorites a workspace (that stays an explicit action).
+  const sectionIsDroppable = (key: string) => key !== '__favorites__'
+
+  const handleSectionDragOver = (e: React.DragEvent, key: string) => {
+    if (!draggedId || !sectionIsDroppable(key)) return
+    e.preventDefault()
+    if (dragOverSection !== key) setDragOverSection(key)
+  }
+
+  const handleSectionDrop = (e: React.DragEvent, key: string, label: string) => {
+    e.preventDefault()
+    setDragOverSection(null)
+    if (!draggedId || !sectionIsDroppable(key)) return
+    if (label === UNGROUPED_LABEL) {
+      // Dropping onto Ungrouped removes the workspace from its current group.
+      const next = { ...workspaceGroups }
+      delete next[draggedId]
+      persistGroups(next)
+    } else {
+      persistGroups({ ...workspaceGroups, [draggedId]: label })
+    }
     setDraggedId(null)
   }
 
@@ -496,6 +849,29 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     window.swarmmind.setAppSetting('workspaceColors', JSON.stringify(newColors)).catch(() => {})
   }
 
+  const persistGroups = (groups: Record<string, string>) => {
+    setWorkspaceGroups(groups)
+    window.swarmmind.setAppSetting('workspaceGroups', JSON.stringify(groups)).catch(() => {})
+  }
+
+  const handleMoveToGroup = (wsId: string, name: string | null) => {
+    const next = { ...workspaceGroups }
+    if (name === null) delete next[wsId]
+    else next[wsId] = name
+    persistGroups(next)
+    setContextMenu(null)
+  }
+
+  const persistFavorites = (ids: string[]) => {
+    setFavorites(ids)
+    window.swarmmind.setAppSetting('workspaceFavorites', JSON.stringify(ids)).catch(() => {})
+  }
+
+  const handleToggleFavorite = (wsId: string) => {
+    persistFavorites(favorites.includes(wsId) ? favorites.filter(id => id !== wsId) : [...favorites, wsId])
+  }
+
+  // Actual deletion — only invoked after the confirmation dialog is accepted.
   const handleDelete = async (wsId: string) => {
     try {
       await window.swarmmind.workspaceDelete(wsId)
@@ -505,6 +881,11 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
         resetLayout()
       }
     } catch { /* ignore */ }
+  }
+
+  const handleReveal = async (wsId: string) => {
+    setContextMenu(null)
+    try { await window.swarmmind.workspaceReveal(wsId) } catch { /* ignore */ }
   }
 
   const handleRename = async (wsId: string, name: string) => {
@@ -518,6 +899,40 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
       }
     } catch { /* ignore */ }
   }
+
+  const toggleSection = (key: string) => {
+    setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const renderRow = (ws: RemoteWorkspace) => (
+    <WorkspaceRow
+      key={ws.id}
+      ws={ws}
+      active={ws.id === activeId}
+      dotColor={workspaceColors[ws.id] ?? defaultColorFor(ws.id)}
+      dragging={draggedId === ws.id}
+      // Active workspace uses the live store count (instant); others use
+      // the polled per-workspace count from the main process.
+      sessionCount={ws.id === activeId ? runningCount : (agentCounts[ws.id] ?? 0)}
+      favorite={favorites.includes(ws.id)}
+      editRequested={editRequestId === ws.id}
+      colorPickerOpen={colorPickerWsId === ws.id}
+      onClick={() => handleSelectWorkspace(ws.id)}
+      onDragStart={() => handleDragStart(ws.id)}
+      onDragOver={e => handleDragOver(e, ws.id)}
+      onDragEnd={handleDragEnd}
+      onColorPickerToggle={() => setColorPickerWsId(prev => (prev === ws.id ? null : ws.id))}
+      onColorPickerClose={() => setColorPickerWsId(null)}
+      onColorSelect={color => handleColorChange(ws.id, color)}
+      onDelete={() => setPendingDelete(ws)}
+      onRename={name => handleRename(ws.id, name)}
+      onToggleFavorite={() => handleToggleFavorite(ws.id)}
+      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ wsId: ws.id, x: e.clientX, y: e.clientY }) }}
+      onEditConsume={() => setEditRequestId(null)}
+    />
+  )
+
+  const contextWs = contextMenu ? workspaces.find(w => w.id === contextMenu.wsId) : undefined
 
   return (
     <aside style={{
@@ -547,30 +962,46 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
         </div>
       </div>
 
+      {/* Search */}
+      <div style={{ padding: '0 12px 10px', flexShrink: 0 }}>
+        <input
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          placeholder="Search workspaces…"
+          style={{
+            width: '100%', boxSizing: 'border-box', fontSize: 13, fontFamily: 'inherit',
+            color: 'var(--text-primary)', background: 'var(--bg-elevated)',
+            border: '1px solid var(--border)', borderRadius: 6, padding: '6px 10px', outline: 'none',
+          }}
+        />
+      </div>
+
       {/* Workspace list */}
       <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 12 }}>
-        {sortedWorkspaces.map(ws => (
-          <WorkspaceRow
-            key={ws.id}
-            ws={ws}
-            active={ws.id === activeId}
-            dotColor={workspaceColors[ws.id] ?? defaultColorFor(ws.id)}
-            dragging={draggedId === ws.id}
-            // Active workspace uses the live store count (instant); others use
-            // the polled per-workspace count from the main process.
-            sessionCount={ws.id === activeId ? runningCount : (agentCounts[ws.id] ?? 0)}
-            onClick={() => handleSelectWorkspace(ws.id)}
-            onDragStart={() => handleDragStart(ws.id)}
-            onDragOver={e => handleDragOver(e, ws.id)}
-            onDragEnd={handleDragEnd}
-            onColorSelect={color => handleColorChange(ws.id, color)}
-            onDelete={() => handleDelete(ws.id)}
-            onRename={name => handleRename(ws.id, name)}
-          />
-        ))}
-        {sortedWorkspaces.length === 0 && (
+        {showSections ? (
+          sections.map(section => {
+            const collapsed = collapsedSections[section.key] ?? false
+            return (
+              <div key={section.key}>
+                <SectionHeader
+                  label={section.label}
+                  count={section.items.length}
+                  collapsed={collapsed}
+                  onToggle={() => toggleSection(section.key)}
+                  dropActive={dragOverSection === section.key}
+                  onDragOver={e => handleSectionDragOver(e, section.key)}
+                  onDrop={e => handleSectionDrop(e, section.key, section.label)}
+                />
+                {!collapsed && section.items.map(renderRow)}
+              </div>
+            )
+          })
+        ) : (
+          filteredWorkspaces.map(renderRow)
+        )}
+        {filteredWorkspaces.length === 0 && (
           <div style={{ padding: '8px 16px', fontSize: 12, color: 'var(--text-dim)' }}>
-            No workspaces yet
+            {searchQuery.trim() ? 'No matching workspaces' : 'No workspaces yet'}
           </div>
         )}
       </div>
@@ -582,6 +1013,31 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
       }}>
         SwarmMind{appVersion ? ` v${appVersion}` : ''}
       </div>
+
+      {/* Per-row right-click context menu */}
+      {contextMenu && contextWs && (
+        <WorkspaceContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          favorite={favorites.includes(contextWs.id)}
+          groups={existingGroups}
+          currentGroup={(workspaceGroups[contextWs.id] ?? '').trim() || undefined}
+          onReveal={() => handleReveal(contextWs.id)}
+          onRename={() => { setEditRequestId(contextWs.id); setContextMenu(null) }}
+          onToggleFavorite={() => { handleToggleFavorite(contextWs.id); setContextMenu(null) }}
+          onMoveToGroup={name => handleMoveToGroup(contextWs.id, name)}
+          onDelete={() => { setPendingDelete(contextWs); setContextMenu(null) }}
+        />
+      )}
+
+      {/* Delete confirmation */}
+      {pendingDelete && (
+        <ConfirmDeleteDialog
+          name={pendingDelete.name}
+          onCancel={() => setPendingDelete(null)}
+          onConfirm={() => { handleDelete(pendingDelete.id); setPendingDelete(null) }}
+        />
+      )}
     </aside>
   )
 }
