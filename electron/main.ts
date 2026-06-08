@@ -137,7 +137,7 @@ app.whenReady().then(async () => {
   // Tie the running process to its installed shortcut so Windows resolves the
   // taskbar / Alt-Tab icon and toast notifications from the .exe icon instead
   // of falling back to the default Electron icon. Must match `appId` in
-  // electron-builder.config.ts. No-op on other platforms.
+  // electron-builder.yml. No-op on other platforms.
   if (process.platform === 'win32') app.setAppUserModelId('dev.swarmmind.app')
 
   initApp()

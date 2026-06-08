@@ -125,7 +125,7 @@ TopBar (38px, custom title bar with WinControls)
 
 ### Native modules
 
-`node-pty` and `better-sqlite3` are native Node.js addons. They must be excluded from Vite bundling (see `electron.vite.config.ts` `externals`) and unpacked from asar in production (see `electron-builder.config.ts` `asarUnpack`). After upgrading Electron, run `npm run rebuild` to recompile them against the new Electron ABI.
+`node-pty` and `better-sqlite3` are native Node.js addons. They must be excluded from Vite bundling (see `electron.vite.config.ts` `externals`) and unpacked from asar in production (see `electron-builder.yml` `asarUnpack`). After upgrading Electron, run `npm run rebuild` to recompile them against the new Electron ABI.
 
 ## Design tokens
 
