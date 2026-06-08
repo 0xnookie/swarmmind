@@ -110,12 +110,17 @@ interface AgentPaneProps {
   onSplitV: () => void
   onClose: () => void
   isExpanded?: boolean
+  // In fullscreen, every pane stays mounted and only the active one is shown.
+  // `isVisible` is false for the hidden background tabs; it drives the
+  // refit-and-focus when a pane becomes the visible tab. Defaults to true for
+  // the grid view (all panes visible).
+  isVisible?: boolean
   onToggleExpand?: () => void
   onPaneDragStart?: (e: React.DragEvent) => void
   onPaneDragEnd?: () => void
 }
 
-export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSplitV, onClose, isExpanded, onToggleExpand, onPaneDragStart, onPaneDragEnd }: AgentPaneProps) {
+export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSplitV, onClose, isExpanded, isVisible = true, onToggleExpand, onPaneDragStart, onPaneDragEnd }: AgentPaneProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [skillDragOver, setSkillDragOver] = useState(false)
@@ -132,7 +137,6 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const activePaneId = useWorkspaceStore(s => s.activePaneId)
   const togglePaneSelected = useWorkspaceStore(s => s.togglePaneSelected)
   const isSelected = useWorkspaceStore(s => s.selectedPaneIds.includes(paneId))
-  const getLeafIds = useWorkspaceStore(s => s.getLeafIds)
   const setPaneAttention = useWorkspaceStore(s => s.setPaneAttention)
   const markPaneNotificationsRead = useWorkspaceStore(s => s.markPaneNotificationsRead)
   const attention = useWorkspaceStore(s => s.paneAttention[paneId])
@@ -222,9 +226,35 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     }
     return findLeaf(s.rootPane)?.worktreeName ?? null
   })
+  // Mixed-workspace binding: the workspace this pane's agent belongs to, if it
+  // isn't the host workspace.
+  const paneWorkspaceId = useWorkspaceStore(s => {
+    function findLeaf(node: import('../store/workspace').PaneNode): import('../store/workspace').PaneLeaf | null {
+      if (node.type === 'leaf') return node.id === paneId ? node : null
+      for (const c of node.children) { const f = findLeaf(c); if (f) return f }
+      return null
+    }
+    return findLeaf(s.rootPane)?.workspaceId
+  })
+  const setPaneWorkspace = useWorkspaceStore(s => s.setPaneWorkspace)
+
+  // Known workspaces, for the "Run from workspace" context-menu submenu and for
+  // resolving a foreign pane's root/name. Refreshed when the menu opens.
+  const [knownWorkspaces, setKnownWorkspaces] = useState<{ id: string; name: string; root_path: string }[]>([])
+  useEffect(() => {
+    window.swarmmind.workspaceList()
+      .then(l => { if (Array.isArray(l)) setKnownWorkspaces(l as { id: string; name: string; root_path: string }[]) })
+      .catch(() => {})
+  }, [contextMenu, paneWorkspaceId])
 
   const agentInfo = AGENTS.find(a => a.id === agentId)
-  const effectiveCwd = paneCwd ?? workspace?.rootPath ?? null
+  // Resolve the pane's owning workspace. A foreign pane (workspaceId set) uses
+  // that workspace's root; otherwise the host workspace. ownerWorkspace is null
+  // if the bound workspace no longer exists (e.g. it was deleted).
+  const isForeign = !!paneWorkspaceId && paneWorkspaceId !== workspace?.id
+  const ownerWorkspace = isForeign ? knownWorkspaces.find(w => w.id === paneWorkspaceId) ?? null : null
+  const ownerRootPath = isForeign ? (ownerWorkspace?.root_path ?? null) : (workspace?.rootPath ?? null)
+  const effectiveCwd = paneCwd ?? ownerRootPath
   const cwdLabel = paneCwd ? paneCwd.split(/[\\/]/).pop() : null
   const isActive = activePaneId === paneId
 
@@ -236,8 +266,20 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const lastShellStartRef = useRef(0)
   const handleExitRef = useRef<(code: number) => void>(() => {})
 
-  const { spawn, spawnShell, kill, clear, fit, injectText, writeNotice, getSelection, getRecentOutput, findNext, findPrevious, clearSearch } =
+  const { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, getRecentOutput, findNext, findPrevious, clearSearch } =
     usePty(paneId, containerRef, { onExit: code => handleExitRef.current(code) })
+
+  // When this pane becomes the visible fullscreen tab, it was just un-hidden
+  // (display:none → flex). The ResizeObserver refits it on the size change, but
+  // we also force a fit (in case the observer doesn't fire) and pull keyboard
+  // focus into its terminal so cycling tabs lands the cursor without a click.
+  // Gated on isExpanded so the grid view (all panes isVisible) never steals
+  // focus on mount.
+  useEffect(() => {
+    if (!isExpanded || !isVisible) return
+    const id = requestAnimationFrame(() => { fit(); focus() })
+    return () => cancelAnimationFrame(id)
+  }, [isExpanded, isVisible, fit, focus])
 
   // Pipe: take this pane's selection (or recent output) and route it elsewhere.
   const pipeText = useCallback(() => {
@@ -255,10 +297,18 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const handleSendToOthers = useCallback(() => {
     const text = pipeText()
     if (!text) return
-    for (const id of getLeafIds()) {
-      if (id !== paneId) window.swarmmind.ptyInput(id, text)
+    // Only pipe to panes that belong to the same workspace as this one, so a
+    // mixed-workspace pane never leaks output into another workspace's agents
+    // (and vice-versa). Walk the live tree to read each leaf's binding.
+    const targets: string[] = []
+    const walk = (node: import('../store/workspace').PaneNode) => {
+      if (node.type === 'leaf') {
+        if (node.id !== paneId && (node.workspaceId ?? undefined) === (paneWorkspaceId ?? undefined)) targets.push(node.id)
+      } else node.children.forEach(walk)
     }
-  }, [pipeText, getLeafIds, paneId])
+    walk(useWorkspaceStore.getState().rootPane)
+    for (const id of targets) window.swarmmind.ptyInput(id, text)
+  }, [pipeText, paneId, paneWorkspaceId])
 
   // Start a bare interactive shell so the pane always has a live prompt in its
   // cwd when no agent is running.
@@ -273,12 +323,14 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   // as the spawn cwd. Falls back to the normal cwd if the workspace isn't a git
   // repo or worktree creation fails, so a spawn is never blocked.
   const resolveSpawnCwd = useCallback(async (): Promise<string> => {
-    if (!worktreeEnabled || !workspace?.rootPath) return effectiveCwd!
+    // Worktrees are rooted at the pane's owning workspace (the foreign root for a
+    // mixed-workspace pane), not necessarily the host.
+    if (!worktreeEnabled || !ownerRootPath) return effectiveCwd!
     if (worktreePath) return worktreePath
     // Prefer the user-chosen worktree name; otherwise fall back to the pane
     // title, then the agent id.
     const branchHint = worktreeName || paneTitle || agentId || undefined
-    const res = await window.swarmmind.gitCreateWorktree(workspace.rootPath, paneId, branchHint)
+    const res = await window.swarmmind.gitCreateWorktree(ownerRootPath, paneId, branchHint)
     if ('error' in res) {
       writeNotice(`worktree disabled: ${res.error}`)
       setPaneWorktree(paneId, false)
@@ -287,7 +339,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     setPaneWorktreeInfo(paneId, { path: res.path, branch: res.branch })
     writeNotice(`worktree ready on branch ${res.branch}`)
     return res.path
-  }, [worktreeEnabled, workspace, worktreePath, worktreeName, paneTitle, agentId, paneId, effectiveCwd, writeNotice, setPaneWorktree, setPaneWorktreeInfo])
+  }, [worktreeEnabled, ownerRootPath, worktreePath, worktreeName, paneTitle, agentId, paneId, effectiveCwd, writeNotice, setPaneWorktree, setPaneWorktreeInfo])
 
   const handleSpawn = useCallback(async (resume = false, explicitSessionId?: string) => {
     if (!agentId || !effectiveCwd) return
@@ -307,23 +359,23 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       setSessionId(paneId, sid)
       doResume = false
     }
-    await spawn(agentId, spawnCwd, shellStyle, undefined, doResume, sid)
-  }, [agentId, effectiveCwd, resolveSpawnCwd, spawn, shellStyle, paneId, setPtyStatus, setAgentRunning, setSessionId, sessionId])
+    await spawn(agentId, spawnCwd, shellStyle, undefined, doResume, sid, paneWorkspaceId)
+  }, [agentId, effectiveCwd, resolveSpawnCwd, spawn, shellStyle, paneId, setPtyStatus, setAgentRunning, setSessionId, sessionId, paneWorkspaceId])
 
   const handleKill = useCallback(async () => { await kill() }, [kill])
 
   // Remove this pane's worktree from disk (branch kept, so committed work
   // survives). Best done while no agent is running in it.
   const handleRemoveWorktree = useCallback(async () => {
-    if (!workspace?.rootPath || !worktreePath) return
-    const res = await window.swarmmind.gitRemoveWorktree(workspace.rootPath, worktreePath, worktreeBranch ?? undefined, false)
+    if (!ownerRootPath || !worktreePath) return
+    const res = await window.swarmmind.gitRemoveWorktree(ownerRootPath, worktreePath, worktreeBranch ?? undefined, false)
     if ('error' in res) {
       writeNotice(`worktree remove failed: ${res.error}`)
     } else {
       setPaneWorktreeInfo(paneId, null)
       writeNotice(`worktree removed (branch ${worktreeBranch ?? ''} kept)`)
     }
-  }, [workspace, worktreePath, worktreeBranch, paneId, writeNotice, setPaneWorktreeInfo])
+  }, [ownerRootPath, worktreePath, worktreeBranch, paneId, writeNotice, setPaneWorktreeInfo])
 
   // Open the worktree-name editor, seeding it with the current name (falling
   // back to the pane title, which is the default hint).
@@ -581,6 +633,17 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
           <span style={styles.waitingBadge} title="Agent is waiting for input">waiting</span>
         )}
 
+        {/* Mixed-workspace badge — this pane's agent belongs to another
+            workspace (or that workspace is no longer available). */}
+        {isForeign && (
+          <span
+            style={styles.workspaceBadge}
+            title={ownerWorkspace ? `Agent of workspace "${ownerWorkspace.name}" (${ownerWorkspace.root_path})` : 'Bound workspace unavailable'}
+          >
+            ⧉ {ownerWorkspace?.name ?? 'unavailable'}
+          </span>
+        )}
+
         {/* CWD badge */}
         {cwdLabel && (
           <span style={styles.cwdLabel} title={paneCwd ?? ''}>
@@ -757,6 +820,34 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
               {agentId === a.id && <CheckIcon />}
             </button>
           ))}
+          {/* Mixed workspace: run this pane's agent as a member of another
+              workspace. Only offered when more than one workspace exists, and
+              only changeable while no agent is running here. */}
+          {knownWorkspaces.length > 1 && (
+            <>
+              <div style={styles.ctxDivider} />
+              <div style={styles.ctxLabel}>
+                Run from workspace{ptyStatus === 'running' ? ' (stop agent to change)' : ''}
+              </div>
+              {[{ id: '', name: `${workspace?.name ?? 'Host'} (this workspace)`, root_path: '' },
+                ...knownWorkspaces.filter(w => w.id !== workspace?.id)]
+                .map(w => {
+                  const selected = w.id === '' ? !isForeign : w.id === paneWorkspaceId
+                  return (
+                    <button
+                      key={w.id || 'host'}
+                      className="ctx-menu-item"
+                      disabled={ptyStatus === 'running'}
+                      title={w.root_path || workspace?.rootPath || ''}
+                      onClick={() => { setPaneWorkspace(paneId, w.id || null); setContextMenu(null) }}
+                    >
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: selected ? 'var(--accent)' : undefined }}>{w.name}</span>
+                      {selected && <CheckIcon />}
+                    </button>
+                  )
+                })}
+            </>
+          )}
           <div style={styles.ctxDivider} />
           <button className="ctx-menu-item" data-variant="danger" onClick={() => { onClose(); setContextMenu(null) }}>
             Close Pane
@@ -900,7 +991,7 @@ const styles: Record<string, React.CSSProperties> = {
     textTransform: 'uppercase',
     color: 'var(--accent)',
     background: 'var(--accent-subtle)',
-    border: '1px solid rgba(212,132,90,0.3)',
+    border: '1px solid var(--accent-glow)',
     borderRadius: 9999,
     padding: '1px 7px',
     flexShrink: 0,
@@ -930,6 +1021,21 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
     letterSpacing: '0.01em',
+  },
+  workspaceBadge: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: 'var(--accent-fg)',
+    background: 'var(--accent)',
+    border: '1px solid var(--accent)',
+    borderRadius: 10,
+    padding: '1px 7px',
+    maxWidth: 150,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    letterSpacing: '0.01em',
+    flexShrink: 0,
   },
   actions: {
     display: 'flex',

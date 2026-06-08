@@ -16,10 +16,15 @@ function getLeaves(node: PaneNode): PaneLeaf[] {
 interface TerminalCardProps {
   leafId: string
   isExpanded: boolean
+  // False for the hidden background tabs in fullscreen; true everywhere else.
+  isVisible?: boolean
+  // True when the fullscreen tab strip sits directly above this pane, so the
+  // pane squares its top corners to dock onto the strip.
+  dockedTop?: boolean
   onToggleExpand: () => void
 }
 
-function TerminalCard({ leafId, isExpanded, onToggleExpand }: TerminalCardProps) {
+function TerminalCard({ leafId, isExpanded, isVisible = true, dockedTop = false, onToggleExpand }: TerminalCardProps) {
   const splitPane = useWorkspaceStore(s => s.splitPane)
   const closePane = useWorkspaceStore(s => s.closePane)
   const swapPanes = useWorkspaceStore(s => s.swapPanes)
@@ -101,16 +106,22 @@ function TerminalCard({ leafId, isExpanded, onToggleExpand }: TerminalCardProps)
   }, [leafId, swapPanes])
 
   const showDropTarget = isDragOver && !isDragging
+  const borderVal = showDropTarget || isSelected
+    ? '2px solid var(--accent)'
+    : '1px solid var(--border-subtle)'
 
   return (
     <div
       style={{
         flex: 1,
         background: 'var(--bg-terminal)',
-        border: showDropTarget || isSelected
-          ? '2px solid var(--accent)'
-          : '1px solid var(--border-subtle)',
-        borderRadius: 10,
+        // When docked under the fullscreen tab strip, square the top corners and
+        // drop the top border so the strip and pane read as one card with a
+        // single divider (the strip's bottom border) instead of rounded corners
+        // poking out below a flat-bottomed strip.
+        ...(dockedTop
+          ? { borderLeft: borderVal, borderRight: borderVal, borderBottom: borderVal, borderTop: 'none', borderRadius: '0 0 10px 10px' }
+          : { border: borderVal, borderRadius: 10 }),
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
@@ -120,7 +131,7 @@ function TerminalCard({ leafId, isExpanded, onToggleExpand }: TerminalCardProps)
         boxShadow: showDropTarget
           ? '0 0 0 1px var(--accent)'
           : isActive
-          ? '0 2px 10px rgba(0,0,0,0.45), 0 0 0 1px rgba(212,132,90,0.25)'
+          ? '0 2px 10px rgba(0,0,0,0.45), 0 0 0 1px var(--accent-glow)'
           : '0 2px 8px rgba(0,0,0,0.35)',
       }}
       onDragOver={handleDragOver}
@@ -137,6 +148,7 @@ function TerminalCard({ leafId, isExpanded, onToggleExpand }: TerminalCardProps)
         onSplitV={() => splitPane(leafId, 'vertical')}
         onClose={handleClose}
         isExpanded={isExpanded}
+        isVisible={isVisible}
         onToggleExpand={onToggleExpand}
         onPaneDragStart={handlePaneDragStart}
         onPaneDragEnd={handlePaneDragEnd}
@@ -156,6 +168,13 @@ interface PaneTabsProps {
 
 function PaneTabs({ leaves, activeId, onSelect, onExit }: PaneTabsProps) {
   const paneAttention = useWorkspaceStore(s => s.paneAttention)
+  const activeTabRef = useRef<HTMLButtonElement>(null)
+
+  // Keep the active tab in view when the strip overflows — important when
+  // cycling with Ctrl+Tab through more tabs than fit horizontally.
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeId])
 
   const stripStyle: React.CSSProperties = {
     display: 'flex',
@@ -165,7 +184,10 @@ function PaneTabs({ leaves, activeId, onSelect, onExit }: PaneTabsProps) {
     flex: '0 0 auto',
     padding: '0 4px',
     background: 'var(--bg-panel)',
-    borderBottom: '1px solid var(--border-subtle)',
+    // Top + side borders match the pane's side borders below (whose top border
+    // is removed when docked), so the strip and pane form one continuous
+    // rounded card; the bottom border is the tab/content divider.
+    border: '1px solid var(--border-subtle)',
     borderTopLeftRadius: 10,
     borderTopRightRadius: 10,
     overflowX: 'auto',
@@ -180,6 +202,7 @@ function PaneTabs({ leaves, activeId, onSelect, onExit }: PaneTabsProps) {
         return (
           <button
             key={leaf.id}
+            ref={isActive ? activeTabRef : undefined}
             type="button"
             onClick={() => onSelect(leaf.id)}
             title={label}
@@ -307,31 +330,46 @@ export function CenterArea() {
     overflow: 'hidden',
   }
 
-  // Expanded single-pane view
-  if (expandedPaneId) {
-    const leaf = leaves.find(l => l.id === expandedPaneId)
-    if (leaf) {
-      return (
-        <main style={mainStyle}>
-          {count > 1 && (
-            <PaneTabs
-              leaves={leaves}
-              activeId={leaf.id}
-              onSelect={setExpandedPaneId}
-              onExit={() => setExpandedPaneId(null)}
-            />
-          )}
-          <TerminalCard
-            key={leaf.id}
-            leafId={leaf.id}
-            isExpanded={true}
-            onToggleExpand={() => handleToggleExpand(leaf.id)}
+  // Expanded (fullscreen) view. Every pane stays mounted — only the active tab
+  // is shown (the rest are display:none) — so switching tabs never disposes and
+  // rebuilds an xterm. That keeps switching instant, preserves each terminal's
+  // scroll position, and keeps every pane's PTY output subscription alive so
+  // output produced while a pane is a background tab isn't lost. The hidden
+  // panes refit automatically when shown (their size goes 0 → real).
+  if (expandedPaneId && leaves.some(l => l.id === expandedPaneId)) {
+    return (
+      <main style={mainStyle}>
+        {count > 1 && (
+          <PaneTabs
+            leaves={leaves}
+            activeId={expandedPaneId}
+            onSelect={setExpandedPaneId}
+            onExit={() => setExpandedPaneId(null)}
           />
-          <OrchestratorBar />
-          <BroadcastBar />
-        </main>
-      )
-    }
+        )}
+        <div style={{ position: 'relative', flex: 1, minHeight: 0, minWidth: 0, display: 'flex' }}>
+          {leaves.map(leaf => {
+            const visible = leaf.id === expandedPaneId
+            return (
+              <div
+                key={leaf.id}
+                style={{ position: 'absolute', inset: 0, display: visible ? 'flex' : 'none' }}
+              >
+                <TerminalCard
+                  leafId={leaf.id}
+                  isExpanded={true}
+                  isVisible={visible}
+                  dockedTop={count > 1}
+                  onToggleExpand={() => handleToggleExpand(leaf.id)}
+                />
+              </div>
+            )
+          })}
+        </div>
+        <OrchestratorBar />
+        <BroadcastBar />
+      </main>
+    )
   }
 
   // Grid view — columns scale with pane count

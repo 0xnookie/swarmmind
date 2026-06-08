@@ -196,7 +196,7 @@ const styles: Record<string, React.CSSProperties> = {
   header: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 },
   badge: {
     fontSize: 9.5, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--accent)',
-    background: 'var(--accent-subtle)', border: '1px solid rgba(212,132,90,0.3)',
+    background: 'var(--accent-subtle)', border: '1px solid var(--accent-glow)',
     borderRadius: 5, padding: '2px 7px',
   },
   phasePill: {

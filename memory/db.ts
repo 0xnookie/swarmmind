@@ -226,13 +226,24 @@ function stripWorkspaceFk(
 // keep running in the background still has a valid DB after the user switches
 // away. `closeAll()` (on quit) and `closeWorkspaceDb()` (on delete) free them.
 export function initWorkspaceDb(dbPath: string, workspaceId: string): Database.Database {
+  const db = ensureWorkspaceConnection(dbPath, workspaceId)
+  workspaceDb = db
+  return db
+}
+
+// Open (or reuse) a workspace's connection in the pool WITHOUT making it the
+// foreground one. Used to bring a foreign workspace's DB online so an agent
+// bound to it (a "mixed workspace" pane) routes its MCP writes to the correct
+// DB — getWorkspaceDb() falls back to the foreground connection when a
+// workspace isn't in the pool, which would otherwise leak those writes into the
+// host workspace.
+export function ensureWorkspaceConnection(dbPath: string, workspaceId: string): Database.Database {
   let db = workspaceConnections.get(workspaceId)
   if (!db) {
     db = new Database(dbPath)
     applyWorkspaceSchema(db)
     workspaceConnections.set(workspaceId, db)
   }
-  workspaceDb = db
   return db
 }
 

@@ -175,7 +175,9 @@ async function deliverMessages(): Promise<void> {
   if (!pending.length) return
 
   const st = useWorkspaceStore.getState()
-  const leaves = collectLeaves(st.rootPane)
+  // Mixed-workspace panes belong to another workspace's swarm; this workspace's
+  // directed messages must not be delivered into them.
+  const leaves = collectLeaves(st.rootPane).filter(l => !l.workspaceId)
   const usedPanes = new Set<string>()
 
   for (const msg of pending) {
@@ -302,7 +304,9 @@ export function useConductor(): void {
 
         // Re-read state — taskList awaited above may have raced a UI change.
         const cur = useWorkspaceStore.getState()
-        const leaves = collectLeaves(cur.rootPane)
+        // Exclude mixed-workspace panes — the conductor dispatches this
+        // workspace's tasks and must not drive an agent that belongs to another.
+        const leaves = collectLeaves(cur.rootPane).filter(l => !l.workspaceId)
         const runningPaneIds = new Set(
           leaves.filter(l => l.ptyStatus === 'running').map(l => l.id)
         )

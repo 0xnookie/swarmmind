@@ -90,6 +90,10 @@ export function listWorkspaces(): Workspace[] {
   return getAppDb().prepare('SELECT * FROM workspaces ORDER BY updated_at DESC').all() as Workspace[]
 }
 
+export function getWorkspaceById(id: string): Workspace | null {
+  return (getAppDb().prepare('SELECT * FROM workspaces WHERE id = ?').get(id) as Workspace | undefined) ?? null
+}
+
 export function deleteWorkspace(id: string): boolean {
   return getAppDb().prepare('DELETE FROM workspaces WHERE id = ?').run(id).changes > 0
 }

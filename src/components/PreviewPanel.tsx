@@ -403,7 +403,7 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 12,
     background: 'var(--accent-subtle)',
     color: 'var(--accent)',
-    border: '1px solid rgba(212,132,90,0.25)',
+    border: '1px solid var(--accent-glow)',
     borderRadius: 'var(--radius)',
     fontSize: 12,
     fontWeight: 600,

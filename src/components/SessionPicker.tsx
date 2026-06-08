@@ -65,5 +65,5 @@ const styles: Record<string, React.CSSProperties> = {
   row: { display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', cursor: 'pointer', textAlign: 'left' },
   preview: { fontSize: 13, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   meta: { fontSize: 11, color: 'var(--text-dim)', marginTop: 2, fontFamily: "'JetBrains Mono', ui-monospace, monospace" },
-  resume: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: 'var(--accent)', background: 'var(--accent-subtle)', border: '1px solid rgba(212,132,90,0.25)', borderRadius: 'var(--radius)', padding: '4px 12px' },
+  resume: { flexShrink: 0, fontSize: 11, fontWeight: 600, color: 'var(--accent)', background: 'var(--accent-subtle)', border: '1px solid var(--accent-glow)', borderRadius: 'var(--radius)', padding: '4px 12px' },
 }

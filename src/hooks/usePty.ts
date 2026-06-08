@@ -229,13 +229,13 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
   const findPrevious = useCallback((q: string) => { try { searchAddonRef.current?.findPrevious(q) } catch { /* ignore */ } }, [])
   const clearSearch = useCallback(() => { try { searchAddonRef.current?.clearDecorations() } catch { /* ignore */ } }, [])
 
-  const spawn = useCallback(async (agentId: AgentId, cwd: string, shellStyle: ShellStyle = 'powershell', taskContext?: string, resume = false, sessionId?: string) => {
+  const spawn = useCallback(async (agentId: AgentId, cwd: string, shellStyle: ShellStyle = 'powershell', taskContext?: string, resume = false, sessionId?: string, workspaceId?: string) => {
     rawOutputCache.delete(paneId)
     termRef.current?.clear()
     termRef.current?.writeln(`\x1b[2m[${resume ? 'resuming' : 'spawning'} ${agentId} in ${cwd}]\x1b[0m\r\n`)
     const cols = termRef.current?.cols ?? 120
     const rows = termRef.current?.rows ?? 30
-    const result = await window.swarmmind.ptyCreate(paneId, agentId, cwd, shellStyle, taskContext, cols, rows, resume, sessionId)
+    const result = await window.swarmmind.ptyCreate(paneId, agentId, cwd, shellStyle, taskContext, cols, rows, resume, sessionId, workspaceId)
     if (result?.error) {
       termRef.current?.writeln(`\x1b[31m[error: ${result.error}]\x1b[0m`)
     }
@@ -252,6 +252,12 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
 
   const fit = useCallback(() => {
     try { fitAddonRef.current?.fit() } catch { /* ignore if container not yet sized */ }
+  }, [])
+
+  // Move keyboard focus into this pane's terminal. Used when a fullscreen tab
+  // becomes visible so typing lands in the newly-shown pane without a click.
+  const focus = useCallback(() => {
+    try { termRef.current?.focus() } catch { /* terminal may be mid-dispose */ }
   }, [])
 
   // Spawn a plain interactive shell in `cwd` (no agent). Output is appended
@@ -287,5 +293,5 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
     return text.length > maxChars ? text.slice(-maxChars) : text
   }, [paneId])
 
-  return { spawn, spawnShell, kill, clear, fit, injectText, writeNotice, getSelection, getRecentOutput, findNext, findPrevious, clearSearch }
+  return { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, getRecentOutput, findNext, findPrevious, clearSearch }
 }

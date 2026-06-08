@@ -4,7 +4,7 @@ declare global {
   interface Window {
     swarmmind: {
       // PTY
-      ptyCreate: (paneId: string, agentId: string, cwd: string, shellStyle: string, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string) => Promise<{ ok?: boolean; error?: string }>
+      ptyCreate: (paneId: string, agentId: string, cwd: string, shellStyle: string, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string, workspaceId?: string) => Promise<{ ok?: boolean; error?: string }>
       ptyCreateShell: (paneId: string, cwd: string, shellStyle: string, cols?: number, rows?: number) => Promise<{ ok?: boolean; error?: string }>
       ptyInput: (paneId: string, data: string) => void
       ptyResize: (paneId: string, cols: number, rows: number) => void

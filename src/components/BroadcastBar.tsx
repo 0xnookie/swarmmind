@@ -23,7 +23,10 @@ export function BroadcastBar() {
   const [text, setText] = useState('')
   const [submit, setSubmit] = useState(true)
 
-  const leaves = useMemo(() => collectLeaves(rootPane), [rootPane])
+  // Mixed-workspace panes belong to another workspace's swarm — exclude them
+  // from broadcast targeting (and the chip list) so a host broadcast never
+  // leaks into a foreign agent.
+  const leaves = useMemo(() => collectLeaves(rootPane).filter(l => !l.workspaceId), [rootPane])
 
   if (!open) return null
 
@@ -134,7 +137,7 @@ const styles: Record<string, React.CSSProperties> = {
   header: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 },
   badge: {
     fontSize: 9.5, fontWeight: 700, letterSpacing: '0.08em', color: 'var(--accent)',
-    background: 'var(--accent-subtle)', border: '1px solid rgba(212,132,90,0.3)',
+    background: 'var(--accent-subtle)', border: '1px solid var(--accent-glow)',
     borderRadius: 5, padding: '2px 7px',
   },
   summary: { fontSize: 12, color: 'var(--text-secondary)' },

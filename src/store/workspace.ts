@@ -49,6 +49,13 @@ export interface PaneLeaf {
   // `swarmmind/<sanitized name>`. Empty/undefined falls back to title → agent →
   // pane id. Only affects a worktree that hasn't been materialised yet.
   worktreeName?: string
+  // Mixed workspace (persisted): the workspace this pane's agent belongs to,
+  // when it differs from the currently-open (host) workspace. Undefined = the
+  // host workspace (the default). A foreign pane spawns with this workspace's
+  // root as cwd and routes its MCP memory/tasks/events to this workspace's DB,
+  // so an agent of workspace B can run inside workspace A's window. See
+  // electron/ipc/pty.ts and the per-agent MCP routing in memory/db.ts.
+  workspaceId?: string
 }
 
 export interface PaneGroup {
@@ -185,6 +192,7 @@ interface WorkspaceState {
   setAgentId: (paneId: string, agentId: AgentId | null) => void
   setTaskId: (paneId: string, taskId: string | null) => void
   setPaneCwd: (paneId: string, cwd: string | null) => void
+  setPaneWorkspace: (paneId: string, workspaceId: string | null) => void
   setAgentRunning: (paneId: string, running: boolean) => void
   setSessionId: (paneId: string, sessionId: string) => void
   setPaneTitle: (paneId: string, title: string) => void
@@ -473,6 +481,21 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setPaneCwd: (paneId, cwd) =>
     set(s => {
       const updated = makeRoot(updateLeaf(s.rootPane, paneId, l => ({ ...l, cwd })))
+      saveLayout(JSON.stringify(updated))
+      return { rootPane: updated }
+    }),
+
+  // Bind a pane to a (foreign) workspace for the mixed-workspace feature. null
+  // clears the binding (pane reverts to the host workspace). Also clears any
+  // per-pane cwd so the next spawn resolves the new workspace's root; the UI
+  // only allows this while the pane's agent isn't running.
+  setPaneWorkspace: (paneId, workspaceId) =>
+    set(s => {
+      const updated = makeRoot(updateLeaf(s.rootPane, paneId, l => ({
+        ...l,
+        workspaceId: workspaceId ?? undefined,
+        cwd: null,
+      })))
       saveLayout(JSON.stringify(updated))
       return { rootPane: updated }
     }),
