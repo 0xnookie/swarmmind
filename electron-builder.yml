@@ -75,12 +75,19 @@ nsis:
   installerHeaderIcon: resources/icons/icon.ico
 
 mac:
+  # Explicit icon: without this, electron-builder's auto-resolver picks the
+  # resources/icons/ directory (which holds only the Windows icon.ico) as the
+  # mac icon source and app-builder aborts ("doesn't contain icons"). Point it
+  # at the 1024x1024 PNG and let app-builder generate the .icns.
+  icon: resources/icon.png
   target:
     - target: dmg
       arch: [x64, arm64]
   category: public.app-category.developer-tools
 
 linux:
+  # Same reason as mac — give AppImage a concrete PNG instead of the icons/ dir.
+  icon: resources/icon.png
   target:
     - target: AppImage
       arch: [x64]
