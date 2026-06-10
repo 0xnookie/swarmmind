@@ -6,6 +6,21 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0]
+
+### Added
+- **German language support** — the entire UI can now be switched between
+  English and German from **Settings ▸ General ▸ Language**. Every visible
+  string is translated and the choice is remembered across restarts.
+- **Close to tray** — closing the window now hides SwarmMind to a system tray
+  icon instead of quitting, so agents and terminals keep running in the
+  background. Click the tray icon to bring the window back, or use the tray
+  menu to quit for real. You can turn this off in **Settings ▸ General**.
+- **Terminal copy & paste** — copy and paste now work inside agent panes.
+  `Ctrl/Cmd+Shift+C` / `Ctrl/Cmd+Shift+V` always copy and paste; plain
+  `Ctrl/Cmd+C` copies when text is selected and otherwise still sends an
+  interrupt (SIGINT); paste is also available from the pane's right-click menu.
+
 ## [0.2.0]
 
 ### Added
@@ -31,4 +46,5 @@ project adheres to [Semantic Versioning](https://semver.org/).
   theme's accent color instead of a hardcoded warm-brown, so they look right
   under every theme.
 
+[0.3.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.3.0
 [0.2.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.2.0
