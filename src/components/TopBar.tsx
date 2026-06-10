@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { useT } from '../i18n'
 import { SwarmVoice } from './SwarmVoice'
 import { NotificationCenter } from './NotificationCenter'
 import logoUrl from '../assets/logo.png'
@@ -189,6 +190,7 @@ function IconBtn({ label, onClick, active, children, style }: IconBtnProps) {
 // ── Windows window controls ───────────────────────────────────────────────────
 
 function WinControls() {
+  const t = useT()
   const [hoveredBtn, setHoveredBtn] = useState<'min' | 'max' | 'close' | null>(null)
 
   const btnBase: React.CSSProperties = {
@@ -209,8 +211,8 @@ function WinControls() {
   return (
     <div style={{ display: 'flex', alignItems: 'stretch', marginLeft: 4 }}>
       <button
-        aria-label="Minimize"
-        title="Minimize"
+        aria-label={t('topbar.minimize')}
+        title={t('topbar.minimize')}
         style={{
           ...btnBase,
           background: hoveredBtn === 'min' ? 'var(--overlay-hover)' : 'transparent',
@@ -222,8 +224,8 @@ function WinControls() {
         <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
       </button>
       <button
-        aria-label="Maximize"
-        title="Maximize"
+        aria-label={t('topbar.maximize')}
+        title={t('topbar.maximize')}
         style={{
           ...btnBase,
           background: hoveredBtn === 'max' ? 'var(--overlay-hover)' : 'transparent',
@@ -237,8 +239,8 @@ function WinControls() {
         </svg>
       </button>
       <button
-        aria-label="Close"
-        title="Close"
+        aria-label={t('common.close')}
+        title={t('common.close')}
         style={{
           ...btnBase,
           color: hoveredBtn === 'close' ? '#fff' : 'var(--text-muted)',
@@ -259,6 +261,7 @@ function WinControls() {
 // ── TopBar ────────────────────────────────────────────────────────────────────
 
 export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen }: TopBarProps) {
+  const t = useT()
   const workspace = useWorkspaceStore(s => s.workspace)
   const openSettings = useWorkspaceStore(s => s.openSettings)
   const showTerminals = useWorkspaceStore(s => s.showTerminals)
@@ -372,35 +375,35 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
           WebkitAppRegion: 'no-drag',
         }}
       >
-        <IconBtn label="Show terminals" onClick={showTerminals} active={!boardOpen && !graphOpen && !filePanelOpen && !reviewOpen && !timelineOpen && !changesOpen && !checkpointsOpen}>
+        <IconBtn label={t('topbar.showTerminals')} onClick={showTerminals} active={!boardOpen && !graphOpen && !filePanelOpen && !reviewOpen && !timelineOpen && !changesOpen && !checkpointsOpen}>
           <IconGrid />
         </IconBtn>
 
-        <IconBtn label="Code view" onClick={toggleFilePanel} active={filePanelOpen}>
+        <IconBtn label={t('topbar.codeView')} onClick={toggleFilePanel} active={filePanelOpen}>
           <IconCode />
         </IconBtn>
 
-        <IconBtn label="Kanban board" onClick={toggleBoard} active={boardOpen}>
+        <IconBtn label={t('topbar.kanban')} onClick={toggleBoard} active={boardOpen}>
           <IconBoard />
         </IconBtn>
 
-        <IconBtn label="Memory graph" onClick={toggleGraph} active={graphOpen}>
+        <IconBtn label={t('topbar.memoryGraph')} onClick={toggleGraph} active={graphOpen}>
           <IconGraph />
         </IconBtn>
 
-        <IconBtn label="Worktree review" onClick={toggleReview} active={reviewOpen}>
+        <IconBtn label={t('topbar.worktreeReview')} onClick={toggleReview} active={reviewOpen}>
           <IconBranch />
         </IconBtn>
 
-        <IconBtn label="Swarm timeline" onClick={toggleTimeline} active={timelineOpen}>
+        <IconBtn label={t('topbar.swarmTimeline')} onClick={toggleTimeline} active={timelineOpen}>
           <IconActivity />
         </IconBtn>
 
-        <IconBtn label="Checkpoints & rewind" onClick={toggleCheckpoints} active={checkpointsOpen}>
+        <IconBtn label={t('topbar.checkpoints')} onClick={toggleCheckpoints} active={checkpointsOpen}>
           <IconRewind />
         </IconBtn>
 
-        <IconBtn label={contendedPaths.length ? 'Changes — contended files!' : 'Changes'} onClick={toggleChanges} active={changesOpen}>
+        <IconBtn label={contendedPaths.length ? t('topbar.changesContended') : t('topbar.changes')} onClick={toggleChanges} active={changesOpen}>
           <IconFiles />
           {contendedPaths.length > 0 && (
             <span style={{
@@ -410,15 +413,15 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
           )}
         </IconBtn>
 
-        <IconBtn label="Toggle preview browser" onClick={onTogglePreview} active={previewOpen}>
+        <IconBtn label={t('topbar.previewBrowser')} onClick={onTogglePreview} active={previewOpen}>
           <IconGlobe />
         </IconBtn>
 
-        <IconBtn label="Broadcast to panes" onClick={toggleBroadcastBar} active={broadcastBarOpen}>
+        <IconBtn label={t('topbar.broadcast')} onClick={toggleBroadcastBar} active={broadcastBarOpen}>
           <IconBroadcast />
         </IconBtn>
 
-        <IconBtn label="Orchestrator (Conductor + Lead)" onClick={toggleOrchestratorBar} active={orchestratorBarOpen}>
+        <IconBtn label={t('topbar.orchestrator')} onClick={toggleOrchestratorBar} active={orchestratorBarOpen}>
           <IconConductor />
           {orchestrationMode !== 'off' && (
             <span style={{
@@ -430,7 +433,7 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
 
         {totalCost > 0 && (
           <span
-            title="Estimated agent spend this workspace (parsed from agent output)"
+            title={t('topbar.costTooltip')}
             style={{
               fontSize: 11,
               fontWeight: 600,
@@ -462,11 +465,11 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
 
         <NotificationCenter />
 
-        <IconBtn label="Settings" onClick={() => openSettings()}>
+        <IconBtn label={t('topbar.settings')} onClick={() => openSettings()}>
           <IconSettings />
         </IconBtn>
 
-        <IconBtn label="Toggle right panel" onClick={onTogglePanel} active={panelOpen}>
+        <IconBtn label={t('topbar.toggleRightPanel')} onClick={onTogglePanel} active={panelOpen}>
           <IconPanelRight />
         </IconBtn>
       </div>

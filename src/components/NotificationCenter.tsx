@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore, type AgentId } from '../store/workspace'
+import { useT, type TFunction } from '../i18n'
 
 // Display names + accent colours for agents, mirroring the AGENTS table in
 // AgentPane.tsx (kept local so the notification center is self-contained).
@@ -13,15 +14,15 @@ const AGENT_META: Record<AgentId, { label: string; color: string }> = {
   cline:    { label: 'Cline',       color: '#a78bfa' },
 }
 
-function relativeTime(ts: number): string {
+function relativeTime(ts: number, t: TFunction): string {
   const s = Math.floor((Date.now() - ts) / 1000)
-  if (s < 5) return 'just now'
-  if (s < 60) return `${s}s ago`
+  if (s < 5) return t('time.justNow')
+  if (s < 60) return t('time.secondsAgo', { n: s })
   const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
+  if (m < 60) return t('time.minutesAgo', { n: m })
   const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h ago`
-  return `${Math.floor(h / 24)}d ago`
+  if (h < 24) return t('time.hoursAgo', { n: h })
+  return t('time.daysAgo', { n: Math.floor(h / 24) })
 }
 
 function IconBell() {
@@ -69,6 +70,7 @@ function RowAction({ label, onClick, children, danger }: {
 }
 
 export function NotificationCenter() {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const [hovered, setHovered] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -115,8 +117,8 @@ export function NotificationCenter() {
   return (
     <div ref={rootRef} style={{ position: 'relative', display: 'inline-flex' }}>
       <button
-        aria-label="Notifications"
-        title="Notifications"
+        aria-label={t('notif.title')}
+        title={t('notif.title')}
         onClick={() => setOpen(o => !o)}
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
@@ -192,7 +194,7 @@ export function NotificationCenter() {
             }}
           >
             <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-              Notifications
+              {t('notif.title')}
             </span>
             <div style={{ display: 'flex', gap: 8 }}>
               <button
@@ -207,7 +209,7 @@ export function NotificationCenter() {
                   color: unreadCount === 0 ? 'var(--text-dim)' : 'var(--accent)',
                 }}
               >
-                Mark all read
+                {t('notif.markAllRead')}
               </button>
               <button
                 onClick={clearNotifications}
@@ -221,7 +223,7 @@ export function NotificationCenter() {
                   color: notifications.length === 0 ? 'var(--text-dim)' : 'var(--text-muted)',
                 }}
               >
-                Clear all
+                {t('notif.clearAll')}
               </button>
             </div>
           </div>
@@ -230,17 +232,17 @@ export function NotificationCenter() {
           <div style={{ overflowY: 'auto', flex: 1 }}>
             {notifications.length === 0 ? (
               <div style={{ padding: '28px 16px', textAlign: 'center', color: 'var(--text-dim)', fontSize: 12 }}>
-                No notifications
+                {t('notif.empty')}
               </div>
             ) : (
               notifications.map(n => {
                 const meta = n.agentId ? AGENT_META[n.agentId] : null
-                const label = n.paneTitle || meta?.label || 'An agent'
+                const label = n.paneTitle || meta?.label || t('notif.anAgent')
                 return (
                   <div
                     key={n.id}
                     onClick={() => jumpToPane(n.paneId)}
-                    title="Jump to pane"
+                    title={t('notif.jump')}
                     style={{
                       display: 'flex',
                       alignItems: 'flex-start',
@@ -276,27 +278,27 @@ export function NotificationCenter() {
                         {label}
                       </div>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
-                        is waiting for input
+                        {t('notif.waiting')}
                       </div>
                       <div style={{ fontSize: 10, color: 'var(--text-dim)', marginTop: 3 }}>
-                        {relativeTime(n.timestamp)}
+                        {relativeTime(n.timestamp, t)}
                       </div>
                     </div>
                     {/* Row actions */}
                     <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-                      <RowAction label="Jump to pane" onClick={() => jumpToPane(n.paneId)}>
+                      <RowAction label={t('notif.jump')} onClick={() => jumpToPane(n.paneId)}>
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M7 17 17 7" /><path d="M9 7h8v8" />
                         </svg>
                       </RowAction>
                       {!n.read && (
-                        <RowAction label="Mark as read" onClick={() => markNotificationRead(n.id)}>
+                        <RowAction label={t('notif.markRead')} onClick={() => markNotificationRead(n.id)}>
                           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M20 6 9 17l-5-5" />
                           </svg>
                         </RowAction>
                       )}
-                      <RowAction label="Delete" danger onClick={() => deleteNotification(n.id)}>
+                      <RowAction label={t('common.delete')} danger onClick={() => deleteNotification(n.id)}>
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M3 6h18" /><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" /><path d="M19 6v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6" />
                         </svg>

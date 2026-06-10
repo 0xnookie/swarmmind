@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { v4 as uuidv4 } from 'uuid'
+import type { Language } from '../i18n'
 import {
   applyAppearance,
   DEFAULT_APPEARANCE,
@@ -133,6 +134,9 @@ interface WorkspaceState {
   defaultAgentId: AgentId | null
   terminalFontSize: number
   terminalCursorBlink: boolean
+  closeToTray: boolean
+  // UI display language (persisted as the `language` app setting).
+  language: Language
   // ── Appearance (applied live via CSS variables, persisted) ────────────────
   themePreset: ThemePreset
   accentColor: string | null
@@ -219,6 +223,8 @@ interface WorkspaceState {
   setDefaultAgentId: (id: AgentId | null) => void
   setTerminalFontSize: (n: number) => void
   setTerminalCursorBlink: (b: boolean) => void
+  setCloseToTray: (b: boolean) => void
+  setLanguage: (lang: Language) => void
   // Appearance setters — each persists and re-applies immediately.
   setThemePreset: (p: ThemePreset) => void
   setAccentColor: (hex: string | null) => void
@@ -420,6 +426,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   defaultAgentId: null,
   terminalFontSize: 13,
   terminalCursorBlink: true,
+  closeToTray: true,
+  language: 'en',
   themePreset: DEFAULT_APPEARANCE.themePreset,
   accentColor: DEFAULT_APPEARANCE.accentColor,
   uiDensity: DEFAULT_APPEARANCE.uiDensity,
@@ -791,6 +799,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setTerminalCursorBlink: (b) => {
     set({ terminalCursorBlink: b })
     window.swarmmind.setAppSetting('terminalCursorBlink', b ? '1' : '0').catch(() => {})
+  },
+
+  setCloseToTray: (b) => {
+    set({ closeToTray: b })
+    window.swarmmind.setAppSetting('closeToTray', b ? '1' : '0').catch(() => {})
+  },
+
+  setLanguage: (lang) => {
+    set({ language: lang })
+    window.swarmmind.setAppSetting('language', lang).catch(() => {})
   },
 
   // ── Appearance ─────────────────────────────────────────────────────────────

@@ -1,4 +1,6 @@
 import React from 'react'
+import { translate } from '../i18n'
+import { useWorkspaceStore } from '../store/workspace'
 
 interface Props {
   children: React.ReactNode
@@ -19,15 +21,17 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
   render() {
     if (!this.state.hasError) return this.props.children
+    const lang = useWorkspaceStore.getState().language
+    const label = this.props.label ?? translate(lang, 'error.component')
     return (
       <div style={styles.container}>
-        <p style={styles.title}>⚠ {this.props.label ?? 'Component'} crashed</p>
+        <p style={styles.title}>⚠ {translate(lang, 'error.crashed', { label })}</p>
         <pre style={styles.msg}>{this.state.message}</pre>
         <button
           style={styles.btn}
           onClick={() => this.setState({ hasError: false, message: '' })}
         >
-          Retry
+          {translate(lang, 'common.retry')}
         </button>
       </div>
     )

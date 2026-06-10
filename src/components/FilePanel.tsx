@@ -2,8 +2,10 @@ import React, { useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { FileExplorer } from './FileExplorer'
 import { FileEditor } from './FileEditor'
+import { useT } from '../i18n'
 
 export function FilePanel() {
+  const t = useT()
   const workspace = useWorkspaceStore((s) => s.workspace)
 
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -14,7 +16,7 @@ export function FilePanel() {
 
   const handleFileSelect = async (filePath: string, fileName: string) => {
     if (isDirty) {
-      const ok = window.confirm('Unsaved changes. Discard?')
+      const ok = window.confirm(t('file.discardConfirm'))
       if (!ok) return
     }
     setLoading(true)
@@ -59,7 +61,7 @@ export function FilePanel() {
           background: 'var(--bg-base)',
         }}
       >
-        Open a workspace first
+        {t('file.openFirst')}
       </div>
     )
   }
@@ -114,7 +116,7 @@ export function FilePanel() {
               background: 'var(--bg-base)',
             }}
           >
-            Loading…
+            {t('common.loading')}
           </div>
         ) : (
           <FileEditor

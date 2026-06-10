@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useWorkspaceStore, type AgentId } from '../store/workspace'
+import { useT, type TranslationKey } from '../i18n'
 
 export interface KanbanTask {
   id: string
@@ -14,12 +15,12 @@ export interface KanbanTask {
   updated_at: number
 }
 
-const COLUMNS: { key: KanbanTask['status']; label: string }[] = [
-  { key: 'pending',      label: 'Backlog' },
-  { key: 'in_progress',  label: 'In Progress' },
-  { key: 'needs_review', label: 'Review' },
-  { key: 'done',         label: 'Done' },
-  { key: 'failed',       label: 'Failed' },
+const COLUMNS: { key: KanbanTask['status']; labelKey: TranslationKey }[] = [
+  { key: 'pending',      labelKey: 'kanban.col.pending' },
+  { key: 'in_progress',  labelKey: 'kanban.col.in_progress' },
+  { key: 'needs_review', labelKey: 'kanban.col.needs_review' },
+  { key: 'done',         labelKey: 'kanban.col.done' },
+  { key: 'failed',       labelKey: 'kanban.col.failed' },
 ]
 
 const AGENTS: { id: AgentId; label: string; color: string }[] = [
@@ -33,6 +34,7 @@ const AGENTS: { id: AgentId; label: string; color: string }[] = [
 ]
 
 export function KanbanBoard() {
+  const t = useT()
   const [tasks, setTasks] = useState<KanbanTask[]>([])
 
   const refresh = useCallback(async () => {
@@ -110,14 +112,14 @@ export function KanbanBoard() {
     <div style={styles.board}>
       {/* Header */}
       <div style={styles.header}>
-        <span style={styles.heading}>Vibe Kanban</span>
-        <span style={styles.sessionCount}>{tasks.filter(t => t.status === 'in_progress').length} active</span>
+        <span style={styles.heading}>{t('kanban.heading')}</span>
+        <span style={styles.sessionCount}>{t('kanban.active', { n: tasks.filter(tk => tk.status === 'in_progress').length })}</span>
         <button
           style={styles.newBtn}
           onClick={() => setCreating(v => !v)}
           disabled={!workspace}
         >
-          + New Task
+          {t('kanban.newTask')}
         </button>
       </div>
 
@@ -126,7 +128,7 @@ export function KanbanBoard() {
         <div style={styles.newForm}>
           <input
             style={styles.input}
-            placeholder="Task title…"
+            placeholder={t('kanban.titlePlaceholder')}
             value={newTitle}
             autoFocus
             onChange={e => setNewTitle(e.target.value)}
@@ -134,7 +136,7 @@ export function KanbanBoard() {
           />
           <input
             style={styles.input}
-            placeholder="Description (optional)"
+            placeholder={t('kanban.descPlaceholder')}
             value={newDesc}
             onChange={e => setNewDesc(e.target.value)}
           />
@@ -143,12 +145,12 @@ export function KanbanBoard() {
             value={newAgent}
             onChange={e => setNewAgent(e.target.value as AgentId | '')}
           >
-            <option value="">Assign agent…</option>
+            <option value="">{t('kanban.assignAgent')}</option>
             {AGENTS.map(a => <option key={a.id} value={a.id}>{a.label}</option>)}
           </select>
           <div style={styles.formActions}>
-            <button style={styles.createBtn} onClick={handleCreate} disabled={!newTitle.trim()}>Create</button>
-            <button style={styles.cancelBtn} onClick={() => setCreating(false)}>Cancel</button>
+            <button style={styles.createBtn} onClick={handleCreate} disabled={!newTitle.trim()}>{t('common.create')}</button>
+            <button style={styles.cancelBtn} onClick={() => setCreating(false)}>{t('common.cancel')}</button>
           </div>
         </div>
       )}
@@ -156,7 +158,7 @@ export function KanbanBoard() {
       {/* Columns */}
       <div style={styles.columns}>
         {COLUMNS.map(col => {
-          const colTasks = tasks.filter(t => t.status === col.key)
+          const colTasks = tasks.filter(tk => tk.status === col.key)
           return (
             <div
               key={col.key}
@@ -170,7 +172,7 @@ export function KanbanBoard() {
             >
               <div style={styles.colHeader}>
                 <span style={{ ...styles.colDot, background: COL_COLORS[col.key] }} />
-                <span style={styles.colLabel}>{col.label}</span>
+                <span style={styles.colLabel}>{t(col.labelKey)}</span>
                 <span style={styles.colCount}>{colTasks.length}</span>
               </div>
 
@@ -219,7 +221,7 @@ export function KanbanBoard() {
                           {/* Task Knowledge */}
                           {task.notes && (
                             <div style={styles.notesBox}>
-                              <span style={styles.notesLabel}>Task Knowledge</span>
+                              <span style={styles.notesLabel}>{t('kanban.taskKnowledge')}</span>
                               <pre style={styles.notesText}>{task.notes}</pre>
                             </div>
                           )}
@@ -228,21 +230,21 @@ export function KanbanBoard() {
                             <div style={styles.noteInputRow}>
                               <textarea
                                 style={styles.noteTextarea}
-                                placeholder="Append finding, error trace, or file path…"
+                                placeholder={t('kanban.appendPlaceholder')}
                                 value={noteInput.text}
                                 onChange={e => setNoteInput({ id: task.id, text: e.target.value })}
                                 rows={3}
                               />
                               <div style={styles.noteActions}>
                                 <button style={styles.noteSaveBtn} onClick={() => handleAppendNote(task.id, noteInput.text)}>
-                                  Append
+                                  {t('kanban.append')}
                                 </button>
-                                <button style={styles.cancelBtn} onClick={() => setNoteInput(null)}>Cancel</button>
+                                <button style={styles.cancelBtn} onClick={() => setNoteInput(null)}>{t('common.cancel')}</button>
                               </div>
                             </div>
                           ) : (
                             <button style={styles.addNoteBtn} onClick={() => setNoteInput({ id: task.id, text: '' })}>
-                              + Append Finding
+                              {t('kanban.appendFinding')}
                             </button>
                           )}
 
@@ -251,19 +253,19 @@ export function KanbanBoard() {
                               style={{ ...styles.launchBtn, ...(col.key === 'done' ? styles.launchBtnDim : {}) }}
                               onClick={() => handleLaunch(task)}
                               disabled={!workspace}
-                              title={`Launch ${agent?.label ?? 'agent'} for this task`}
+                              title={t('kanban.launchTitle', { agent: agent?.label ?? t('kanban.agentFallback') })}
                             >
-                              ▶ Launch Agent
+                              {t('kanban.launch')}
                             </button>
 
                             {col.key !== 'done' && (
                               <button style={styles.doneBtn} onClick={() => handleStatusChange(task.id, 'done')}>
-                                ✓ Done
+                                {t('common.done')}
                               </button>
                             )}
                             {col.key === 'pending' && (
                               <button style={styles.startBtn} onClick={() => handleStatusChange(task.id, 'in_progress')}>
-                                Start
+                                {t('common.start')}
                               </button>
                             )}
                           </div>
@@ -274,7 +276,7 @@ export function KanbanBoard() {
                 })}
 
                 {colTasks.length === 0 && (
-                  <div style={styles.emptyCol}>Drop tasks here</div>
+                  <div style={styles.emptyCol}>{t('kanban.dropHere')}</div>
                 )}
               </div>
             </div>

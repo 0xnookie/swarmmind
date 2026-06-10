@@ -1,5 +1,6 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { useT } from '../i18n'
 
 // Common local dev-server ports, surfaced as one-click presets since the
 // built-in browser is mostly used to preview whatever an agent is running.
@@ -33,6 +34,7 @@ type WebviewEl = HTMLElement & {
 }
 
 export function PreviewPanel() {
+  const t = useT()
   const previewUrl = useWorkspaceStore(s => s.previewUrl)
   const setPreviewUrl = useWorkspaceStore(s => s.setPreviewUrl)
 
@@ -192,20 +194,20 @@ export function PreviewPanel() {
 
       {/* ── Toolbar ── */}
       <div style={styles.toolbar}>
-        <button className="pane-action-btn" aria-label="Back" disabled={!canBack} onClick={() => webviewRef.current?.goBack()}>
+        <button className="pane-action-btn" aria-label={t('preview.back')} disabled={!canBack} onClick={() => webviewRef.current?.goBack()}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5"/><path d="m12 5-7 7 7 7"/></svg>
         </button>
-        <button className="pane-action-btn" aria-label="Forward" disabled={!canFwd} onClick={() => webviewRef.current?.goForward()}>
+        <button className="pane-action-btn" aria-label={t('preview.forward')} disabled={!canFwd} onClick={() => webviewRef.current?.goForward()}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
         </button>
-        <button className="pane-action-btn" aria-label={loading ? 'Stop' : 'Reload'} onClick={handleReloadOrStop}>
+        <button className="pane-action-btn" aria-label={loading ? t('preview.stop') : t('preview.reload')} onClick={handleReloadOrStop}>
           {loading ? (
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           ) : (
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
           )}
         </button>
-        <button className="pane-action-btn" aria-label="Home" onClick={() => navigate(HOME_URL)}>
+        <button className="pane-action-btn" aria-label={t('preview.home')} onClick={() => navigate(HOME_URL)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
         </button>
 
@@ -218,15 +220,15 @@ export function PreviewPanel() {
           onBlur={() => { focusedRef.current = false }}
           spellCheck={false}
           placeholder="localhost:3000"
-          aria-label="URL"
+          aria-label={t('preview.url')}
         />
 
         {/* Dev-port presets */}
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <button
             className="pane-action-btn"
-            aria-label="Dev ports"
-            title="Local dev ports"
+            aria-label={t('preview.devPorts')}
+            title={t('preview.localDevPorts')}
             onClick={e => { e.stopPropagation(); setPortsOpen(o => !o) }}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
@@ -246,13 +248,13 @@ export function PreviewPanel() {
           )}
         </div>
 
-        <button className="pane-action-btn" aria-label="Open in browser" title="Open in system browser" onClick={openExternal}>
+        <button className="pane-action-btn" aria-label={t('preview.openExternal')} title={t('preview.openExternalTitle')} onClick={openExternal}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
         </button>
         <button
           className="pane-action-btn"
-          aria-label="Toggle DevTools"
-          title="Toggle DevTools for the page"
+          aria-label={t('preview.toggleDevtools')}
+          title={t('preview.toggleDevtoolsTitle')}
           onClick={toggleDevtools}
           style={devtoolsOpen ? { color: 'var(--accent)' } : undefined}
         >
@@ -275,11 +277,11 @@ export function PreviewPanel() {
         {error && (
           <div style={styles.errorOverlay}>
             <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-            <div style={styles.errorTitle}>Couldn’t load this page</div>
+            <div style={styles.errorTitle}>{t('preview.errorTitle')}</div>
             <div style={styles.errorUrl}>{error.url || inputUrl}</div>
-            <div style={styles.errorDesc}>{error.desc || `Error ${error.code}`}{error.code ? `  ·  ${error.code}` : ''}</div>
-            <div style={styles.errorHint}>If this is a local dev server, make sure it’s running.</div>
-            <button style={styles.retryBtn} onClick={() => navigate(error.url || inputUrl)}>Retry</button>
+            <div style={styles.errorDesc}>{error.desc || t('preview.errorCode', { code: error.code })}{error.code ? `  ·  ${error.code}` : ''}</div>
+            <div style={styles.errorHint}>{t('preview.errorHint')}</div>
+            <button style={styles.retryBtn} onClick={() => navigate(error.url || inputUrl)}>{t('common.retry')}</button>
           </div>
         )}
       </div>

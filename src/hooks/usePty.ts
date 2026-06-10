@@ -112,6 +112,35 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
     searchAddonRef.current = searchAddon
     term.open(containerRef.current)
 
+    // Copy & paste. xterm forwards every keystroke to the PTY, so without this
+    // Ctrl+C is always SIGINT and Ctrl+V is never paste. Convention (matches
+    // Windows Terminal): Ctrl/Cmd+Shift+C/V always copy/paste; bare Ctrl/Cmd+C
+    // copies when text is selected and otherwise falls through to SIGINT; bare
+    // Ctrl/Cmd+V pastes. Returning false stops xterm from also sending the key
+    // to the PTY.
+    term.attachCustomKeyEventHandler(e => {
+      if (e.type !== 'keydown') return true
+      const mod = e.ctrlKey || e.metaKey
+      if (!mod) return true
+      const key = e.key.toLowerCase()
+      if (key === 'c') {
+        const sel = term.getSelection()
+        if (sel) {
+          navigator.clipboard.writeText(sel).catch(() => {})
+          term.clearSelection()
+          return false
+        }
+        // Shift+C with no selection: swallow so it doesn't reach the PTY.
+        // Bare Ctrl/Cmd+C with no selection: let it through as SIGINT.
+        return !e.shiftKey
+      }
+      if (key === 'v') {
+        navigator.clipboard.readText().then(text => { if (text) term.paste(text) }).catch(() => {})
+        return false
+      }
+      return true
+    })
+
     // Fit immediately after open so term.cols/rows reflect the actual container
     // dimensions right away — before any ResizeObserver or timer fires.
     // Without this, xterm defaults to 80×24 until the first async fit runs,
@@ -286,6 +315,21 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
   // Current text selection in this pane's terminal (empty string if none).
   const getSelection = useCallback(() => termRef.current?.getSelection() ?? '', [])
 
+  // Copy the current selection to the system clipboard (no-op if nothing is
+  // selected). Mirrors the Ctrl/Cmd+C key handler for the context menu.
+  const copySelection = useCallback(() => {
+    const sel = termRef.current?.getSelection() ?? ''
+    if (!sel) return
+    navigator.clipboard.writeText(sel).catch(() => {})
+    termRef.current?.clearSelection()
+  }, [])
+
+  // Paste clipboard text into the terminal, honouring bracketed-paste mode via
+  // xterm's term.paste(). Mirrors the Ctrl/Cmd+V key handler.
+  const paste = useCallback(() => {
+    navigator.clipboard.readText().then(text => { if (text) termRef.current?.paste(text) }).catch(() => {})
+  }, [])
+
   // Recent terminal output for this pane, ANSI-stripped, trimmed to maxChars.
   const getRecentOutput = useCallback((maxChars = 4000) => {
     const raw = rawOutputCache.get(paneId) ?? ''
@@ -293,5 +337,5 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
     return text.length > maxChars ? text.slice(-maxChars) : text
   }, [paneId])
 
-  return { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, getRecentOutput, findNext, findPrevious, clearSearch }
+  return { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, copySelection, paste, getRecentOutput, findNext, findPrevious, clearSearch }
 }

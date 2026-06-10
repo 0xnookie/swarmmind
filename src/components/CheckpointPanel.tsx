@@ -1,5 +1,13 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { useT, type TFunction, type TranslationKey } from '../i18n'
+
+const TRIGGER_KEY: Record<string, TranslationKey> = {
+  manual: 'checkpoints.trigger.manual',
+  orchestration: 'checkpoints.trigger.orchestration',
+  'pre-restore': 'checkpoints.trigger.pre-restore',
+  restore: 'checkpoints.trigger.restore',
+}
 
 // ── Checkpoints & Rewind ──────────────────────────────────────────────────────
 //
@@ -8,24 +16,18 @@ import { useWorkspaceStore } from '../store/workspace'
 // safe to let rip. Each restore first auto-creates a "Before rewind" safety
 // checkpoint, so a rewind is itself undoable.
 
-const TRIGGER_LABEL: Record<string, string> = {
-  manual: 'manual',
-  orchestration: 'run start',
-  'pre-restore': 'safety',
-  restore: 'restore',
-}
-
-function relTime(ts: number, now: number): string {
+function relTime(ts: number, now: number, t: TFunction): string {
   const s = Math.max(0, Math.round((now - ts) / 1000))
-  if (s < 5) return 'just now'
-  if (s < 60) return `${s}s ago`
+  if (s < 5) return t('time.justNow')
+  if (s < 60) return t('time.secondsAgo', { n: s })
   const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
+  if (m < 60) return t('time.minutesAgo', { n: m })
   const h = Math.floor(m / 60)
-  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`
+  return h < 24 ? t('time.hoursAgo', { n: h }) : t('time.daysAgo', { n: Math.floor(h / 24) })
 }
 
 export function CheckpointPanel() {
+  const t = useT()
   const workspace = useWorkspaceStore(s => s.workspace)
   const [list, setList] = useState<CheckpointRecord[]>([])
   const [busy, setBusy] = useState<string | null>(null)
@@ -46,7 +48,7 @@ export function CheckpointPanel() {
 
   const create = async () => {
     setBusy('create'); setError(null)
-    const res = await window.swarmmind.checkpointCreate(label.trim() || 'Checkpoint', 'manual')
+    const res = await window.swarmmind.checkpointCreate(label.trim() || t('checkpoints.defaultLabel'), 'manual')
     setBusy(null)
     if (res && 'error' in res) setError(res.error)
     else { setLabel(''); refresh() }
@@ -54,10 +56,7 @@ export function CheckpointPanel() {
 
   const restore = async (rec: CheckpointRecord) => {
     const ok = window.confirm(
-      `Rewind the workspace to “${rec.label}” (${relTime(rec.ts, now)})?\n\n` +
-      `This resets the main checkout and every SwarmMind worktree to that snapshot ` +
-      `and removes files created since (ignored files like .swarmmind are kept). ` +
-      `A “Before rewind” checkpoint is saved first so you can undo.`
+      t('checkpoints.confirm', { label: rec.label, time: relTime(rec.ts, now, t) })
     )
     if (!ok) return
     setBusy(rec.id); setError(null)
@@ -66,7 +65,7 @@ export function CheckpointPanel() {
     if (res && 'error' in res) setError(res.error)
     else {
       refresh()
-      if (res.errors?.length) setError(`Restored ${res.restored} dir(s); issues: ${res.errors.join('; ')}`)
+      if (res.errors?.length) setError(t('checkpoints.restoredIssues', { n: res.restored, errors: res.errors.join('; ') }))
     }
   }
 
@@ -80,18 +79,18 @@ export function CheckpointPanel() {
   return (
     <div style={styles.root}>
       <div style={styles.header}>
-        <span style={styles.title}>Checkpoints</span>
+        <span style={styles.title}>{t('checkpoints.title')}</span>
         <span style={styles.count}>{list.length}</span>
         <div style={{ flex: 1 }} />
         <input
           value={label}
           onChange={e => setLabel(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') create() }}
-          placeholder="Label (optional)"
+          placeholder={t('checkpoints.labelPlaceholder')}
           style={styles.input}
         />
         <button onClick={create} disabled={busy === 'create'} style={styles.snapBtn}>
-          {busy === 'create' ? 'Snapshot…' : '📍 Snapshot now'}
+          {busy === 'create' ? t('checkpoints.snapshotting') : t('checkpoints.snapshotNow')}
         </button>
       </div>
 
@@ -100,9 +99,7 @@ export function CheckpointPanel() {
       <div style={styles.list}>
         {list.length === 0 ? (
           <div style={styles.empty}>
-            No checkpoints yet. Take a snapshot before a risky run, or start an
-            orchestration run (one is captured automatically). Rewinding restores the
-            whole workspace — main checkout and every worktree — to the snapshot.
+            {t('checkpoints.empty')}
           </div>
         ) : (
           list.map(rec => (
@@ -110,14 +107,14 @@ export function CheckpointPanel() {
               <div style={styles.rowMain}>
                 <span style={styles.rowLabel}>{rec.label}</span>
                 <span style={styles.rowMeta}>
-                  {TRIGGER_LABEL[rec.trigger] ?? rec.trigger} · {rec.trees.length} dir{rec.trees.length === 1 ? '' : 's'} · {relTime(rec.ts, now)}
+                  {t(TRIGGER_KEY[rec.trigger] ?? 'checkpoints.trigger.manual')} · {t(rec.trees.length === 1 ? 'checkpoints.dirOne' : 'checkpoints.dirMany', { n: rec.trees.length })} · {relTime(rec.ts, now, t)}
                 </span>
               </div>
               <div style={styles.rowActions}>
                 <button onClick={() => restore(rec)} disabled={busy === rec.id} style={styles.restoreBtn}>
-                  {busy === rec.id ? '…' : 'Rewind'}
+                  {busy === rec.id ? '…' : t('checkpoints.rewind')}
                 </button>
-                <button onClick={() => remove(rec)} disabled={busy === rec.id} style={styles.delBtn} title="Delete checkpoint">✕</button>
+                <button onClick={() => remove(rec)} disabled={busy === rec.id} style={styles.delBtn} title={t('checkpoints.deleteTitle')}>✕</button>
               </div>
             </div>
           ))

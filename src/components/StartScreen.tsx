@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { useT, type TFunction } from '../i18n'
 import { THEMES } from '../appearance'
 import logoUrl from '../assets/logo.png'
 
@@ -29,19 +30,19 @@ function colorFor(id: string): string {
   return WORKSPACE_COLOR_PALETTE[Math.abs(hash) % WORKSPACE_COLOR_PALETTE.length]
 }
 
-function relativeTime(ms: number): string {
+function relativeTime(ms: number, t: TFunction): string {
   if (!ms) return ''
   const diff = Date.now() - ms
   const min = Math.round(diff / 60000)
-  if (min < 1) return 'just now'
-  if (min < 60) return `${min}m ago`
+  if (min < 1) return t('start.justNow')
+  if (min < 60) return t('start.minutesAgo', { n: min })
   const hrs = Math.round(min / 60)
-  if (hrs < 24) return `${hrs}h ago`
+  if (hrs < 24) return t('start.hoursAgo', { n: hrs })
   const days = Math.round(hrs / 24)
-  if (days < 30) return `${days}d ago`
+  if (days < 30) return t('start.daysAgo', { n: days })
   const months = Math.round(days / 30)
-  if (months < 12) return `${months}mo ago`
-  return `${Math.round(months / 12)}y ago`
+  if (months < 12) return t('start.monthsAgo', { n: months })
+  return t('start.yearsAgo', { n: Math.round(months / 12) })
 }
 
 function basename(p: string): string {
@@ -310,6 +311,7 @@ function SwarmCanvas({ themePreset, accentColor }: SwarmCanvasProps) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function StartScreen({ onOpenWorkspace }: StartScreenProps) {
+  const t = useT()
   const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([])
   const setWorkspace = useWorkspaceStore(s => s.setWorkspace)
   const loadFromJson = useWorkspaceStore(s => s.loadFromJson)
@@ -363,17 +365,17 @@ export function StartScreen({ onOpenWorkspace }: StartScreenProps) {
         <div className="start-fade" style={{ ...styles.brand, animationDelay: '0ms' }}>
           <img src={logoUrl} alt="" width={104} height={104} draggable={false} style={styles.logo} />
           <h1 style={styles.wordmark}>SwarmMind</h1>
-          <p style={styles.tagline}>Run your AI coding agents side&#8209;by&#8209;side, with shared memory.</p>
+          <p style={styles.tagline}>{t('start.tagline')}</p>
         </div>
 
         {/* Primary action */}
         <div className="start-fade" style={{ ...styles.actions, animationDelay: '90ms' }}>
           <button className="start-cta" style={{ ...styles.cta, color: onAccent }} onClick={onOpenWorkspace}>
             <IconFolderPlus />
-            <span>Open a workspace</span>
+            <span>{t('start.openWorkspace')}</span>
           </button>
           <button style={styles.secondaryBtn} onClick={toggleCommandPalette}>
-            Command palette
+            {t('start.commandPalette')}
             <kbd style={styles.kbd}>{mod}</kbd>
             <kbd style={styles.kbd}>K</kbd>
           </button>
@@ -382,7 +384,7 @@ export function StartScreen({ onOpenWorkspace }: StartScreenProps) {
         {/* Recent workspaces */}
         {recent.length > 0 && (
           <div className="start-fade" style={{ ...styles.recentWrap, animationDelay: '180ms' }}>
-            <div style={styles.recentLabel}>Recent</div>
+            <div style={styles.recentLabel}>{t('start.recent')}</div>
             <div style={styles.recentGrid}>
               {recent.map(ws => (
                 <button
@@ -397,7 +399,7 @@ export function StartScreen({ onOpenWorkspace }: StartScreenProps) {
                     <span style={styles.recentName}>{ws.name}</span>
                     <span style={styles.recentPath}>{basename(ws.root_path)}</span>
                   </span>
-                  <span style={styles.recentMeta}>{relativeTime(ws.updated_at)}</span>
+                  <span style={styles.recentMeta}>{relativeTime(ws.updated_at, t)}</span>
                   <span style={styles.recentArrow}><IconArrow /></span>
                 </button>
               ))}

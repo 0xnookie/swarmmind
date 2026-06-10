@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { MemoryGraph } from './MemoryGraph'
 import { MemoryPanel } from './MemoryPanel'
+import { useT } from '../i18n'
 
 type MemoryTab = 'graph' | 'list'
 
@@ -8,6 +9,7 @@ type MemoryTab = 'graph' | 'list'
 // force-directed MemoryGraph and the editable MemoryPanel (list of entries +
 // tasks). The graph is the default; the list surfaces inline edit/delete.
 export function MemoryView() {
+  const t = useT()
   const [tab, setTab] = useState<MemoryTab>('graph')
 
   return (
@@ -17,13 +19,13 @@ export function MemoryView() {
           style={{ ...styles.tab, ...(tab === 'graph' ? styles.tabActive : {}) }}
           onClick={() => setTab('graph')}
         >
-          Graph
+          {t('memview.graph')}
         </button>
         <button
           style={{ ...styles.tab, ...(tab === 'list' ? styles.tabActive : {}) }}
           onClick={() => setTab('list')}
         >
-          List
+          {t('memview.list')}
         </button>
       </div>
       <div style={styles.content}>

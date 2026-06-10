@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { useT, type TFunction } from '../i18n'
 
 // ── Changes panel (shared world model) ────────────────────────────────────────
 //
@@ -25,14 +26,14 @@ interface FileEntry {
   contended: boolean
 }
 
-function relTime(ts: number, now: number): string {
+function relTime(ts: number, now: number, t: TFunction): string {
   const s = Math.max(0, Math.round((now - ts) / 1000))
-  if (s < 5) return 'just now'
-  if (s < 60) return `${s}s ago`
+  if (s < 5) return t('time.justNow')
+  if (s < 60) return t('time.secondsAgo', { n: s })
   const m = Math.floor(s / 60)
-  if (m < 60) return `${m}m ago`
+  if (m < 60) return t('time.minutesAgo', { n: m })
   const h = Math.floor(m / 60)
-  return h < 24 ? `${h}h ago` : `${Math.floor(h / 24)}d ago`
+  return h < 24 ? t('time.hoursAgo', { n: h }) : t('time.daysAgo', { n: Math.floor(h / 24) })
 }
 
 function baseName(p: string): string {
@@ -41,6 +42,7 @@ function baseName(p: string): string {
 }
 
 export function ChangesPanel() {
+  const t = useT()
   const workspace = useWorkspaceStore(s => s.workspace)
   const [events, setEvents] = useState<SwarmEvent[]>([])
   const [now, setNow] = useState(Date.now())
@@ -124,21 +126,17 @@ export function ChangesPanel() {
   return (
     <div style={styles.root}>
       <div style={styles.header}>
-        <span style={styles.title}>Changes</span>
-        <span style={styles.count}>{files.length} file{files.length === 1 ? '' : 's'}</span>
+        <span style={styles.title}>{t('changes.title')}</span>
+        <span style={styles.count}>{t(files.length === 1 ? 'changes.fileOne' : 'changes.fileMany', { n: files.length })}</span>
         {contendedCount > 0 && (
-          <span style={styles.contendBadge}>{contendedCount} contended</span>
+          <span style={styles.contendBadge}>{t('changes.contended', { n: contendedCount })}</span>
         )}
       </div>
 
       <div style={styles.list}>
         {files.length === 0 ? (
           <div style={styles.empty}>
-            No file activity yet. As agents edit files in their working directories,
-            each file shows up here with who touched it. Files changed by two agents
-            at once are flagged as <b>contended</b> so you can step in before a merge
-            conflict. Agents can also call <code>file_intent</code> to announce what
-            they're about to edit.
+            {t('changes.empty')}
           </div>
         ) : (
           files.map(f => (
@@ -148,17 +146,17 @@ export function ChangesPanel() {
                 <span style={styles.filePath} title={f.path}>{f.path}</span>
               </div>
               <div style={styles.rowRight}>
-                {f.contended && <span style={styles.contendTag}>contended</span>}
+                {f.contended && <span style={styles.contendTag}>{t('changes.contendedTag')}</span>}
                 <div style={styles.dots}>
                   {Array.from(f.agents).map(a => (
-                    <span key={a} title={`${a} changed this`} style={{ ...styles.dot, background: agentColor(a) }} />
+                    <span key={a} title={t('changes.changedThis', { agent: a })} style={{ ...styles.dot, background: agentColor(a) }} />
                   ))}
                   {Array.from(f.intents).filter(a => !f.agents.has(a)).map(a => (
-                    <span key={`i-${a}`} title={`${a} declared intent`} style={{ ...styles.dot, ...styles.dotIntent, borderColor: agentColor(a) }} />
+                    <span key={`i-${a}`} title={t('changes.declaredIntent', { agent: a })} style={{ ...styles.dot, ...styles.dotIntent, borderColor: agentColor(a) }} />
                   ))}
                 </div>
                 {f.count > 0 && <span style={styles.changeCount}>{f.count}×</span>}
-                <span style={styles.time}>{relTime(f.lastTs, now)}</span>
+                <span style={styles.time}>{relTime(f.lastTs, now, t)}</span>
               </div>
             </div>
           ))

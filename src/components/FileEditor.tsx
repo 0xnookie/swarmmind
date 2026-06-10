@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react'
+import { useT } from '../i18n'
 import ReactCodeMirror from '@uiw/react-codemirror'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { javascript } from '@codemirror/lang-javascript'
@@ -41,6 +42,7 @@ export function FileEditor({
   onChange,
   onSave,
 }: FileEditorProps) {
+  const t = useT()
   const extensions = useMemo(() => getLanguageExtension(fileName), [fileName])
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -88,7 +90,7 @@ export function FileEditor({
             fontFamily: 'var(--font-mono)',
           }}
         >
-          {fileName ?? 'No file open'}
+          {fileName ?? t('file.noFileOpen')}
         </span>
 
         {/* Unsaved dot */}
@@ -101,7 +103,7 @@ export function FileEditor({
               background: '#fb923c',
               flexShrink: 0,
             }}
-            title="Unsaved changes"
+            title={t('file.unsavedTitle')}
           />
         )}
 
@@ -123,7 +125,7 @@ export function FileEditor({
             transition: 'background 150ms, color 150ms',
           }}
         >
-          Save
+          {t('common.save')}
         </button>
       </div>
 
@@ -139,7 +141,7 @@ export function FileEditor({
             fontSize: 13,
           }}
         >
-          Select a file to edit
+          {t('file.selectToEdit')}
         </div>
       ) : (
         <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>

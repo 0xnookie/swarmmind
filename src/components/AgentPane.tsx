@@ -5,6 +5,7 @@ import { SessionPicker } from './SessionPicker'
 import { useWorkspaceStore, type AgentId, type PtyStatus } from '../store/workspace'
 import { matchEvent, getEffectiveKeys } from '../shortcuts'
 import { resolveTemplate, extractInputTokens } from '../lib/skillTemplate'
+import { useT } from '../i18n'
 import '@xterm/xterm/css/xterm.css'
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -121,6 +122,7 @@ interface AgentPaneProps {
 }
 
 export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSplitV, onClose, isExpanded, isVisible = true, onToggleExpand, onPaneDragStart, onPaneDragEnd }: AgentPaneProps) {
+  const t = useT()
   const containerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
   const [skillDragOver, setSkillDragOver] = useState(false)
@@ -266,7 +268,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const lastShellStartRef = useRef(0)
   const handleExitRef = useRef<(code: number) => void>(() => {})
 
-  const { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, getRecentOutput, findNext, findPrevious, clearSearch } =
+  const { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, copySelection, paste, getRecentOutput, findNext, findPrevious, clearSearch } =
     usePty(paneId, containerRef, { onExit: code => handleExitRef.current(code) })
 
   // When this pane becomes the visible fullscreen tab, it was just un-hidden
@@ -332,12 +334,12 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     const branchHint = worktreeName || paneTitle || agentId || undefined
     const res = await window.swarmmind.gitCreateWorktree(ownerRootPath, paneId, branchHint)
     if ('error' in res) {
-      writeNotice(`worktree disabled: ${res.error}`)
+      writeNotice(t('pane.notice.worktreeDisabled', { error: res.error }))
       setPaneWorktree(paneId, false)
       return effectiveCwd!
     }
     setPaneWorktreeInfo(paneId, { path: res.path, branch: res.branch })
-    writeNotice(`worktree ready on branch ${res.branch}`)
+    writeNotice(t('pane.notice.worktreeReady', { branch: res.branch }))
     return res.path
   }, [worktreeEnabled, ownerRootPath, worktreePath, worktreeName, paneTitle, agentId, paneId, effectiveCwd, writeNotice, setPaneWorktree, setPaneWorktreeInfo])
 
@@ -370,10 +372,10 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     if (!ownerRootPath || !worktreePath) return
     const res = await window.swarmmind.gitRemoveWorktree(ownerRootPath, worktreePath, worktreeBranch ?? undefined, false)
     if ('error' in res) {
-      writeNotice(`worktree remove failed: ${res.error}`)
+      writeNotice(t('pane.notice.worktreeRemoveFailed', { error: res.error }))
     } else {
       setPaneWorktreeInfo(paneId, null)
-      writeNotice(`worktree removed (branch ${worktreeBranch ?? ''} kept)`)
+      writeNotice(t('pane.notice.worktreeRemoved', { branch: worktreeBranch ?? '' }))
     }
   }, [ownerRootPath, worktreePath, worktreeBranch, paneId, writeNotice, setPaneWorktreeInfo])
 
@@ -391,7 +393,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     setPaneWorktreeName(paneId, worktreeNameDraft)
     setEditingWorktree(false)
     if (worktreePath) {
-      writeNotice('worktree name saved — applies to a new worktree (remove the current one to rename it)')
+      writeNotice(t('pane.notice.worktreeNameSaved'))
     }
   }, [paneId, worktreeNameDraft, worktreePath, setPaneWorktreeName, writeNotice])
 
@@ -542,7 +544,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       const aid = (agentId ?? task.assigned_agent) as AgentId | null
       window.swarmmind.memoryWrite('current_task', JSON.stringify(task), 'context', aid ?? undefined).catch(() => {})
       window.swarmmind.taskUpdate(task.id, 'in_progress').catch(() => {})
-      const prompt = `Work on task: "${task.title}".${task.description ? ' ' + task.description : ''}`
+      const prompt = t('pane.taskPrompt', { title: task.title }) + (task.description ? ' ' + task.description : '')
       injectText(prompt + '\r')
     }
   }
@@ -577,11 +579,11 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
         onDragStart={onPaneDragStart}
         onDragEnd={onPaneDragEnd}
         onClick={e => { if (e.ctrlKey || e.metaKey) { e.stopPropagation(); togglePaneSelected(paneId) } }}
-        title="Ctrl/⌘-click to select for broadcast"
+        title={t('pane.selectForBroadcast')}
         onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY }) }}
       >
         {isSelected && (
-          <span title="Selected for broadcast" style={{ flexShrink: 0, color: 'var(--accent)', display: 'flex' }}>
+          <span title={t('pane.selectedForBroadcast')} style={{ flexShrink: 0, color: 'var(--accent)', display: 'flex' }}>
             <CheckIcon />
           </span>
         )}
@@ -621,16 +623,16 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
         ) : (
           <span
             onDoubleClick={e => { e.stopPropagation(); setTitleDraft(paneTitle ?? agentInfo?.label ?? ''); setEditingTitle(true) }}
-            title="Double-click to rename pane"
+            title={t('pane.renameTitle')}
             style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', flexShrink: 0 }}
           >
-            {paneTitle || (agentInfo ? agentInfo.label : <em style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>No agent</em>)}
+            {paneTitle || (agentInfo ? agentInfo.label : <em style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>{t('pane.noAgent')}</em>)}
           </span>
         )}
 
         {/* Attention badge — agent finished a turn / awaiting input */}
         {ptyStatus === 'running' && attention === 'waiting' && (
-          <span style={styles.waitingBadge} title="Agent is waiting for input">waiting</span>
+          <span style={styles.waitingBadge} title={t('pane.waitingTitle')}>{t('pane.waiting')}</span>
         )}
 
         {/* Mixed-workspace badge — this pane's agent belongs to another
@@ -638,9 +640,9 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
         {isForeign && (
           <span
             style={styles.workspaceBadge}
-            title={ownerWorkspace ? `Agent of workspace "${ownerWorkspace.name}" (${ownerWorkspace.root_path})` : 'Bound workspace unavailable'}
+            title={ownerWorkspace ? t('pane.foreignTitle', { name: ownerWorkspace.name, path: ownerWorkspace.root_path }) : t('pane.foreignUnavailableTitle')}
           >
-            ⧉ {ownerWorkspace?.name ?? 'unavailable'}
+            ⧉ {ownerWorkspace?.name ?? t('pane.unavailable')}
           </span>
         )}
 
@@ -657,7 +659,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
           <input
             autoFocus
             value={worktreeNameDraft}
-            placeholder="worktree name"
+            placeholder={t('pane.worktreeNamePlaceholder')}
             spellCheck={false}
             onClick={e => e.stopPropagation()}
             onChange={e => setWorktreeNameDraft(e.target.value)}
@@ -675,11 +677,11 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
             onDoubleClick={e => { e.stopPropagation(); if (!worktreeBranch) startEditingWorktreeName() }}
             title={
               worktreeBranch
-                ? `Isolated worktree on branch ${worktreeBranch}`
-                : 'Worktree created on next spawn — double-click to name it'
+                ? t('pane.worktreeBranchTitle', { branch: worktreeBranch })
+                : t('pane.worktreePendingTitle')
             }
           >
-            ⑂ {worktreeBranch ? worktreeBranch.replace(/^swarmmind\//, '') : (worktreeName || 'worktree')}
+            ⑂ {worktreeBranch ? worktreeBranch.replace(/^swarmmind\//, '') : (worktreeName || t('pane.worktreeFallback'))}
           </span>
         ) : null}
 
@@ -694,28 +696,28 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
               data-variant="success"
               onClick={() => handleSpawn()}
               disabled={!agentId || !effectiveCwd}
-              title="Spawn agent"
+              title={t('pane.spawn')}
             >
               <PlayIcon />
             </button>
           ) : (
-            <button className="pane-action-btn" data-variant="danger" onClick={handleKill} title="Kill process">
+            <button className="pane-action-btn" data-variant="danger" onClick={handleKill} title={t('pane.kill')}>
               <StopIcon />
             </button>
           )}
-          <button className="pane-action-btn" onClick={clear} title="Clear terminal">
+          <button className="pane-action-btn" onClick={clear} title={t('pane.clearTerminal')}>
             <TrashIcon />
           </button>
           {onToggleExpand && (
             <button
               className="pane-action-btn"
               onClick={onToggleExpand}
-              title={isExpanded ? 'Collapse' : 'Expand'}
+              title={isExpanded ? t('pane.collapse') : t('pane.expand')}
             >
               {isExpanded ? <CollapseIcon /> : <ExpandIcon />}
             </button>
           )}
-          <button className="pane-action-btn" data-variant="danger" onClick={onClose} title="Close pane">
+          <button className="pane-action-btn" data-variant="danger" onClick={onClose} title={t('pane.closePane')}>
             <XIcon />
           </button>
         </div>
@@ -734,7 +736,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
               autoFocus
               style={styles.searchInput}
               value={searchQuery}
-              placeholder="Find in terminal…"
+              placeholder={t('pane.findPlaceholder')}
               spellCheck={false}
               onChange={e => { setSearchQuery(e.target.value); findNext(e.target.value) }}
               onKeyDown={e => {
@@ -742,19 +744,19 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
                 else if (e.key === 'Escape') { e.preventDefault(); setSearchOpen(false); clearSearch() }
               }}
             />
-            <button style={styles.searchBtn} onClick={() => findPrevious(searchQuery)} title="Previous (Shift+Enter)">↑</button>
-            <button style={styles.searchBtn} onClick={() => findNext(searchQuery)} title="Next (Enter)">↓</button>
-            <button style={styles.searchBtn} onClick={() => { setSearchOpen(false); clearSearch() }} title="Close (Esc)">✕</button>
+            <button style={styles.searchBtn} onClick={() => findPrevious(searchQuery)} title={t('pane.searchPrev')}>↑</button>
+            <button style={styles.searchBtn} onClick={() => findNext(searchQuery)} title={t('pane.searchNext')}>↓</button>
+            <button style={styles.searchBtn} onClick={() => { setSearchOpen(false); clearSearch() }} title={t('pane.searchClose')}>✕</button>
           </div>
         )}
         {skillDragOver && (
           <div style={styles.dropOverlay}>
-            <span style={styles.dropOverlayText}>Drop skill or task here</span>
+            <span style={styles.dropOverlayText}>{t('pane.dropHere')}</span>
           </div>
         )}
         {!workspace && (
           <div style={styles.emptyState}>
-            <p>Open a workspace to get started</p>
+            <p>{t('pane.openWorkspacePrompt')}</p>
           </div>
         )}
         <div ref={containerRef} style={{ ...styles.terminal, opacity: !workspace ? 0 : 1 }} />
@@ -763,52 +765,61 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       {/* ── Context menu ── */}
       {contextMenu && (
         <div style={{ ...styles.contextMenu, left: contextMenu.x, top: contextMenu.y }}>
-          <button className="ctx-menu-item" onClick={() => { onSplitH(); setContextMenu(null) }}>Split Right</button>
-          <button className="ctx-menu-item" onClick={() => { onSplitV(); setContextMenu(null) }}>Split Down</button>
+          <button className="ctx-menu-item" onClick={() => { copySelection(); setContextMenu(null) }} disabled={!getSelection()}>
+            <span style={{ flex: 1 }}>{t('pane.ctx.copy')}</span>
+            <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>Ctrl+Shift+C</span>
+          </button>
+          <button className="ctx-menu-item" onClick={() => { paste(); setContextMenu(null) }}>
+            <span style={{ flex: 1 }}>{t('pane.ctx.paste')}</span>
+            <span style={{ color: 'var(--text-dim)', fontSize: 11 }}>Ctrl+Shift+V</span>
+          </button>
           <div style={styles.ctxDivider} />
-          <button className="ctx-menu-item" onClick={() => { setContextMenu(null); setTitleDraft(paneTitle ?? agentInfo?.label ?? ''); setEditingTitle(true) }}>Rename pane…</button>
+          <button className="ctx-menu-item" onClick={() => { onSplitH(); setContextMenu(null) }}>{t('pane.ctx.splitRight')}</button>
+          <button className="ctx-menu-item" onClick={() => { onSplitV(); setContextMenu(null) }}>{t('pane.ctx.splitDown')}</button>
+          <div style={styles.ctxDivider} />
+          <button className="ctx-menu-item" onClick={() => { setContextMenu(null); setTitleDraft(paneTitle ?? agentInfo?.label ?? ''); setEditingTitle(true) }}>{t('pane.ctx.rename')}</button>
           <div style={{ display: 'flex', gap: 6, padding: '6px 14px', alignItems: 'center' }}>
             {PANE_COLORS.map(c => (
               <button key={c} onClick={() => { setPaneColor(paneId, c); setContextMenu(null) }}
                 style={{ width: 15, height: 15, borderRadius: '50%', background: c, border: paneColor === c ? '2px solid var(--text-primary)' : 'none', cursor: 'pointer', padding: 0 }} />
             ))}
-            <button onClick={() => { setPaneColor(paneId, null); setContextMenu(null) }} title="No colour"
+            <button onClick={() => { setPaneColor(paneId, null); setContextMenu(null) }} title={t('pane.ctx.noColour')}
               style={{ width: 15, height: 15, borderRadius: '50%', background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer', padding: 0 }} />
           </div>
           {agentId === 'claude' && (
             <>
               <div style={styles.ctxDivider} />
-              <button className="ctx-menu-item" onClick={() => { setContextMenu(null); setSessionPickerOpen(true) }}>Resume session…</button>
+              <button className="ctx-menu-item" onClick={() => { setContextMenu(null); setSessionPickerOpen(true) }}>{t('pane.ctx.resumeSession')}</button>
               <button
                 className="ctx-menu-item"
                 onClick={() => { setPaneWorktree(paneId, !worktreeEnabled); setContextMenu(null) }}
-                title="Run this pane's agent in an isolated git worktree/branch"
+                title={t('pane.ctx.runInWorktreeTitle')}
               >
-                <span style={{ flex: 1 }}>Run in git worktree</span>
+                <span style={{ flex: 1 }}>{t('pane.ctx.runInWorktree')}</span>
                 {worktreeEnabled && <CheckIcon />}
               </button>
               {!worktreeBranch && (
                 <button
                   className="ctx-menu-item"
                   onClick={() => { setContextMenu(null); startEditingWorktreeName() }}
-                  title="Set the branch name for this pane's worktree (defaults to the pane title)"
+                  title={t('pane.ctx.nameWorktreeTitle')}
                 >
-                  Name worktree…
+                  {t('pane.ctx.nameWorktree')}
                 </button>
               )}
               {worktreePath && (
                 <button className="ctx-menu-item" data-variant="danger" onClick={() => { handleRemoveWorktree(); setContextMenu(null) }}>
-                  Remove worktree (keep branch)
+                  {t('pane.ctx.removeWorktree')}
                 </button>
               )}
             </>
           )}
           <div style={styles.ctxDivider} />
-          <div style={styles.ctxLabel}>Pipe (selection or recent output)</div>
-          <button className="ctx-menu-item" onClick={() => { handleShareToMemory(); setContextMenu(null) }}>Send → shared memory</button>
-          <button className="ctx-menu-item" onClick={() => { handleSendToOthers(); setContextMenu(null) }}>Send → other panes</button>
+          <div style={styles.ctxLabel}>{t('pane.ctx.pipeLabel')}</div>
+          <button className="ctx-menu-item" onClick={() => { handleShareToMemory(); setContextMenu(null) }}>{t('pane.ctx.sendMemory')}</button>
+          <button className="ctx-menu-item" onClick={() => { handleSendToOthers(); setContextMenu(null) }}>{t('pane.ctx.sendOthers')}</button>
           <div style={styles.ctxDivider} />
-          <div style={styles.ctxLabel}>Switch agent</div>
+          <div style={styles.ctxLabel}>{t('pane.ctx.switchAgent')}</div>
           {AGENTS.map(a => (
             <button
               key={a.id}
@@ -827,9 +838,9 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
             <>
               <div style={styles.ctxDivider} />
               <div style={styles.ctxLabel}>
-                Run from workspace{ptyStatus === 'running' ? ' (stop agent to change)' : ''}
+                {t('pane.ctx.runFromWorkspace')}{ptyStatus === 'running' ? t('pane.ctx.runFromWorkspaceStop') : ''}
               </div>
-              {[{ id: '', name: `${workspace?.name ?? 'Host'} (this workspace)`, root_path: '' },
+              {[{ id: '', name: t('pane.ctx.hostWorkspace', { name: workspace?.name ?? 'Host' }), root_path: '' },
                 ...knownWorkspaces.filter(w => w.id !== workspace?.id)]
                 .map(w => {
                   const selected = w.id === '' ? !isForeign : w.id === paneWorkspaceId
@@ -850,7 +861,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
           )}
           <div style={styles.ctxDivider} />
           <button className="ctx-menu-item" data-variant="danger" onClick={() => { onClose(); setContextMenu(null) }}>
-            Close Pane
+            {t('pane.ctx.closePane')}
           </button>
         </div>
       )}
@@ -887,6 +898,7 @@ function SkillInputModal({ labels, onSubmit, onCancel }: {
   onSubmit: (inputs: Record<string, string>) => void
   onCancel: () => void
 }) {
+  const t = useT()
   const [values, setValues] = useState<Record<string, string>>({})
   const firstRef = useRef<HTMLInputElement>(null)
   useEffect(() => { firstRef.current?.focus() }, [])
@@ -920,7 +932,7 @@ function SkillInputModal({ labels, onSubmit, onCancel }: {
         }}
       >
         <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
-          Fill in skill values
+          {t('pane.skillValues')}
         </div>
         {labels.map((label, i) => (
           <label key={label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -944,13 +956,13 @@ function SkillInputModal({ labels, onSubmit, onCancel }: {
             onClick={onCancel}
             style={{ background: 'transparent', border: '1px solid var(--border-subtle)', borderRadius: 6, color: 'var(--text-muted)', padding: '5px 12px', cursor: 'pointer', fontSize: 12 }}
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             onClick={submit}
             style={{ background: 'var(--accent)', border: 'none', borderRadius: 6, color: 'var(--accent-fg)', padding: '5px 14px', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}
           >
-            Run
+            {t('pane.skillRun')}
           </button>
         </div>
       </div>

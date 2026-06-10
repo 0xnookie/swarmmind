@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react'
+import { useT } from '../i18n'
 
 // A small banner shown when an update finished downloading (offer restart) or
 // while one is downloading. Stays silent for checking/none/available/error —
 // the main process logs errors; background checks shouldn't nag the user.
 export function UpdateBanner() {
+  const t = useT()
   const [status, setStatus] = useState<UpdateStatus | null>(null)
 
   useEffect(() => window.swarmmind.onUpdateStatus(setStatus), [])
@@ -11,11 +13,11 @@ export function UpdateBanner() {
   if (status?.state === 'ready') {
     return (
       <div style={styles.banner} role="status">
-        <span style={styles.text}>Update {status.version} ready to install.</span>
+        <span style={styles.text}>{t('update.ready', { version: status.version ?? '' })}</span>
         <button style={styles.primary} onClick={() => window.swarmmind.updateInstall()}>
-          Restart
+          {t('update.restart')}
         </button>
-        <button style={styles.dismiss} onClick={() => setStatus(null)} aria-label="Dismiss">
+        <button style={styles.dismiss} onClick={() => setStatus(null)} aria-label={t('update.dismiss')}>
           ×
         </button>
       </div>
@@ -25,7 +27,7 @@ export function UpdateBanner() {
   if (status?.state === 'downloading') {
     return (
       <div style={styles.banner} role="status">
-        <span style={styles.text}>Downloading update… {status.percent}%</span>
+        <span style={styles.text}>{t('update.downloading', { percent: status.percent ?? 0 })}</span>
       </div>
     )
   }

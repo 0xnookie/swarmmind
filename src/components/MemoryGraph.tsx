@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { useMemory, type MemoryEntry, type Task } from '../hooks/useMemory'
+import { useT } from '../i18n'
 
 type NodeKind = 'agent' | 'entry' | 'task'
 interface GNode {
@@ -64,6 +65,7 @@ function buildGraph(entries: MemoryEntry[], tasks: Task[]): { nodes: GNode[]; li
 }
 
 export function MemoryGraph() {
+  const t = useT()
   const workspace = useWorkspaceStore(s => s.workspace)
   const { entries, tasks } = useMemory(workspace?.id ?? null)
 
@@ -208,17 +210,17 @@ export function MemoryGraph() {
   return (
     <main style={styles.wrap}>
       <div style={styles.toolbar}>
-        <span style={styles.title}>Memory Graph</span>
-        <span style={styles.count}>{nodes.filter(n => n.kind === 'agent').length} agents · {entries.length} entries · {tasks.length} tasks</span>
+        <span style={styles.title}>{t('memgraph.title')}</span>
+        <span style={styles.count}>{t('memgraph.stats', { agents: nodes.filter(n => n.kind === 'agent').length, entries: entries.length, tasks: tasks.length })}</span>
         <div style={{ flex: 1 }} />
-        <Legend />
+        <Legend t={t} />
       </div>
 
       <div style={styles.canvasWrap}>
         {!workspace ? (
-          <div style={styles.empty}>Open a workspace to see its memory graph.</div>
+          <div style={styles.empty}>{t('memgraph.openWorkspace')}</div>
         ) : nodes.length === 0 ? (
-          <div style={styles.empty}>No memory entries or tasks yet. As agents write to shared memory, nodes appear here.</div>
+          <div style={styles.empty}>{t('memgraph.empty')}</div>
         ) : (
           <svg
             ref={svgRef}
@@ -261,11 +263,11 @@ export function MemoryGraph() {
   )
 }
 
-function Legend() {
+function Legend({ t }: { t: ReturnType<typeof useT> }) {
   const items = [
-    { c: AGENT_COLOR, label: 'Agent' },
-    { c: TYPE_COLOR.context, label: 'Memory' },
-    { c: STATUS_COLOR.in_progress, label: 'Task' },
+    { c: AGENT_COLOR, label: t('memgraph.legend.agent') },
+    { c: TYPE_COLOR.context, label: t('memgraph.legend.memory') },
+    { c: STATUS_COLOR.in_progress, label: t('memgraph.legend.task') },
   ]
   return (
     <div style={{ display: 'flex', gap: 12 }}>

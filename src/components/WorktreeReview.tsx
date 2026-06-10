@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useWorkspaceStore, type PaneNode } from '../store/workspace'
+import { useT } from '../i18n'
 
 // ── Worktree Review ─────────────────────────────────────────────────────────
 //
@@ -37,6 +38,7 @@ function collectPaneMeta(node: PaneNode, out: Record<string, PaneMeta>): void {
 }
 
 export function WorktreeReview() {
+  const t = useT()
   const workspace = useWorkspaceStore(s => s.workspace)
   const rootPane = useWorkspaceStore(s => s.rootPane)
   const root = workspace?.rootPath ?? null
@@ -88,10 +90,10 @@ export function WorktreeReview() {
     if (!root || !selected) { setDiff(''); return }
     let cancelled = false
     window.swarmmind.gitWorktreeDiff(root, selected, selectedFile ?? undefined, base).then(d => {
-      if (!cancelled) setDiff(d.length > MAX_DIFF_CHARS ? d.slice(0, MAX_DIFF_CHARS) + '\n\n… diff truncated …' : d)
+      if (!cancelled) setDiff(d.length > MAX_DIFF_CHARS ? d.slice(0, MAX_DIFF_CHARS) + t('worktree.diffTruncated') : d)
     })
     return () => { cancelled = true }
-  }, [root, selected, selectedFile, base])
+  }, [root, selected, selectedFile, base, t])
 
   const selectedStat = selected ? stats[selected] : undefined
   const selectedRow = rows.find(r => r.path === selected)
@@ -105,7 +107,7 @@ export function WorktreeReview() {
   const doMerge = async () => {
     if (!root || !selectedRow) return
     if (selectedStat?.hasUncommitted &&
-        !window.confirm('This worktree has uncommitted changes that will NOT be merged. Commit them first?\n\nClick Cancel to go back and commit, or OK to merge only the committed work.')) {
+        !window.confirm(t('worktree.uncommittedConfirm'))) {
       return
     }
     setBusy(true)
@@ -116,7 +118,7 @@ export function WorktreeReview() {
       setNotice({ kind: 'ok', text: res.message })
       refresh()
     } else {
-      setNotice({ kind: 'err', text: res.conflict ? `Merge conflict — aborted, resolve manually. ${res.error}` : `Merge failed: ${res.error}` })
+      setNotice({ kind: 'err', text: res.conflict ? t('worktree.mergeConflict', { error: res.error }) : t('worktree.mergeFailed', { error: res.error }) })
     }
   }
 
@@ -129,31 +131,31 @@ export function WorktreeReview() {
     setCommitOpen(false)
     setCommitMsg('')
     if ('error' in res) setNotice({ kind: 'err', text: res.error })
-    else if (res.hash === null) setNotice({ kind: 'ok', text: 'Nothing to commit' })
-    else { setNotice({ kind: 'ok', text: `Committed ${res.hash}` }); refresh() }
+    else if (res.hash === null) setNotice({ kind: 'ok', text: t('worktree.nothingToCommit') })
+    else { setNotice({ kind: 'ok', text: t('worktree.committed', { hash: res.hash }) }); refresh() }
   }
 
   const doDiscard = async () => {
     if (!root || !selectedRow) return
-    if (!window.confirm(`Discard worktree and DELETE branch "${selectedRow.branch}"? Committed work on it will be lost.`)) return
+    if (!window.confirm(t('worktree.discardConfirm', { branch: selectedRow.branch }))) return
     setBusy(true)
     setNotice(null)
     const res = await window.swarmmind.gitRemoveWorktree(root, selectedRow.path, selectedRow.branch, true)
     setBusy(false)
     if ('error' in res) setNotice({ kind: 'err', text: res.error })
-    else { setNotice({ kind: 'ok', text: 'Discarded' }); setSelected(null); refresh() }
+    else { setNotice({ kind: 'ok', text: t('worktree.discarded') }); setSelected(null); refresh() }
   }
 
   if (!root) {
-    return <div style={styles.root}><div style={styles.empty}>No workspace open.</div></div>
+    return <div style={styles.root}><div style={styles.empty}>{t('worktree.noWorkspace')}</div></div>
   }
 
   return (
     <div style={styles.root}>
       <div style={styles.header}>
-        <span style={styles.title}>Worktree Review</span>
-        {base && <span style={styles.baseTag}>base: {base}</span>}
-        <button style={styles.iconBtn} onClick={refresh} disabled={loading}>↻ Refresh</button>
+        <span style={styles.title}>{t('worktree.title')}</span>
+        {base && <span style={styles.baseTag}>{t('worktree.base', { branch: base })}</span>}
+        <button style={styles.iconBtn} onClick={refresh} disabled={loading}>{t('worktree.refresh')}</button>
       </div>
 
       <div style={styles.body}>
@@ -161,7 +163,7 @@ export function WorktreeReview() {
         <div style={styles.sidebar}>
           {rows.length === 0 && (
             <div style={styles.empty}>
-              {loading ? 'Loading…' : 'No worktrees. Enable "Isolate in worktree" on a pane to create one.'}
+              {loading ? t('common.loading') : t('worktree.none')}
             </div>
           )}
           {rows.map(r => {
@@ -180,7 +182,7 @@ export function WorktreeReview() {
                   <span style={styles.branchStat}>
                     <span style={styles.add}>+{st.files.reduce((s, f) => s + f.additions, 0)}</span>{' '}
                     <span style={styles.del}>−{st.files.reduce((s, f) => s + f.deletions, 0)}</span>
-                    {st.hasUncommitted && <span title="uncommitted changes" style={styles.dirty}>●</span>}
+                    {st.hasUncommitted && <span title={t('worktree.uncommittedTitle')} style={styles.dirty}>●</span>}
                   </span>
                 )}
               </button>
@@ -196,28 +198,28 @@ export function WorktreeReview() {
                 <span style={styles.metaLine}>
                   {selectedStat && (
                     <>
-                      {selectedStat.files.length} file(s) · ahead {selectedStat.ahead} · behind {selectedStat.behind}
-                      {selectedStat.hasUncommitted && <span style={styles.dirtyText}> · uncommitted</span>}
+                      {t('worktree.meta', { n: selectedStat.files.length, ahead: selectedStat.ahead, behind: selectedStat.behind })}
+                      {selectedStat.hasUncommitted && <span style={styles.dirtyText}>{t('worktree.uncommitted')}</span>}
                     </>
                   )}
                 </span>
                 <div style={{ flex: 1 }} />
-                <button style={styles.actBtn} disabled={busy} onClick={() => setCommitOpen(o => !o)}>Commit all…</button>
-                <button style={{ ...styles.actBtn, ...styles.mergeBtn }} disabled={busy} onClick={doMerge}>Merge into {base}</button>
-                <button style={{ ...styles.actBtn, ...styles.discardBtn }} disabled={busy} onClick={doDiscard}>Discard</button>
+                <button style={styles.actBtn} disabled={busy} onClick={() => setCommitOpen(o => !o)}>{t('worktree.commitAll')}</button>
+                <button style={{ ...styles.actBtn, ...styles.mergeBtn }} disabled={busy} onClick={doMerge}>{t('worktree.mergeInto', { base })}</button>
+                <button style={{ ...styles.actBtn, ...styles.discardBtn }} disabled={busy} onClick={doDiscard}>{t('worktree.discard')}</button>
               </div>
 
               {commitOpen && (
                 <div style={styles.commitRow}>
                   <input
                     style={styles.commitInput}
-                    placeholder="Commit message"
+                    placeholder={t('worktree.commitPlaceholder')}
                     value={commitMsg}
                     onChange={e => setCommitMsg(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') doCommit() }}
                     autoFocus
                   />
-                  <button style={styles.actBtn} disabled={busy} onClick={doCommit}>Commit</button>
+                  <button style={styles.actBtn} disabled={busy} onClick={doCommit}>{t('worktree.commit')}</button>
                 </div>
               )}
 
@@ -233,7 +235,7 @@ export function WorktreeReview() {
                   <button
                     style={{ ...styles.chip, ...(selectedFile === null ? styles.chipActive : {}) }}
                     onClick={() => setSelectedFile(null)}
-                  >All</button>
+                  >{t('worktree.all')}</button>
                   {selectedStat.files.map(f => (
                     <button
                       key={f.path}
@@ -248,11 +250,11 @@ export function WorktreeReview() {
               )}
 
               <div style={styles.diffWrap}>
-                {diff ? <DiffView text={diff} /> : <div style={styles.empty}>No changes vs {base}.</div>}
+                {diff ? <DiffView text={diff} /> : <div style={styles.empty}>{t('worktree.noChanges', { base })}</div>}
               </div>
             </>
           ) : (
-            <div style={styles.empty}>Select a worktree to review its diff.</div>
+            <div style={styles.empty}>{t('worktree.selectPrompt')}</div>
           )}
         </div>
       </div>

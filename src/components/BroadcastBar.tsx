@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useWorkspaceStore, type PaneNode, type PaneLeaf, type AgentId } from '../store/workspace'
+import { useT } from '../i18n'
 
 const AGENT_LABEL: Record<AgentId, string> = {
   claude: 'Claude', codex: 'Codex', cursor: 'Cursor', windsurf: 'Windsurf',
@@ -13,6 +14,7 @@ function collectLeaves(node: PaneNode): PaneLeaf[] {
 // Compose a prompt and send it to many panes at once. Targets are chosen via the
 // pane chips (click to toggle); with none chosen it goes to every pane.
 export function BroadcastBar() {
+  const t = useT()
   const open = useWorkspaceStore(s => s.broadcastBarOpen)
   const toggle = useWorkspaceStore(s => s.toggleBroadcastBar)
   const selectedPaneIds = useWorkspaceStore(s => s.selectedPaneIds)
@@ -35,7 +37,7 @@ export function BroadcastBar() {
   const targets = usingSelection ? selectedPaneIds.filter(id => allIds.includes(id)) : allIds
 
   const labelFor = (leaf: PaneLeaf, i: number) =>
-    leaf.title || (leaf.agentId ? AGENT_LABEL[leaf.agentId] : null) || `Pane ${i + 1}`
+    leaf.title || (leaf.agentId ? AGENT_LABEL[leaf.agentId] : null) || t('broadcast.paneFallback', { n: i + 1 })
 
   const send = () => {
     if (!text.trim() || targets.length === 0) return
@@ -56,19 +58,19 @@ export function BroadcastBar() {
     <div style={styles.bar}>
       {/* Header */}
       <div style={styles.header}>
-        <span style={styles.badge}>BROADCAST</span>
+        <span style={styles.badge}>{t('broadcast.badge')}</span>
         <span style={styles.summary}>
           {targets.length === 0
-            ? 'no panes'
+            ? t('broadcast.noPanes')
             : usingSelection
-              ? `${targets.length} selected`
-              : `all ${allIds.length} pane${allIds.length === 1 ? '' : 's'}`}
+              ? t('broadcast.selected', { n: targets.length })
+              : t('broadcast.allPanes', { n: allIds.length })}
         </span>
         <div style={{ flex: 1 }} />
-        <button style={styles.linkBtn} onClick={() => leaves.forEach(l => { if (!selectedPaneIds.includes(l.id)) togglePaneSelected(l.id) })}>all</button>
+        <button style={styles.linkBtn} onClick={() => leaves.forEach(l => { if (!selectedPaneIds.includes(l.id)) togglePaneSelected(l.id) })}>{t('broadcast.all')}</button>
         <span style={styles.dot}>·</span>
-        <button style={styles.linkBtn} onClick={clearSelection} disabled={!usingSelection}>none</button>
-        <button style={styles.close} onClick={toggle} aria-label="Close">✕</button>
+        <button style={styles.linkBtn} onClick={clearSelection} disabled={!usingSelection}>{t('broadcast.none')}</button>
+        <button style={styles.close} onClick={toggle} aria-label={t('common.close')}>✕</button>
       </div>
 
       {/* Pane target chips */}
@@ -86,7 +88,7 @@ export function BroadcastBar() {
                 background: on ? 'var(--bg-elevated-2)' : 'transparent',
                 opacity: on ? 1 : 0.55,
               }}
-              title={usingSelection ? 'Click to toggle target' : 'Click to target only specific panes'}
+              title={usingSelection ? t('broadcast.chipToggle') : t('broadcast.chipPick')}
             >
               <span style={{ width: 7, height: 7, borderRadius: '50%', background: accent, flexShrink: 0 }} />
               <span style={styles.chipLabel}>{labelFor(leaf, i)}</span>
@@ -102,26 +104,26 @@ export function BroadcastBar() {
           value={text}
           onChange={e => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Type a message to broadcast…"
+          placeholder={t('broadcast.placeholder')}
           rows={2}
           spellCheck={false}
           autoFocus
         />
         <div style={styles.controls}>
-          <label style={styles.submitToggle} title="Press Enter in each pane after sending the text">
+          <label style={styles.submitToggle} title={t('broadcast.submitTitle')}>
             <input type="checkbox" checked={submit} onChange={e => setSubmit(e.target.checked)} />
-            submit
+            {t('broadcast.submit')}
           </label>
           <button
             style={{ ...styles.sendBtn, opacity: text.trim() && targets.length ? 1 : 0.4, cursor: text.trim() && targets.length ? 'pointer' : 'not-allowed' }}
             onClick={send}
             disabled={!text.trim() || targets.length === 0}
           >
-            Send to {targets.length}
+            {t('broadcast.sendTo', { n: targets.length })}
           </button>
         </div>
       </div>
-      <div style={styles.hint}>Enter to send · Shift+Enter for a newline · click chips to pick targets</div>
+      <div style={styles.hint}>{t('broadcast.hint')}</div>
     </div>
   )
 }

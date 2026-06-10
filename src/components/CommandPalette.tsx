@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { useT } from '../i18n'
 
 interface Command {
   id: string
@@ -11,6 +12,7 @@ interface Command {
 interface RemoteWorkspace { id: string; name: string; root_path: string }
 
 export function CommandPalette() {
+  const t = useT()
   const open = useWorkspaceStore(s => s.commandPaletteOpen)
   const setOpen = useWorkspaceStore(s => s.setCommandPaletteOpen)
   const [query, setQuery] = useState('')
@@ -31,28 +33,28 @@ export function CommandPalette() {
     const s = useWorkspaceStore.getState()
     const close = () => setOpen(false)
     const list: Command[] = [
-      { id: 'new-pane', title: 'New pane', section: 'Panes', run: () => { s.addPane(); close() } },
-      { id: 'broadcast', title: 'Toggle broadcast bar', section: 'View', run: () => { s.toggleBroadcastBar(); close() } },
-      { id: 'preview', title: 'Toggle preview browser', section: 'View', run: () => { s.togglePreviewPanel(); close() } },
-      { id: 'memory', title: 'Toggle memory / skills panel', section: 'View', run: () => { s.toggleMemoryPanel(); close() } },
-      { id: 'code', title: 'Toggle code / file view', section: 'View', run: () => { s.toggleFilePanel(); close() } },
-      { id: 'board', title: 'Toggle Kanban board', section: 'View', run: () => { s.toggleBoard(); close() } },
-      { id: 'graph', title: 'Toggle memory graph', section: 'View', run: () => { s.toggleGraph(); close() } },
-      { id: 'sidebar', title: 'Toggle workspace sidebar', section: 'View', run: () => { s.toggleKanban(); close() } },
-      { id: 'new-workspace', title: 'New workspace…', section: 'Workspace', run: () => { s.openSetupModal(); close() } },
-      { id: 'settings', title: 'Open settings', section: 'Workspace', run: () => { s.openSettings(); close() } },
+      { id: 'new-pane', title: t('cmd.newPane'), section: t('cmd.section.panes'), run: () => { s.addPane(); close() } },
+      { id: 'broadcast', title: t('cmd.broadcast'), section: t('cmd.section.view'), run: () => { s.toggleBroadcastBar(); close() } },
+      { id: 'preview', title: t('cmd.preview'), section: t('cmd.section.view'), run: () => { s.togglePreviewPanel(); close() } },
+      { id: 'memory', title: t('cmd.memory'), section: t('cmd.section.view'), run: () => { s.toggleMemoryPanel(); close() } },
+      { id: 'code', title: t('cmd.code'), section: t('cmd.section.view'), run: () => { s.toggleFilePanel(); close() } },
+      { id: 'board', title: t('cmd.board'), section: t('cmd.section.view'), run: () => { s.toggleBoard(); close() } },
+      { id: 'graph', title: t('cmd.graph'), section: t('cmd.section.view'), run: () => { s.toggleGraph(); close() } },
+      { id: 'sidebar', title: t('cmd.sidebar'), section: t('cmd.section.view'), run: () => { s.toggleKanban(); close() } },
+      { id: 'new-workspace', title: t('cmd.newWorkspace'), section: t('cmd.section.workspace'), run: () => { s.openSetupModal(); close() } },
+      { id: 'settings', title: t('cmd.settings'), section: t('cmd.section.workspace'), run: () => { s.openSettings(); close() } },
     ]
     // Focus pane N
     s.getLeafIds().forEach((id, i) => {
-      list.push({ id: `focus-${id}`, title: `Focus pane ${i + 1}`, section: 'Panes', run: () => { s.setActivePaneId(id); close() } })
+      list.push({ id: `focus-${id}`, title: t('cmd.focusPane', { n: i + 1 }), section: t('cmd.section.panes'), run: () => { s.setActivePaneId(id); close() } })
     })
     // Switch workspace
     for (const ws of workspaces) {
       if (ws.id === s.workspace?.id) continue
       list.push({
         id: `ws-${ws.id}`,
-        title: `Switch to: ${ws.name}`,
-        section: 'Workspace',
+        title: t('cmd.switchTo', { name: ws.name }),
+        section: t('cmd.section.workspace'),
         run: async () => {
           close()
           const info = await window.swarmmind.workspaceOpenById(ws.id)
@@ -65,7 +67,7 @@ export function CommandPalette() {
       })
     }
     return list
-  }, [open, workspaces, setOpen])
+  }, [open, workspaces, setOpen, t])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -92,11 +94,11 @@ export function CommandPalette() {
           style={styles.input}
           value={query}
           onChange={e => setQuery(e.target.value)}
-          placeholder="Type a command…"
+          placeholder={t('cmd.placeholder')}
           spellCheck={false}
         />
         <div style={styles.list}>
-          {filtered.length === 0 && <div style={styles.empty}>No commands</div>}
+          {filtered.length === 0 && <div style={styles.empty}>{t('cmd.empty')}</div>}
           {filtered.map((c, i) => (
             <button
               key={c.id}

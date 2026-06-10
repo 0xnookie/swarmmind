@@ -7,6 +7,7 @@ import {
   type OrchestrationMode,
 } from '../store/workspace'
 import { conductorControls } from '../hooks/useConductor'
+import { useT, type TranslationKey } from '../i18n'
 
 const AGENT_LABEL: Record<AgentId, string> = {
   claude: 'Claude', codex: 'Codex', cursor: 'Cursor', windsurf: 'Windsurf',
@@ -17,15 +18,23 @@ function collectLeaves(node: PaneNode): PaneLeaf[] {
   return node.type === 'leaf' ? [node] : node.children.flatMap(collectLeaves)
 }
 
-const MODES: { id: OrchestrationMode; label: string; hint: string }[] = [
-  { id: 'off', label: 'Off', hint: 'Conductor inactive' },
-  { id: 'assisted', label: 'Assisted', hint: 'Proposes each dispatch for your approval' },
-  { id: 'auto', label: 'Auto', hint: 'Dispatches tasks automatically' },
+const MODES: { id: OrchestrationMode; labelKey: TranslationKey; hintKey: TranslationKey }[] = [
+  { id: 'off', labelKey: 'orch.mode.off', hintKey: 'orch.mode.off.hint' },
+  { id: 'assisted', labelKey: 'orch.mode.assisted', hintKey: 'orch.mode.assisted.hint' },
+  { id: 'auto', labelKey: 'orch.mode.auto', hintKey: 'orch.mode.auto.hint' },
 ]
+
+const PHASE_KEY: Record<string, TranslationKey> = {
+  idle: 'orch.phase.idle',
+  running: 'orch.phase.running',
+  synthesizing: 'orch.phase.synthesizing',
+  done: 'orch.phase.done',
+}
 
 // Compose the orchestration control surface: pick a mode and (optionally) a lead
 // pane + goal, then watch the conductor dispatch tasks across the worker panes.
 export function OrchestratorBar() {
+  const t = useT()
   const open = useWorkspaceStore(s => s.orchestratorBarOpen)
   const toggle = useWorkspaceStore(s => s.toggleOrchestratorBar)
   const mode = useWorkspaceStore(s => s.orchestrationMode)
@@ -62,7 +71,7 @@ export function OrchestratorBar() {
   if (!open) return null
 
   const labelFor = (leaf: PaneLeaf, i: number) =>
-    leaf.title || (leaf.agentId ? AGENT_LABEL[leaf.agentId] : null) || `Pane ${i + 1}`
+    leaf.title || (leaf.agentId ? AGENT_LABEL[leaf.agentId] : null) || t('common.paneN', { n: i + 1 })
 
   const workerEntries = Object.entries(paneTask)
   const canStart = mode !== 'off' && !!leadPaneId && goal.trim().length > 0 && phase !== 'running'
@@ -71,15 +80,15 @@ export function OrchestratorBar() {
     <div style={styles.bar}>
       {/* Header */}
       <div style={styles.header}>
-        <span style={styles.badge}>ORCHESTRATOR</span>
-        <span style={styles.phasePill} data-phase={phase}>{phase}</span>
+        <span style={styles.badge}>{t('orch.badge')}</span>
+        <span style={styles.phasePill} data-phase={phase}>{t(PHASE_KEY[phase] ?? 'orch.phase.idle')}</span>
         <div style={{ flex: 1 }} />
         {/* Mode segmented control */}
         <div style={styles.segmented}>
           {MODES.map(m => (
             <button
               key={m.id}
-              title={m.hint}
+              title={t(m.hintKey)}
               onClick={() => setMode(m.id)}
               style={{
                 ...styles.segBtn,
@@ -87,22 +96,22 @@ export function OrchestratorBar() {
                 color: mode === m.id ? 'var(--accent-fg)' : 'var(--text-muted)',
               }}
             >
-              {m.label}
+              {t(m.labelKey)}
             </button>
           ))}
         </div>
-        <button style={styles.close} onClick={toggle} aria-label="Close">✕</button>
+        <button style={styles.close} onClick={toggle} aria-label={t('common.close')}>✕</button>
       </div>
 
       {/* Lead + goal row */}
       <div style={styles.controlRow}>
-        <label style={styles.fieldLabel}>Lead</label>
+        <label style={styles.fieldLabel}>{t('orch.lead')}</label>
         <select
           style={styles.select}
           value={leadPaneId ?? ''}
           onChange={e => setLeadPaneId(e.target.value || null)}
         >
-          <option value="">— none (queue dispatch only) —</option>
+          <option value="">{t('orch.leadNone')}</option>
           {agentPanes.map((leaf, i) => (
             <option key={leaf.id} value={leaf.id}>{labelFor(leaf, i)}</option>
           ))}
@@ -111,19 +120,19 @@ export function OrchestratorBar() {
           style={styles.goalInput}
           value={goal}
           onChange={e => setGoal(e.target.value)}
-          placeholder="High-level goal for the lead to decompose…"
+          placeholder={t('orch.goalPlaceholder')}
           spellCheck={false}
         />
         {phase === 'running' ? (
-          <button style={styles.stopBtn} onClick={stop}>Stop</button>
+          <button style={styles.stopBtn} onClick={stop}>{t('orch.stop')}</button>
         ) : (
           <button
             style={{ ...styles.startBtn, opacity: canStart ? 1 : 0.4, cursor: canStart ? 'pointer' : 'not-allowed' }}
             onClick={start}
             disabled={!canStart}
-            title={mode === 'off' ? 'Set a mode first' : !leadPaneId ? 'Pick a lead pane' : 'Decompose the goal & run'}
+            title={mode === 'off' ? t('orch.startTitleMode') : !leadPaneId ? t('orch.startTitleLead') : t('orch.startTitleReady')}
           >
-            Start
+            {t('orch.start')}
           </button>
         )}
       </div>
@@ -132,20 +141,20 @@ export function OrchestratorBar() {
       {mode === 'assisted' && proposal && (
         <div style={styles.proposal}>
           <span style={styles.proposalText}>
-            Dispatch <strong>“{proposal.title}”</strong> → {proposal.agentId ?? 'pane'}?
+            {t('orch.proposal', { title: proposal.title, agent: proposal.agentId ?? t('orch.proposalPane') })}
           </span>
           <div style={{ flex: 1 }} />
-          <button style={styles.approveBtn} onClick={() => conductorControls.approve()}>Approve</button>
-          <button style={styles.skipBtn} onClick={() => conductorControls.skip()}>Skip</button>
+          <button style={styles.approveBtn} onClick={() => conductorControls.approve()}>{t('orch.approve')}</button>
+          <button style={styles.skipBtn} onClick={() => conductorControls.skip()}>{t('orch.skip')}</button>
         </div>
       )}
 
       {/* Worker status + log */}
       <div style={styles.statusRow}>
         <div style={styles.statusCol}>
-          <div style={styles.colLabel}>Working ({workerEntries.length})</div>
+          <div style={styles.colLabel}>{t('orch.working', { n: workerEntries.length })}</div>
           {workerEntries.length === 0 ? (
-            <div style={styles.empty}>No active dispatches</div>
+            <div style={styles.empty}>{t('orch.noDispatches')}</div>
           ) : (
             workerEntries.map(([paneId, taskId]) => {
               const leaf = leaves.find(l => l.id === paneId)
@@ -153,7 +162,7 @@ export function OrchestratorBar() {
               return (
                 <div key={paneId} style={styles.workerRow}>
                   <span style={styles.workerDot} />
-                  <span style={styles.workerName}>{leaf ? labelFor(leaf, idx) : 'pane'}</span>
+                  <span style={styles.workerName}>{leaf ? labelFor(leaf, idx) : t('orch.proposalPane')}</span>
                   <span style={styles.workerTask}>{taskTitles[taskId] ?? taskId.slice(0, 8)}</span>
                 </div>
               )
@@ -162,12 +171,12 @@ export function OrchestratorBar() {
         </div>
         <div style={styles.statusCol}>
           <div style={styles.colLabel}>
-            Activity
-            {log.length > 0 && <button style={styles.clearLink} onClick={clearLog}>clear</button>}
+            {t('orch.activity')}
+            {log.length > 0 && <button style={styles.clearLink} onClick={clearLog}>{t('orch.clear')}</button>}
           </div>
           <div style={styles.logBox}>
             {log.length === 0 ? (
-              <div style={styles.empty}>No activity yet</div>
+              <div style={styles.empty}>{t('orch.noActivity')}</div>
             ) : (
               log.map(e => (
                 <div key={e.id} style={styles.logLine}>
@@ -179,7 +188,7 @@ export function OrchestratorBar() {
         </div>
       </div>
       <div style={styles.hint}>
-        Workers report done via the <code>task_update</code> / <code>memory_write("result:&lt;id&gt;")</code> MCP tools · agent panes must be running
+        {t('orch.hintPrefix')} <code>task_update</code> / <code>memory_write("result:&lt;id&gt;")</code> {t('orch.hintSuffix')}
       </div>
     </div>
   )

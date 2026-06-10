@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useT, type TFunction } from '../i18n'
 
 interface SessionPickerProps {
   rootPath: string
@@ -6,18 +7,19 @@ interface SessionPickerProps {
   onClose: () => void
 }
 
-function relativeTime(ms: number): string {
+function relativeTime(ms: number, t: TFunction): string {
   const diff = Date.now() - ms
   const m = Math.round(diff / 60000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m ago`
+  if (m < 1) return t('time.justNow')
+  if (m < 60) return t('time.minutesAgo', { n: m })
   const h = Math.round(m / 60)
-  if (h < 24) return `${h}h ago`
+  if (h < 24) return t('time.hoursAgo', { n: h })
   const d = Math.round(h / 24)
-  return `${d}d ago`
+  return t('time.daysAgo', { n: d })
 }
 
 export function SessionPicker({ rootPath, onPick, onClose }: SessionPickerProps) {
+  const t = useT()
   const [sessions, setSessions] = useState<SessionInfo[] | null>(null)
 
   useEffect(() => {
@@ -30,21 +32,21 @@ export function SessionPicker({ rootPath, onPick, onClose }: SessionPickerProps)
     <div style={styles.overlay} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={styles.card}>
         <div style={styles.header}>
-          <h3 style={styles.title}>Resume a session</h3>
-          <button style={styles.close} onClick={onClose} aria-label="Close">✕</button>
+          <h3 style={styles.title}>{t('session.title')}</h3>
+          <button style={styles.close} onClick={onClose} aria-label={t('common.close')}>✕</button>
         </div>
-        <p style={styles.subtitle}>Claude Code conversations recorded for this folder.</p>
+        <p style={styles.subtitle}>{t('session.subtitle')}</p>
 
         <div style={styles.list}>
-          {sessions === null && <div style={styles.empty}>Loading…</div>}
-          {sessions && sessions.length === 0 && <div style={styles.empty}>No recorded sessions for this folder.</div>}
+          {sessions === null && <div style={styles.empty}>{t('common.loading')}</div>}
+          {sessions && sessions.length === 0 && <div style={styles.empty}>{t('session.none')}</div>}
           {sessions && sessions.map(s => (
             <button key={s.id} style={styles.row} onClick={() => onPick(s.id)}>
               <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-                <div style={styles.preview}>{s.preview || <span style={{ color: 'var(--text-dim)' }}>(no preview)</span>}</div>
-                <div style={styles.meta}>{relativeTime(s.mtime)} · {s.id.slice(0, 8)}</div>
+                <div style={styles.preview}>{s.preview || <span style={{ color: 'var(--text-dim)' }}>{t('session.noPreview')}</span>}</div>
+                <div style={styles.meta}>{relativeTime(s.mtime, t)} · {s.id.slice(0, 8)}</div>
               </div>
-              <span style={styles.resume}>Resume</span>
+              <span style={styles.resume}>{t('session.resume')}</span>
             </button>
           ))}
         </div>

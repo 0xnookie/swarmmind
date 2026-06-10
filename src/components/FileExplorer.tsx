@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react'
+import { useT } from '../i18n'
 
 interface FileExplorerProps {
   rootPath: string
@@ -114,6 +115,7 @@ async function loadDir(dirPath: string): Promise<FsEntry[]> {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplorerProps) {
+  const t = useT()
   const [nodes, setNodes] = useState<TreeNode[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -203,7 +205,7 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
           background: 'var(--bg-panel)',
         }}
       >
-        Loading…
+        {t('common.loading')}
       </div>
     )
   }

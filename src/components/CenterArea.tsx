@@ -3,6 +3,7 @@ import { AgentPane } from './AgentPane'
 import { BroadcastBar } from './BroadcastBar'
 import { OrchestratorBar } from './OrchestratorBar'
 import { useWorkspaceStore, type PaneNode, type PaneLeaf } from '../store/workspace'
+import { useT } from '../i18n'
 
 // ── Tree helper ───────────────────────────────────────────────────────────────
 
@@ -167,6 +168,7 @@ interface PaneTabsProps {
 }
 
 function PaneTabs({ leaves, activeId, onSelect, onExit }: PaneTabsProps) {
+  const t = useT()
   const paneAttention = useWorkspaceStore(s => s.paneAttention)
   const activeTabRef = useRef<HTMLButtonElement>(null)
 
@@ -197,7 +199,7 @@ function PaneTabs({ leaves, activeId, onSelect, onExit }: PaneTabsProps) {
     <div style={stripStyle}>
       {leaves.map((leaf, i) => {
         const isActive = leaf.id === activeId
-        const label = leaf.title || leaf.agentId || `Pane ${i + 1}`
+        const label = leaf.title || leaf.agentId || t('common.paneN', { n: i + 1 })
         const waiting = paneAttention[leaf.id] === 'waiting'
         return (
           <button
@@ -244,7 +246,7 @@ function PaneTabs({ leaves, activeId, onSelect, onExit }: PaneTabsProps) {
             </span>
             {waiting && (
               <span
-                title="Waiting for input"
+                title={t('center.waitingForInput')}
                 style={{
                   flex: '0 0 auto',
                   width: 6,
@@ -260,7 +262,7 @@ function PaneTabs({ leaves, activeId, onSelect, onExit }: PaneTabsProps) {
       <button
         type="button"
         onClick={onExit}
-        title="Exit fullscreen (Esc)"
+        title={t('center.exitFullscreen')}
         style={{
           marginLeft: 'auto',
           flex: '0 0 auto',

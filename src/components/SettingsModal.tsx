@@ -5,6 +5,7 @@ import {
   type ThemePreset, type UiDensity, type UiFontId, type MonoFontId,
 } from '../appearance'
 import { SHORTCUTS, getEffectiveKeys, formatKeys, eventToKeys, findConflict } from '../shortcuts'
+import { useT, LANGUAGES, type TFunction, type Language } from '../i18n'
 
 // Agents that expose configurable launch settings (API key, model, …).
 const AGENTS: { id: AgentId; label: string }[] = [
@@ -25,10 +26,10 @@ const ALL_AGENTS: { id: AgentId; label: string }[] = [
   { id: 'cline',    label: 'Cline' }
 ]
 
-const SHELL_OPTIONS: { value: ShellStyle; label: string; desc: string }[] = [
-  { value: 'powershell', label: 'PowerShell', desc: 'Windows default' },
-  { value: 'cmd', label: 'CMD', desc: 'Windows' },
-  { value: 'bash', label: 'Bash', desc: 'Git Bash / WSL' }
+const SHELL_OPTIONS: { value: ShellStyle; label: string; descKey: 'settings.shell.powershell.desc' | 'settings.shell.cmd.desc' | 'settings.shell.bash.desc' }[] = [
+  { value: 'powershell', label: 'PowerShell', descKey: 'settings.shell.powershell.desc' },
+  { value: 'cmd', label: 'CMD', descKey: 'settings.shell.cmd.desc' },
+  { value: 'bash', label: 'Bash', descKey: 'settings.shell.bash.desc' }
 ]
 
 // Per-agent placeholder for the API-key field.
@@ -52,6 +53,9 @@ type Section = 'general' | 'appearance' | 'shortcuts' | 'terminal' | AgentId
 const IS_WINDOWS = typeof window !== 'undefined' && window.swarmmind?.platform === 'win32'
 
 export function SettingsModal() {
+  const t = useT()
+  const language = useWorkspaceStore(s => s.language)
+  const setLanguage = useWorkspaceStore(s => s.setLanguage)
   const settingsOpen = useWorkspaceStore(s => s.settingsOpen)
   const settingsAgentId = useWorkspaceStore(s => s.settingsAgentId)
   const closeSettings = useWorkspaceStore(s => s.closeSettings)
@@ -63,6 +67,8 @@ export function SettingsModal() {
   const setTerminalFontSize = useWorkspaceStore(s => s.setTerminalFontSize)
   const storeCursorBlink = useWorkspaceStore(s => s.terminalCursorBlink)
   const setTerminalCursorBlink = useWorkspaceStore(s => s.setTerminalCursorBlink)
+  const storeCloseToTray = useWorkspaceStore(s => s.closeToTray)
+  const setCloseToTray = useWorkspaceStore(s => s.setCloseToTray)
 
   // Appearance + shortcuts apply instantly (no draft/Save), so we read live
   // store values and call setters directly from the controls.
@@ -91,6 +97,7 @@ export function SettingsModal() {
   const [shell, setShell] = useState<ShellStyle>(storeShellStyle)
   const [defaultAgent, setDefaultAgent] = useState<AgentId | null>(storeDefaultAgentId)
   const [idleSeconds, setIdleSeconds] = useState(4)
+  const [closeTray, setCloseTray] = useState(storeCloseToTray)
   // Terminal-section draft
   const [fontSize, setFontSize] = useState(storeFontSize)
   const [cursorBlink, setCursorBlink] = useState(storeCursorBlink)
@@ -128,6 +135,7 @@ export function SettingsModal() {
     setDefaultAgent(storeDefaultAgentId)
     setFontSize(storeFontSize)
     setCursorBlink(storeCursorBlink)
+    setCloseTray(storeCloseToTray)
     setRecordingId(null)
     setAccentDraft(useWorkspaceStore.getState().accentColor ?? '')
 
@@ -195,6 +203,7 @@ export function SettingsModal() {
       setDefaultAgentId(defaultAgent)
       const clamped = Math.min(60, Math.max(1, Math.round(idleSeconds) || 4))
       await window.swarmmind.setAppSetting('agentIdleMs', String(clamped * 1000))
+      setCloseToTray(closeTray)
     }
     if (terminalDirty) {
       setTerminalFontSize(fontSize)
@@ -209,8 +218,8 @@ export function SettingsModal() {
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, shell, defaultAgent, idleSeconds,
-      fontSize, cursorBlink, setShellStyle, setDefaultAgentId, setTerminalFontSize, setTerminalCursorBlink])
+  }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, shell, defaultAgent, idleSeconds, closeTray,
+      fontSize, cursorBlink, setShellStyle, setDefaultAgentId, setTerminalFontSize, setTerminalCursorBlink, setCloseToTray])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') {
@@ -253,7 +262,7 @@ export function SettingsModal() {
     >
       <span className="nav-icon" aria-hidden="true">{icon}</span>
       {label}
-      {dirty && <span className="settings-dirty-dot" aria-label="unsaved changes" />}
+      {dirty && <span className="settings-dirty-dot" aria-label={t('settings.nav.unsaved')} />}
     </button>
   )
 
@@ -269,18 +278,18 @@ export function SettingsModal() {
         onKeyDown={onKeyDown}
       >
         <div style={styles.header}>
-          <h2 id="settings-title" style={styles.title}>Settings</h2>
-          <button style={styles.closeBtn} onClick={closeSettings} aria-label="Close settings">✕</button>
+          <h2 id="settings-title" style={styles.title}>{t('settings.title')}</h2>
+          <button style={styles.closeBtn} onClick={closeSettings} aria-label={t('settings.close')}>✕</button>
         </div>
 
         <div style={styles.body}>
           {/* Sidebar navigation */}
           <nav style={styles.nav} role="tablist" aria-orientation="vertical" aria-label="Settings sections">
-            {navItem('general', 'General', <GearIcon />, generalDirty)}
-            {navItem('appearance', 'Appearance', <PaletteIcon />, false)}
-            {navItem('shortcuts', 'Shortcuts', <KeyIcon />, false)}
-            {navItem('terminal', 'Terminal', <TerminalIcon />, terminalDirty)}
-            <div style={styles.navLabel}>Agents</div>
+            {navItem('general', t('settings.nav.general'), <GearIcon />, generalDirty)}
+            {navItem('appearance', t('settings.nav.appearance'), <PaletteIcon />, false)}
+            {navItem('shortcuts', t('settings.nav.shortcuts'), <KeyIcon />, false)}
+            {navItem('terminal', t('settings.nav.terminal'), <TerminalIcon />, terminalDirty)}
+            <div style={styles.navLabel}>{t('settings.nav.agents')}</div>
             {AGENTS.map(a => navItem(a.id, a.label, <AgentDot />, dirtyAgents.has(a.id)))}
           </nav>
 
@@ -288,10 +297,25 @@ export function SettingsModal() {
           <div style={styles.content} role="tabpanel">
             {section === 'general' && (
               <div style={styles.fields}>
+                <Group title={t('settings.language.group')}>
+                  <FieldLabel htmlFor="ui-language">{t('settings.language.label')}</FieldLabel>
+                  <select
+                    id="ui-language"
+                    style={styles.select}
+                    value={language}
+                    onChange={e => setLanguage(e.target.value as Language)}
+                  >
+                    {LANGUAGES.map(l => (
+                      <option key={l.id} value={l.id}>{l.native}</option>
+                    ))}
+                  </select>
+                  <p style={styles.desc}>{t('settings.language.desc')}</p>
+                </Group>
+
                 {IS_WINDOWS && (
-                  <Group title="Shell">
-                    <FieldLabel>Shell style</FieldLabel>
-                    <p style={styles.desc}>How agent commands are wrapped before launch (Windows only).</p>
+                  <Group title={t('settings.shell.group')}>
+                    <FieldLabel>{t('settings.shell.label')}</FieldLabel>
+                    <p style={styles.desc}>{t('settings.shell.desc')}</p>
                     <div style={styles.cardGrid}>
                       {SHELL_OPTIONS.map(opt => (
                         <button
@@ -301,32 +325,50 @@ export function SettingsModal() {
                           onClick={() => { setShell(opt.value); setGeneralDirty(true) }}
                         >
                           <span style={styles.cardTitle}>{opt.label}</span>
-                          <span style={styles.cardDesc}>{opt.desc}</span>
+                          <span style={styles.cardDesc}>{t(opt.descKey)}</span>
                         </button>
                       ))}
                     </div>
                   </Group>
                 )}
 
-                <Group title="Panes">
-                  <FieldLabel htmlFor="default-agent">Default agent</FieldLabel>
+                <Group title={t('settings.panes.group')}>
+                  <FieldLabel htmlFor="default-agent">{t('settings.panes.defaultAgent')}</FieldLabel>
                   <select
                     id="default-agent"
                     style={styles.select}
                     value={defaultAgent ?? ''}
                     onChange={e => { setDefaultAgent((e.target.value as AgentId) || null); setGeneralDirty(true) }}
                   >
-                    <option value="">None</option>
+                    <option value="">{t('common.none')}</option>
                     {ALL_AGENTS.map(a => (
                       <option key={a.id} value={a.id}>{a.label}</option>
                     ))}
                   </select>
-                  <p style={styles.desc}>New terminal panes start with this agent pre-selected.</p>
+                  <p style={styles.desc}>{t('settings.panes.defaultAgentDesc')}</p>
                 </Group>
 
-                <Group title="Notifications">
+                <Group title={t('settings.window.group')}>
                   <div style={styles.rowBetween}>
-                    <FieldLabel htmlFor="idle-threshold">Idle threshold</FieldLabel>
+                    <div>
+                      <FieldLabel>{t('settings.window.closeToTray')}</FieldLabel>
+                      <p style={{ ...styles.desc, marginTop: 2 }}>
+                        {t('settings.window.closeToTrayDesc')}
+                      </p>
+                    </div>
+                    <button
+                      className="settings-toggle"
+                      role="switch"
+                      aria-checked={closeTray}
+                      aria-label={t('settings.window.closeToTray')}
+                      onClick={() => { setCloseTray(v => !v); setGeneralDirty(true) }}
+                    />
+                  </div>
+                </Group>
+
+                <Group title={t('settings.notifications.group')}>
+                  <div style={styles.rowBetween}>
+                    <FieldLabel htmlFor="idle-threshold">{t('settings.notifications.idleThreshold')}</FieldLabel>
                     <span style={styles.value}>{idleSeconds}s</span>
                   </div>
                   <input
@@ -339,30 +381,25 @@ export function SettingsModal() {
                     onChange={e => { setIdleSeconds(Number(e.target.value)); setGeneralDirty(true) }}
                     style={styles.range}
                   />
-                  <p style={styles.desc}>
-                    How long an agent's output must stay quiet before it's marked “waiting”. A desktop
-                    notification fires only after you've sent input and the window is unfocused.
-                  </p>
+                  <p style={styles.desc}>{t('settings.notifications.idleDesc')}</p>
                 </Group>
 
-                <Group title="SwarmVoice">
+                <Group title={t('settings.voice.group')}>
                   <p style={styles.desc}>
-                    Runs Whisper locally — no API key needed. First use downloads the Whisper Tiny model
-                    (~39 MB) and caches it permanently. Transcribed text is injected into the active pane
-                    (no newline; press Enter to submit). Shortcut: <kbd style={styles.kbd}>Ctrl</kbd>+
+                    {t('settings.voice.desc')} <kbd style={styles.kbd}>Ctrl</kbd>+
                     <kbd style={styles.kbd}>Shift</kbd>+<kbd style={styles.kbd}>V</kbd>.
                   </p>
                 </Group>
 
-                <UpdatesSection />
+                <UpdatesSection t={t} />
               </div>
             )}
 
             {section === 'terminal' && (
               <div style={styles.fields}>
-                <Group title="Display">
+                <Group title={t('settings.terminal.display')}>
                   <div style={styles.rowBetween}>
-                    <FieldLabel htmlFor="font-size">Font size</FieldLabel>
+                    <FieldLabel htmlFor="font-size">{t('settings.terminal.fontSize')}</FieldLabel>
                     <span style={styles.value}>{fontSize}px</span>
                   </div>
                   <input
@@ -375,18 +412,18 @@ export function SettingsModal() {
                     onChange={e => { setFontSize(Number(e.target.value)); setTerminalDirty(true) }}
                     style={styles.range}
                   />
-                  <p style={styles.desc}>Applies to every terminal pane.</p>
+                  <p style={styles.desc}>{t('settings.terminal.fontSizeDesc')}</p>
 
                   <div style={{ ...styles.rowBetween, marginTop: 14 }}>
                     <div>
-                      <FieldLabel>Cursor blink</FieldLabel>
-                      <p style={{ ...styles.desc, marginTop: 2 }}>Blink the block cursor in idle panes.</p>
+                      <FieldLabel>{t('settings.terminal.cursorBlink')}</FieldLabel>
+                      <p style={{ ...styles.desc, marginTop: 2 }}>{t('settings.terminal.cursorBlinkDesc')}</p>
                     </div>
                     <button
                       className="settings-toggle"
                       role="switch"
                       aria-checked={cursorBlink}
-                      aria-label="Cursor blink"
+                      aria-label={t('settings.terminal.cursorBlink')}
                       onClick={() => { setCursorBlink(v => !v); setTerminalDirty(true) }}
                     />
                   </div>
@@ -396,7 +433,7 @@ export function SettingsModal() {
 
             {section === 'appearance' && (
               <div style={styles.fields}>
-                <Group title="Theme">
+                <Group title={t('settings.appearance.theme')}>
                   <div style={styles.cardGrid}>
                     {THEME_LIST.map(t => (
                       <button
@@ -417,7 +454,7 @@ export function SettingsModal() {
                   </div>
                 </Group>
 
-                <Group title="Accent">
+                <Group title={t('settings.appearance.accent')}>
                   <div style={styles.accentRow}>
                     {ACCENT_PRESETS.map(a => (
                       <button
@@ -432,11 +469,11 @@ export function SettingsModal() {
                     <button
                       className="accent-swatch"
                       aria-pressed={accentColor === null}
-                      title="Use theme default"
+                      title={t('settings.appearance.accentAutoTitle')}
                       style={styles.accentAuto}
                       onClick={() => { setAccentColor(null); setAccentDraft('') }}
                     >
-                      Auto
+                      {t('settings.appearance.accentAuto')}
                     </button>
                   </div>
                   <div style={styles.rowInline}>
@@ -454,13 +491,13 @@ export function SettingsModal() {
                       disabled={!isValidHex(accentDraft)}
                       onClick={() => setAccentColor(accentDraft)}
                     >
-                      Apply
+                      {t('common.apply')}
                     </button>
                   </div>
-                  <p style={styles.desc}>Pick a preset or enter a hex colour. Drives buttons, highlights and the terminal cursor.</p>
+                  <p style={styles.desc}>{t('settings.appearance.accentDesc')}</p>
                 </Group>
 
-                <Group title="Interface density">
+                <Group title={t('settings.appearance.density')}>
                   <div style={styles.cardGrid}>
                     {DENSITY_LIST.map(d => (
                       <button
@@ -476,8 +513,8 @@ export function SettingsModal() {
                   </div>
                 </Group>
 
-                <Group title="Fonts">
-                  <FieldLabel htmlFor="ui-font">Interface font</FieldLabel>
+                <Group title={t('settings.appearance.fonts')}>
+                  <FieldLabel htmlFor="ui-font">{t('settings.appearance.uiFont')}</FieldLabel>
                   <select
                     id="ui-font"
                     style={styles.select}
@@ -489,7 +526,7 @@ export function SettingsModal() {
                     ))}
                   </select>
 
-                  <FieldLabel htmlFor="mono-font">Editor &amp; terminal font</FieldLabel>
+                  <FieldLabel htmlFor="mono-font">{t('settings.appearance.monoFont')}</FieldLabel>
                   <select
                     id="mono-font"
                     style={{ ...styles.select, fontFamily: MONO_FONTS[monoFont].stack }}
@@ -500,7 +537,7 @@ export function SettingsModal() {
                       <option key={id} value={id}>{f.label}</option>
                     ))}
                   </select>
-                  <p style={styles.desc}>Changes apply instantly across the app.</p>
+                  <p style={styles.desc}>{t('settings.appearance.fontsDesc')}</p>
                 </Group>
               </div>
             )}
@@ -522,7 +559,7 @@ export function SettingsModal() {
                             <div style={{ minWidth: 0 }}>
                               <span style={styles.shortcutLabel}>{def.label}</span>
                               {conflict && (
-                                <span style={styles.conflict}>Also bound to “{conflict.label}”</span>
+                                <span style={styles.conflict}>{t('settings.shortcuts.conflict', { label: conflict.label })}</span>
                               )}
                             </div>
                             <div style={styles.rowInline}>
@@ -531,13 +568,13 @@ export function SettingsModal() {
                                 data-recording={recording}
                                 onClick={() => setRecordingId(recording ? null : def.id)}
                               >
-                                {recording ? 'Press keys…' : (formatKeys(keys) || 'Unset')}
+                                {recording ? t('settings.shortcuts.pressKeys') : (formatKeys(keys) || t('settings.shortcuts.unset'))}
                               </button>
                               {overridden && (
                                 <button
                                   className="pane-action-btn"
-                                  title="Reset to default"
-                                  aria-label={`Reset ${def.label} to default`}
+                                  title={t('settings.shortcuts.resetTitle')}
+                                  aria-label={t('settings.shortcuts.resetAria', { label: def.label })}
                                   onClick={() => resetKeybinding(def.id)}
                                 >
                                   ↺
@@ -550,10 +587,7 @@ export function SettingsModal() {
                     </Group>
                   )
                 })}
-                <p style={styles.desc}>
-                  Click a shortcut, then press the new combination. <kbd style={styles.kbd}>Esc</kbd> cancels.
-                  Changes apply instantly.
-                </p>
+                <p style={styles.desc}>{t('settings.shortcuts.desc')}</p>
               </div>
             )}
 
@@ -562,8 +596,8 @@ export function SettingsModal() {
               const cfg = agentConfigs[id] ?? {}
               return (
                 <div style={styles.fields}>
-                  <Group title={`${AGENTS.find(a => a.id === id)?.label ?? id} configuration`}>
-                    <FieldLabel htmlFor={`${id}-key`}>API key</FieldLabel>
+                  <Group title={t('settings.agent.configuration', { agent: AGENTS.find(a => a.id === id)?.label ?? id })}>
+                    <FieldLabel htmlFor={`${id}-key`}>{t('settings.agent.apiKey')}</FieldLabel>
                     <input
                       id={`${id}-key`}
                       style={styles.input}
@@ -573,39 +607,38 @@ export function SettingsModal() {
                       onChange={e => editAgent(id, { apiKey: e.target.value })}
                     />
 
-                    <FieldLabel htmlFor={`${id}-model`}>Model <span style={styles.optional}>(optional)</span></FieldLabel>
+                    <FieldLabel htmlFor={`${id}-model`}>{t('settings.agent.model')} <span style={styles.optional}>{t('common.optional')}</span></FieldLabel>
                     <input
                       id={`${id}-model`}
                       style={styles.input}
                       type="text"
-                      placeholder="e.g. claude-opus-4-8"
+                      placeholder={t('settings.agent.modelPlaceholder')}
                       value={cfg.model ?? ''}
                       onChange={e => editAgent(id, { model: e.target.value })}
                     />
 
-                    <FieldLabel htmlFor={`${id}-path`}>Executable path <span style={styles.optional}>(optional)</span></FieldLabel>
+                    <FieldLabel htmlFor={`${id}-path`}>{t('settings.agent.execPath')} <span style={styles.optional}>{t('common.optional')}</span></FieldLabel>
                     <input
                       id={`${id}-path`}
                       style={styles.input}
                       type="text"
-                      placeholder={`Full path to ${id} binary`}
+                      placeholder={t('settings.agent.execPathPlaceholder', { agent: id })}
                       value={cfg.executablePath ?? ''}
                       onChange={e => editAgent(id, { executablePath: e.target.value })}
                     />
 
-                    <FieldLabel htmlFor={`${id}-flags`}>Extra flags <span style={styles.optional}>(space-separated)</span></FieldLabel>
+                    <FieldLabel htmlFor={`${id}-flags`}>{t('settings.agent.extraFlags')} <span style={styles.optional}>{t('settings.agent.extraFlagsHint')}</span></FieldLabel>
                     <input
                       id={`${id}-flags`}
                       style={styles.input}
                       type="text"
-                      placeholder="e.g. --verbose --no-auto-update"
+                      placeholder={t('settings.agent.extraFlagsPlaceholder')}
                       value={(cfg.extraFlags ?? []).join(' ')}
                       onChange={e => editAgent(id, { extraFlags: e.target.value.split(' ').filter(Boolean) })}
                     />
                   </Group>
                   <p style={styles.desc}>
-                    Keys are stored in the workspace SQLite database. The embedded MCP server is
-                    auto-configured at <code style={styles.code}>http://127.0.0.1:[auto-assigned]</code>.
+                    {t('settings.agent.storageNote')} <code style={styles.code}>http://127.0.0.1:[auto-assigned]</code>.
                   </p>
                 </div>
               )
@@ -614,10 +647,10 @@ export function SettingsModal() {
         </div>
 
         <div style={styles.footer}>
-          <span style={styles.footerHint}>{anyDirty ? 'Unsaved changes' : ''}</span>
-          <button style={styles.cancelBtn} onClick={closeSettings}>Cancel</button>
+          <span style={styles.footerHint}>{anyDirty ? t('common.unsavedChanges') : ''}</span>
+          <button style={styles.cancelBtn} onClick={closeSettings}>{t('common.cancel')}</button>
           <button style={styles.saveBtn} onClick={handleSave} disabled={saving || !anyDirty}>
-            {saved ? '✓ Saved' : saving ? 'Saving…' : 'Save'}
+            {saved ? t('common.saved') : saving ? t('common.saving') : t('common.save')}
           </button>
         </div>
       </div>
@@ -631,7 +664,7 @@ export function SettingsModal() {
 // directly, outside the modal's draft/Save model (an update isn't a "setting").
 // Surfaces every state — checking / up-to-date / available / downloading /
 // ready / error — that the silent UpdateBanner deliberately hides.
-function UpdatesSection() {
+function UpdatesSection({ t }: { t: TFunction }) {
   const [status, setStatus] = useState<UpdateStatus | null>(null)
   const [version, setVersion] = useState('')
   const [unsupported, setUnsupported] = useState(false)
@@ -653,23 +686,23 @@ function UpdatesSection() {
   const busy = status?.state === 'checking' || status?.state === 'downloading'
 
   const line = (() => {
-    if (unsupported) return 'Automatic updates are only available in the installed app.'
+    if (unsupported) return t('settings.updates.unsupported')
     switch (status?.state) {
-      case 'checking': return 'Checking for updates…'
-      case 'none': return "You're on the latest version."
-      case 'available': return `Update ${status.version} found — downloading in the background…`
-      case 'downloading': return `Downloading update… ${status.percent}%`
-      case 'ready': return `Update ${status.version} downloaded — restart to install.`
-      case 'error': return `Update check failed: ${status.message}`
-      default: return 'SwarmMind checks for updates automatically every few hours.'
+      case 'checking': return t('settings.updates.checkingLine')
+      case 'none': return t('settings.updates.latest')
+      case 'available': return t('settings.updates.found', { version: status.version })
+      case 'downloading': return t('settings.updates.downloading', { percent: status.percent })
+      case 'ready': return t('settings.updates.ready', { version: status.version })
+      case 'error': return t('settings.updates.failed', { message: status.message })
+      default: return t('settings.updates.idle')
     }
   })()
 
   return (
-    <Group title="Updates">
+    <Group title={t('settings.updates.group')}>
       <div style={styles.rowBetween}>
         <div style={{ minWidth: 0 }}>
-          <FieldLabel>Current version</FieldLabel>
+          <FieldLabel>{t('settings.updates.currentVersion')}</FieldLabel>
           <p style={{ ...styles.desc, marginTop: 2 }}>
             SwarmMind{version ? ` v${version}` : ''}
           </p>
@@ -680,7 +713,7 @@ function UpdatesSection() {
             style={styles.inlineBtn}
             onClick={() => window.swarmmind.updateInstall()}
           >
-            Restart to install
+            {t('settings.updates.restartToInstall')}
           </button>
         ) : (
           <button
@@ -689,7 +722,7 @@ function UpdatesSection() {
             disabled={busy}
             onClick={check}
           >
-            {status?.state === 'checking' ? 'Checking…' : 'Check for updates'}
+            {status?.state === 'checking' ? t('settings.updates.checking') : t('settings.updates.check')}
           </button>
         )}
       </div>

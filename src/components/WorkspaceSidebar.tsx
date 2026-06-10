@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { useT } from '../i18n'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -128,6 +129,7 @@ interface WorkspaceRowProps {
 }
 
 function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, favorite, editRequested, colorPickerOpen, onClick, onDragStart, onDragOver, onDragEnd, onColorPickerToggle, onColorPickerClose, onColorSelect, onDelete, onRename, onToggleFavorite, onContextMenu, onEditConsume }: WorkspaceRowProps) {
+  const t = useT()
   const [hovered, setHovered] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(ws.name)
@@ -208,7 +210,7 @@ function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, favorite, 
       ) : (
         <span
           onDoubleClick={e => { e.stopPropagation(); beginEdit() }}
-          title="Double-click to rename"
+          title={t('sidebar.renameDbl')}
           style={{
             fontSize: 14, fontWeight: 500,
             color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
@@ -244,7 +246,7 @@ function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, favorite, 
         <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
           <button
             onClick={e => { e.stopPropagation(); onToggleFavorite() }}
-            title={favorite ? 'Remove from favorites' : 'Add to favorites'}
+            title={favorite ? t('sidebar.removeFromFav') : t('sidebar.addToFav')}
             style={{
               width: 20, height: 20,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -258,7 +260,7 @@ function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, favorite, 
           </button>
           <button
             onClick={e => { e.stopPropagation(); beginEdit() }}
-            title="Rename workspace"
+            title={t('sidebar.renameWorkspace')}
             style={{
               width: 20, height: 20,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -272,7 +274,7 @@ function WorkspaceRow({ ws, active, dotColor, dragging, sessionCount, favorite, 
           </button>
           <button
             onClick={e => { e.stopPropagation(); onDelete() }}
-            title="Remove workspace"
+            title={t('sidebar.removeWorkspace')}
             style={{
               width: 20, height: 20,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -379,6 +381,7 @@ interface WorkspaceMenuProps {
 }
 
 function WorkspaceMenu({ onSortName, onSortRecent, onResetOrder, onRefresh }: WorkspaceMenuProps) {
+  const t = useT()
   return (
     <div
       onClick={e => e.stopPropagation()}
@@ -390,13 +393,13 @@ function WorkspaceMenu({ onSortName, onSortRecent, onResetOrder, onRefresh }: Wo
       }}
     >
       <div style={{ fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: 'var(--text-dim)', padding: '4px 10px 2px', fontWeight: 600 }}>
-        Sort
+        {t('sidebar.sort')}
       </div>
-      <MenuItem onClick={onSortName}>Name (A–Z)</MenuItem>
-      <MenuItem onClick={onSortRecent}>Recently used</MenuItem>
-      <MenuItem onClick={onResetOrder}>Reset to default order</MenuItem>
+      <MenuItem onClick={onSortName}>{t('sidebar.sortName')}</MenuItem>
+      <MenuItem onClick={onSortRecent}>{t('sidebar.sortRecent')}</MenuItem>
+      <MenuItem onClick={onResetOrder}>{t('sidebar.resetOrder')}</MenuItem>
       <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 2px' }} />
-      <MenuItem onClick={onRefresh}>Refresh list</MenuItem>
+      <MenuItem onClick={onRefresh}>{t('sidebar.refreshList')}</MenuItem>
     </div>
   )
 }
@@ -417,6 +420,7 @@ interface WorkspaceContextMenuProps {
 }
 
 function WorkspaceContextMenu({ x, y, favorite, groups, currentGroup, onReveal, onRename, onToggleFavorite, onMoveToGroup, onDelete }: WorkspaceContextMenuProps) {
+  const t = useT()
   const [view, setView] = useState<'main' | 'groups'>('main')
   const [adding, setAdding] = useState(false)
   const [newGroup, setNewGroup] = useState('')
@@ -438,21 +442,21 @@ function WorkspaceContextMenu({ x, y, favorite, groups, currentGroup, onReveal, 
     >
       {view === 'main' ? (
         <>
-          <MenuItem onClick={onReveal}>Open in file explorer</MenuItem>
-          <MenuItem onClick={onRename}>Rename</MenuItem>
-          <MenuItem onClick={onToggleFavorite}>{favorite ? 'Remove from favorites' : 'Add to favorites'}</MenuItem>
-          <MenuItem onClick={() => { setView('groups'); setAdding(false); setNewGroup('') }}>Move to group…</MenuItem>
-          {currentGroup && <MenuItem onClick={() => onMoveToGroup(null)}>Remove from group</MenuItem>}
+          <MenuItem onClick={onReveal}>{t('sidebar.openExplorer')}</MenuItem>
+          <MenuItem onClick={onRename}>{t('sidebar.rename')}</MenuItem>
+          <MenuItem onClick={onToggleFavorite}>{favorite ? t('sidebar.removeFromFav') : t('sidebar.addToFav')}</MenuItem>
+          <MenuItem onClick={() => { setView('groups'); setAdding(false); setNewGroup('') }}>{t('sidebar.moveToGroup')}</MenuItem>
+          {currentGroup && <MenuItem onClick={() => onMoveToGroup(null)}>{t('sidebar.removeFromGroup')}</MenuItem>}
           <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 2px' }} />
-          <MenuItem onClick={onDelete} danger>Delete</MenuItem>
+          <MenuItem onClick={onDelete} danger>{t('common.delete')}</MenuItem>
         </>
       ) : (
         <>
           <div style={{ fontSize: 10, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: 'var(--text-dim)', padding: '4px 10px 2px', fontWeight: 600 }}>
-            Move to group
+            {t('sidebar.moveToGroupHeader')}
           </div>
           {groups.length === 0 && !adding && (
-            <div style={{ padding: '4px 10px', fontSize: 12, color: 'var(--text-dim)' }}>No groups yet</div>
+            <div style={{ padding: '4px 10px', fontSize: 12, color: 'var(--text-dim)' }}>{t('sidebar.noGroups')}</div>
           )}
           {groups.map(g => (
             <MenuItem key={g} onClick={() => onMoveToGroup(g)}>
@@ -464,7 +468,7 @@ function WorkspaceContextMenu({ x, y, favorite, groups, currentGroup, onReveal, 
             <input
               autoFocus
               value={newGroup}
-              placeholder="New group name…"
+              placeholder={t('sidebar.newGroupPlaceholder')}
               onChange={e => setNewGroup(e.target.value)}
               onKeyDown={e => {
                 e.stopPropagation()
@@ -483,10 +487,10 @@ function WorkspaceContextMenu({ x, y, favorite, groups, currentGroup, onReveal, 
               }}
             />
           ) : (
-            <MenuItem onClick={() => setAdding(true)}>+ New group…</MenuItem>
+            <MenuItem onClick={() => setAdding(true)}>{t('sidebar.newGroup')}</MenuItem>
           )}
           <div style={{ height: 1, background: 'var(--border-subtle)', margin: '4px 2px' }} />
-          <MenuItem onClick={() => { setView('main'); setAdding(false) }}>← Back</MenuItem>
+          <MenuItem onClick={() => { setView('main'); setAdding(false) }}>{t('common.back')}</MenuItem>
         </>
       )}
     </div>
@@ -535,6 +539,7 @@ function SectionHeader({ label, count, collapsed, onToggle, dropActive, onDragOv
 // ── Delete confirmation dialog ────────────────────────────────────────────────
 
 function ConfirmDeleteDialog({ name, onCancel, onConfirm }: { name: string; onCancel: () => void; onConfirm: () => void }) {
+  const t = useT()
   const [hoverDelete, setHoverDelete] = useState(false)
   const [hoverCancel, setHoverCancel] = useState(false)
   return (
@@ -555,10 +560,10 @@ function ConfirmDeleteDialog({ name, onCancel, onConfirm }: { name: string; onCa
         }}
       >
         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
-          Delete workspace
+          {t('sidebar.deleteTitle')}
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          Delete workspace <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>&ldquo;{name}&rdquo;</span>? This removes it from SwarmMind.
+          {t('sidebar.deleteBodyPrefix')} <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>&ldquo;{name}&rdquo;</span>{t('sidebar.deleteBodySuffix')}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button
@@ -572,7 +577,7 @@ function ConfirmDeleteDialog({ name, onCancel, onConfirm }: { name: string; onCa
               color: 'var(--text-secondary)',
             }}
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             onClick={onConfirm}
@@ -585,7 +590,7 @@ function ConfirmDeleteDialog({ name, onCancel, onConfirm }: { name: string; onCa
               color: hoverDelete ? '#fff' : 'var(--error)',
             }}
           >
-            Delete
+            {t('common.delete')}
           </button>
         </div>
       </div>
@@ -596,6 +601,7 @@ function ConfirmDeleteDialog({ name, onCancel, onConfirm }: { name: string; onCa
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarProps) {
+  const t = useT()
   const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([])
   // Running agent counts per workspace id, from the main process. Agents keep
   // running across workspace switches, so inactive workspaces have live counts.
@@ -734,7 +740,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     const favSet = new Set(favorites)
     const favItems = filteredWorkspaces.filter(w => favSet.has(w.id))
     const rest = filteredWorkspaces.filter(w => !favSet.has(w.id))
-    if (favItems.length > 0) out.push({ key: '__favorites__', label: 'Favorites', items: favItems })
+    if (favItems.length > 0) out.push({ key: '__favorites__', label: t('sidebar.favorites'), items: favItems })
     const buckets = new Map<string, RemoteWorkspace[]>()
     for (const w of rest) {
       const g = (workspaceGroups[w.id] ?? '').trim()
@@ -748,9 +754,9 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
       if (b === UNGROUPED_LABEL) return -1
       return a.localeCompare(b)
     })
-    for (const label of labels) out.push({ key: 'g:' + label, label, items: buckets.get(label)! })
+    for (const label of labels) out.push({ key: 'g:' + label, label: label === UNGROUPED_LABEL ? t('sidebar.ungrouped') : label, items: buckets.get(label)! })
     return out
-  }, [filteredWorkspaces, favorites, workspaceGroups])
+  }, [filteredWorkspaces, favorites, workspaceGroups, t])
 
   // Only show section headers once the user actually organizes things; otherwise
   // keep the original flat list.
@@ -807,7 +813,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     e.preventDefault()
     setDragOverSection(null)
     if (!draggedId || !sectionIsDroppable(key)) return
-    if (label === UNGROUPED_LABEL) {
+    if (key === 'g:' + UNGROUPED_LABEL) {
       // Dropping onto Ungrouped removes the workspace from its current group.
       const next = { ...workspaceGroups }
       delete next[draggedId]
@@ -946,11 +952,11 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
         justifyContent: 'space-between', flexShrink: 0,
       }}>
         <span style={{ fontSize: 11, textTransform: 'uppercase' as const, letterSpacing: '0.05em', color: 'var(--text-muted)', fontWeight: 500 }}>
-          Workspaces
+          {t('sidebar.workspaces')}
         </span>
         <div style={{ display: 'flex', gap: 4, position: 'relative' }}>
-          <IconBtn label="New workspace" onClick={onOpenWorkspace}><IconPlus /></IconBtn>
-          <IconBtn label="Workspace menu" onClick={e => { e.stopPropagation(); setMenuOpen(v => !v) }}><IconChevronDown /></IconBtn>
+          <IconBtn label={t('sidebar.newWorkspace')} onClick={onOpenWorkspace}><IconPlus /></IconBtn>
+          <IconBtn label={t('sidebar.menu')} onClick={e => { e.stopPropagation(); setMenuOpen(v => !v) }}><IconChevronDown /></IconBtn>
           {menuOpen && (
             <WorkspaceMenu
               onSortName={handleSortName}
@@ -967,7 +973,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
         <input
           value={searchQuery}
           onChange={e => setSearchQuery(e.target.value)}
-          placeholder="Search workspaces…"
+          placeholder={t('sidebar.search')}
           style={{
             width: '100%', boxSizing: 'border-box', fontSize: 13, fontFamily: 'inherit',
             color: 'var(--text-primary)', background: 'var(--bg-elevated)',
@@ -1001,7 +1007,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
         )}
         {filteredWorkspaces.length === 0 && (
           <div style={{ padding: '8px 16px', fontSize: 12, color: 'var(--text-dim)' }}>
-            {searchQuery.trim() ? 'No matching workspaces' : 'No workspaces yet'}
+            {searchQuery.trim() ? t('sidebar.noMatching') : t('sidebar.noWorkspaces')}
           </div>
         )}
       </div>

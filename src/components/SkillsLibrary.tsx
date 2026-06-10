@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { useT, type TranslationKey } from '../i18n'
 
 // ─── Icon helpers ───────────────────────────────────────────────────────────
 interface IconProps { size?: number; stroke?: number; color?: string }
@@ -156,6 +157,7 @@ interface SkillCardProps {
 }
 
 function SkillCard(props: SkillCardProps) {
+  const t = useT()
   const { skill, builtin, expanded, reorderable, dragOver, onToggleExpand, onRun, onEdit, onDuplicate, onDelete, onCopy, onPromote } = props
   const [hovered, setHovered] = useState(false)
   const [grabbing, setGrabbing] = useState(false)
@@ -243,7 +245,7 @@ function SkillCard(props: SkillCardProps) {
             {skill.name}
           </span>
           {builtin && (
-            <span style={{ color: 'var(--text-dim)', flexShrink: 0 }} title="Built-in — duplicate to customize">
+            <span style={{ color: 'var(--text-dim)', flexShrink: 0 }} title={t('skills.builtinLock')}>
               <IconLock size={12} stroke={1.5} />
             </span>
           )}
@@ -255,12 +257,12 @@ function SkillCard(props: SkillCardProps) {
             pointerEvents: hovered || expanded ? 'auto' : 'none',
             transition: 'opacity 120ms',
           }}>
-            <ActionBtn title="Run in active terminal" onClick={(e) => { e.stopPropagation(); onRun() }}><IconPlay size={13} /></ActionBtn>
-            <ActionBtn title="Save as Agent Skill (.claude/skills)" onClick={(e) => { e.stopPropagation(); onPromote() }}><IconArrowUpRt size={13} /></ActionBtn>
-            <ActionBtn title="Copy prompt" onClick={(e) => { e.stopPropagation(); onCopy() }}><IconCopy size={13} /></ActionBtn>
-            <ActionBtn title="Duplicate" onClick={(e) => { e.stopPropagation(); onDuplicate() }}><IconDuplicate size={13} /></ActionBtn>
-            {!builtin && <ActionBtn title="Edit" onClick={(e) => { e.stopPropagation(); onEdit() }}><IconPencil size={13} /></ActionBtn>}
-            {!builtin && <ActionBtn title="Delete" danger onClick={(e) => { e.stopPropagation(); onDelete() }}><IconTrash size={13} /></ActionBtn>}
+            <ActionBtn title={t('skills.action.run')} onClick={(e) => { e.stopPropagation(); onRun() }}><IconPlay size={13} /></ActionBtn>
+            <ActionBtn title={t('skills.action.promote')} onClick={(e) => { e.stopPropagation(); onPromote() }}><IconArrowUpRt size={13} /></ActionBtn>
+            <ActionBtn title={t('skills.action.copy')} onClick={(e) => { e.stopPropagation(); onCopy() }}><IconCopy size={13} /></ActionBtn>
+            <ActionBtn title={t('skills.action.duplicate')} onClick={(e) => { e.stopPropagation(); onDuplicate() }}><IconDuplicate size={13} /></ActionBtn>
+            {!builtin && <ActionBtn title={t('common.edit')} onClick={(e) => { e.stopPropagation(); onEdit() }}><IconPencil size={13} /></ActionBtn>}
+            {!builtin && <ActionBtn title={t('common.delete')} danger onClick={(e) => { e.stopPropagation(); onDelete() }}><IconTrash size={13} /></ActionBtn>}
           </div>
         </div>
 
@@ -283,15 +285,15 @@ function SkillCard(props: SkillCardProps) {
             borderRadius: 3, background: `color-mix(in srgb, ${meta.color} 20%, transparent)`,
             color: meta.color, fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase',
           }}>
-            {meta.label}
+            {t(('skills.cat.' + skill.category) as TranslationKey)}
           </span>
-          {tokens.map(t => (
-            <span key={t} title="Resolved at run time" style={{
+          {tokens.map(tok => (
+            <span key={tok} title={t('skills.resolvedAtRun')} style={{
               display: 'inline-flex', alignItems: 'center', height: 16, padding: '0 5px',
               borderRadius: 3, background: 'var(--bg-elevated-2, var(--bg-elevated))',
               color: 'var(--accent)', fontSize: 10, fontWeight: 500, fontFamily: 'var(--font-mono)',
             }}>
-              {`{{${t}}}`}
+              {`{{${tok}}}`}
             </span>
           ))}
         </div>
@@ -349,6 +351,7 @@ function SkillForm({ initial, mode, onSave, onCancel }: {
   onSave: (form: SkillFormValues) => Promise<void>
   onCancel: () => void
 }) {
+  const t = useT()
   const [form, setForm] = useState<SkillFormValues>({
     name: initial?.name ?? '',
     description: initial?.description ?? '',
@@ -376,19 +379,19 @@ function SkillForm({ initial, mode, onSave, onCancel }: {
       margin: '0 8px 8px', padding: 12, background: 'var(--bg-elevated)', borderRadius: 8,
       border: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', gap: 8,
     }}>
-      <input style={inputStyle} placeholder="Skill name…" value={form.name} autoFocus
+      <input style={inputStyle} placeholder={t('skills.form.namePlaceholder')} value={form.name} autoFocus
         onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
-      <input style={inputStyle} placeholder="Short description (optional)" value={form.description}
+      <input style={inputStyle} placeholder={t('skills.form.descPlaceholder')} value={form.description}
         onChange={e => setForm(f => ({ ...f, description: e.target.value }))} />
       <textarea
         style={{ ...inputStyle, fontFamily: 'var(--font-mono)', resize: 'vertical', lineHeight: 1.5 }}
-        placeholder="Prompt text to send to the terminal…"
+        placeholder={t('skills.form.promptPlaceholder')}
         value={form.promptText}
         onChange={e => setForm(f => ({ ...f, promptText: e.target.value }))}
         rows={5}
       />
       <div style={{ fontSize: 10.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>
-        Variables resolved at run time:{' '}
+        {t('skills.form.variables')}{' '}
         <code style={{ color: 'var(--accent)' }}>{'{{selection}} {{output}} {{memory:key}} {{input:label}} {{cwd}} {{clipboard}} {{date}}'}</code>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -417,14 +420,14 @@ function SkillForm({ initial, mode, onSave, onCancel }: {
             padding: '5px 14px', cursor: canSave ? 'pointer' : 'not-allowed', fontSize: 12,
             fontWeight: 600, opacity: canSave ? 1 : 0.5,
           }}>
-          {saving ? 'Saving…' : (mode === 'edit' ? 'Save' : 'Create')}
+          {saving ? t('common.saving') : (mode === 'edit' ? t('common.save') : t('common.create'))}
         </button>
         <button onClick={onCancel}
           style={{
             background: 'transparent', border: '1px solid var(--border-subtle)', borderRadius: 6,
             color: 'var(--text-muted)', padding: '5px 12px', cursor: 'pointer', fontSize: 12,
           }}>
-          Cancel
+          {t('common.cancel')}
         </button>
       </div>
     </div>
@@ -433,6 +436,7 @@ function SkillForm({ initial, mode, onSave, onCancel }: {
 
 // ─── Prompt library (snippets stored in app.db) ──────────────────────────────
 function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
+  const t = useT()
   const [skills, setSkills] = useState<Skill[]>([])
   const [search, setSearch] = useState('')
   const [searchFocused, setSearchFocused] = useState(false)
@@ -467,16 +471,16 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
   // ── Actions ──
   const runSkill = useCallback((skill: Skill) => {
     const paneId = useWorkspaceStore.getState().activePaneId
-    if (!paneId) { showFlash('Click a terminal first, then Run'); return }
+    if (!paneId) { showFlash(t('skills.flash.clickTerminal')); return }
     window.dispatchEvent(new CustomEvent('swarmmind:run-skill', {
       detail: { paneId, promptText: skill.prompt_text, submit: true },
     }))
-    showFlash(`Ran "${skill.name}"`)
-  }, [showFlash])
+    showFlash(t('skills.flash.ran', { name: skill.name }))
+  }, [showFlash, t])
 
   const copySkill = useCallback((skill: Skill) => {
-    navigator.clipboard.writeText(skill.prompt_text).then(() => showFlash('Prompt copied')).catch(() => {})
-  }, [showFlash])
+    navigator.clipboard.writeText(skill.prompt_text).then(() => showFlash(t('skills.flash.copied'))).catch(() => {})
+  }, [showFlash, t])
 
   const duplicateSkill = useCallback(async (skill: Skill) => {
     await window.swarmmind.skillCreate(
@@ -484,11 +488,11 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
       isBuiltin(skill) ? 'general' : skill.category,
     )
     await refresh()
-    showFlash('Duplicated')
-  }, [refresh, showFlash])
+    showFlash(t('skills.flash.duplicated'))
+  }, [refresh, showFlash, t])
 
   const deleteSkill = useCallback(async (skill: Skill) => {
-    if (!window.confirm(`Delete "${skill.name}"? This cannot be undone.`)) return
+    if (!window.confirm(t('skills.confirmDelete', { name: skill.name }))) return
     await window.swarmmind.skillDelete(skill.id)
     if (expandedId === skill.id) setExpandedId(null)
     if (editingId === skill.id) setEditingId(null)
@@ -576,7 +580,7 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
         display: 'flex', alignItems: 'center', gap: 4,
       }}>
         <IconCheck size={11} stroke={2.25} />
-        {activePaneId ? 'Run ▶ targets the active pane' : 'Click a terminal to set the run target'}
+        {activePaneId ? t('skills.runTargetActive') : t('skills.runTargetNone')}
       </div>
 
       {/* ── Scrollable content ── */}
@@ -585,7 +589,7 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
           {/* Title row */}
           <div style={{ display: 'flex', alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)' }}>Library</span>
+              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)' }}>{t('skills.library')}</span>
               <SmallBadge>{totalCount}</SmallBadge>
             </div>
             <div style={{ flex: 1 }} />
@@ -601,7 +605,7 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
           }}>
             <span style={{ color: 'var(--text-muted)', display: 'flex', flexShrink: 0 }}><IconSearch size={14} /></span>
             <input
-              ref={searchRef} type="text" placeholder="Search skills & prompts" value={search}
+              ref={searchRef} type="text" placeholder={t('skills.search')} value={search}
               onChange={e => setSearch(e.target.value)}
               onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)}
               style={{
@@ -610,7 +614,7 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
               }}
             />
             {search && (
-              <button aria-label="Clear search" onClick={() => { setSearch(''); searchRef.current?.focus() }}
+              <button aria-label={t('skills.clearSearch')} onClick={() => { setSearch(''); searchRef.current?.focus() }}
                 style={{
                   width: 18, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)',
@@ -623,7 +627,7 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
 
           {/* Subtitle */}
           <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-            Drag onto a terminal to paste, or hit <span style={{ color: 'var(--accent)' }}>▶</span> to run in the active pane. Click a name to preview.
+            {t('skills.subtitle')}
           </div>
         </div>
 
@@ -631,16 +635,16 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
         {creating && <SkillForm mode="create" onSave={handleCreate} onCancel={() => setCreating(false)} />}
 
         {/* SwarmMind built-ins */}
-        <Section title="SwarmMind" tag="Built-in">
+        <Section title="SwarmMind" tag={t('skills.builtin')}>
           {builtins.length === 0
             ? <EmptyState />
             : builtins.map(s => <SkillCard key={s.id} {...cardHandlers(s, true)} />)}
         </Section>
 
         {/* User skills */}
-        <Section title="Your Skills" tag="Custom">
+        <Section title={t('skills.yourSkills')} tag={t('skills.custom')}>
           {userSkills.length === 0
-            ? <EmptyState label={skills.some(s => !isBuiltin(s)) ? 'No matching skills' : 'No custom skills yet — hit New'} />
+            ? <EmptyState label={skills.some(s => !isBuiltin(s)) ? t('skills.noMatching') : t('skills.noCustom')} />
             : userSkills.map(s => (
                 editingId === s.id
                   ? <SkillForm key={s.id} mode="edit"
@@ -672,6 +676,7 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
 
 // ─── New button (hover-stateful) ────────────────────────────────────────────
 function NewButton({ onClick }: { onClick: () => void }) {
+  const t = useT()
   const [hovered, setHovered] = useState(false)
   return (
     <button
@@ -686,7 +691,7 @@ function NewButton({ onClick }: { onClick: () => void }) {
       }}
     >
       <IconPlus size={14} />
-      <span>New</span>
+      <span>{t('skills.new')}</span>
     </button>
   )
 }
@@ -709,6 +714,7 @@ function AgentSkillForm({ initial, mode, onSave, onCancel }: {
   onSave: (v: AgentSkillFormValues) => Promise<void>
   onCancel: () => void
 }) {
+  const t = useT()
   const [form, setForm] = useState<AgentSkillFormValues>({
     name: initial?.name ?? '', description: initial?.description ?? '', body: initial?.body ?? '',
   })
@@ -733,7 +739,7 @@ function AgentSkillForm({ initial, mode, onSave, onCancel }: {
       margin: '0 8px 8px', padding: 12, background: 'var(--bg-elevated)', borderRadius: 8,
       border: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', gap: 8,
     }}>
-      <input style={inputStyle} placeholder="Skill name (e.g. PDF Extractor)" value={form.name} autoFocus
+      <input style={inputStyle} placeholder={t('skills.agent.namePlaceholder')} value={form.name} autoFocus
         onChange={e => setForm(f => ({ ...f, name: e.target.value }))} />
       {mode === 'create' && form.name.trim() && (
         <div style={{ fontSize: 10.5, color: 'var(--text-dim)', fontFamily: 'var(--font-mono)' }}>
@@ -742,14 +748,14 @@ function AgentSkillForm({ initial, mode, onSave, onCancel }: {
       )}
       <textarea
         style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5 }}
-        placeholder="description — when Claude should use this skill (the trigger). e.g. 'Use when extracting text or tables from PDF files.'"
+        placeholder={t('skills.agent.descPlaceholder')}
         value={form.description}
         onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
         rows={2}
       />
       <textarea
         style={{ ...inputStyle, fontFamily: 'var(--font-mono)', resize: 'vertical', lineHeight: 1.5 }}
-        placeholder="Instructions (SKILL.md body) — the steps Claude follows once the skill is invoked."
+        placeholder={t('skills.agent.bodyPlaceholder')}
         value={form.body}
         onChange={e => setForm(f => ({ ...f, body: e.target.value }))}
         rows={6}
@@ -761,14 +767,14 @@ function AgentSkillForm({ initial, mode, onSave, onCancel }: {
             padding: '5px 14px', cursor: canSave ? 'pointer' : 'not-allowed', fontSize: 12,
             fontWeight: 600, opacity: canSave ? 1 : 0.5,
           }}>
-          {saving ? 'Saving…' : (mode === 'edit' ? 'Save' : 'Create')}
+          {saving ? t('common.saving') : (mode === 'edit' ? t('common.save') : t('common.create'))}
         </button>
         <button onClick={onCancel}
           style={{
             background: 'transparent', border: '1px solid var(--border-subtle)', borderRadius: 6,
             color: 'var(--text-muted)', padding: '5px 12px', cursor: 'pointer', fontSize: 12,
           }}>
-          Cancel
+          {t('common.cancel')}
         </button>
       </div>
     </div>
@@ -788,6 +794,7 @@ function AgentSkillCard({ skill, expanded, onToggle, onEdit, onDelete, onCopyPat
   onDelete: () => void
   onCopyPath: () => void
 }) {
+  const t = useT()
   const [hovered, setHovered] = useState(false)
   return (
     <div
@@ -819,9 +826,9 @@ function AgentSkillCard({ skill, expanded, onToggle, onEdit, onDelete, onCopyPat
             opacity: hovered || expanded ? 1 : 0, pointerEvents: hovered || expanded ? 'auto' : 'none',
             transition: 'opacity 120ms',
           }}>
-            <ActionBtn title="Copy path" onClick={(e) => { e.stopPropagation(); onCopyPath() }}><IconCopy size={13} /></ActionBtn>
-            <ActionBtn title="Edit" onClick={(e) => { e.stopPropagation(); onEdit() }}><IconPencil size={13} /></ActionBtn>
-            <ActionBtn title="Delete" danger onClick={(e) => { e.stopPropagation(); onDelete() }}><IconTrash size={13} /></ActionBtn>
+            <ActionBtn title={t('skills.copyPath')} onClick={(e) => { e.stopPropagation(); onCopyPath() }}><IconCopy size={13} /></ActionBtn>
+            <ActionBtn title={t('common.edit')} onClick={(e) => { e.stopPropagation(); onEdit() }}><IconPencil size={13} /></ActionBtn>
+            <ActionBtn title={t('common.delete')} danger onClick={(e) => { e.stopPropagation(); onDelete() }}><IconTrash size={13} /></ActionBtn>
           </div>
         </div>
         {skill.description && (
@@ -850,6 +857,7 @@ function AgentSkillsPanel({ prefill, onPrefillConsumed }: {
   prefill: AgentSkillFormValues | null
   onPrefillConsumed: () => void
 }) {
+  const t = useT()
   const rootPath = useWorkspaceStore(s => s.workspace?.rootPath ?? null)
   const [list, setList] = useState<AgentSkillInfo[]>([])
   const [creating, setCreating] = useState(false)
@@ -877,14 +885,14 @@ function AgentSkillsPanel({ prefill, onPrefillConsumed }: {
 
   const create = async (v: AgentSkillFormValues) => {
     await window.swarmmind.agentSkillWrite({ rootPath: rootPath ?? undefined, name: v.name.trim(), description: v.description.trim(), body: v.body })
-    setCreating(false); onPrefillConsumed(); await refresh(); showFlash('Skill written')
+    setCreating(false); onPrefillConsumed(); await refresh(); showFlash(t('skills.flash.written'))
   }
   const saveEdit = async (slug: string, v: AgentSkillFormValues) => {
     await window.swarmmind.agentSkillWrite({ rootPath: rootPath ?? undefined, slug, name: v.name.trim(), description: v.description.trim(), body: v.body })
-    setEditingSlug(null); await refresh(); showFlash('Saved')
+    setEditingSlug(null); await refresh(); showFlash(t('skills.flash.saved'))
   }
   const del = async (skill: AgentSkillInfo) => {
-    if (!window.confirm(`Delete Agent Skill "${skill.name}"?\nThis removes .claude/skills/${skill.slug}.`)) return
+    if (!window.confirm(t('skills.agent.confirmDelete', { name: skill.name, slug: skill.slug }))) return
     await window.swarmmind.agentSkillDelete(rootPath ?? undefined, skill.slug)
     if (expandedSlug === skill.slug) setExpandedSlug(null)
     await refresh()
@@ -894,8 +902,7 @@ function AgentSkillsPanel({ prefill, onPrefillConsumed }: {
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
         <div style={{ color: 'var(--text-dim)', fontSize: 12, textAlign: 'center', lineHeight: 1.6, maxWidth: 240 }}>
-          Open a workspace to author Agent Skills. They are written to
-          <code style={{ color: 'var(--text-muted)' }}> .claude/skills/</code> so Claude Code auto-discovers them.
+          {t('skills.agent.openWorkspace')}
         </div>
       </div>
     )
@@ -907,15 +914,15 @@ function AgentSkillsPanel({ prefill, onPrefillConsumed }: {
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)' }}>Agent Skills</span>
+              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--text-primary)' }}>{t('skills.agent.title')}</span>
               <SmallBadge>{list.length}</SmallBadge>
             </div>
             <div style={{ flex: 1 }} />
-            <ActionBtn title="Refresh" onClick={() => refresh()}><IconRefresh size={14} /></ActionBtn>
+            <ActionBtn title={t('common.refresh')} onClick={() => refresh()}><IconRefresh size={14} /></ActionBtn>
             <NewButton onClick={() => { setCreating(v => !v); setEditingSlug(null); onPrefillConsumed() }} />
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-            Real Claude Code skills in this workspace. Claude auto-invokes them based on the description — no pasting needed.
+            {t('skills.agent.subtitle')}
           </div>
         </div>
 
@@ -926,7 +933,7 @@ function AgentSkillsPanel({ prefill, onPrefillConsumed }: {
 
         <div style={{ padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
           {list.length === 0 && !creating
-            ? <EmptyState label="No Agent Skills yet — hit New" />
+            ? <EmptyState label={t('skills.agent.none')} />
             : list.map(s => (
                 editingSlug === s.slug
                   ? <AgentSkillForm key={s.slug} mode="edit"
@@ -937,7 +944,7 @@ function AgentSkillsPanel({ prefill, onPrefillConsumed }: {
                       onToggle={() => setExpandedSlug(v => v === s.slug ? null : s.slug)}
                       onEdit={() => { setEditingSlug(s.slug); setExpandedSlug(null) }}
                       onDelete={() => del(s)}
-                      onCopyPath={() => navigator.clipboard.writeText(s.path).then(() => showFlash('Path copied')).catch(() => {})} />
+                      onCopyPath={() => navigator.clipboard.writeText(s.path).then(() => showFlash(t('skills.flash.pathCopied'))).catch(() => {})} />
               ))}
         </div>
         <div style={{ height: 16 }} />
@@ -957,6 +964,7 @@ function AgentSkillsPanel({ prefill, onPrefillConsumed }: {
 
 // ─── Tab host (root export) ───────────────────────────────────────────────────
 export function SkillsLibrary() {
+  const t = useT()
   const [tab, setTab] = useState<'prompts' | 'agent'>('prompts')
   const [agentPrefill, setAgentPrefill] = useState<AgentSkillFormValues | null>(null)
 
@@ -990,8 +998,8 @@ export function SkillsLibrary() {
       background: 'var(--bg-panel)', borderLeft: '1px solid var(--border-subtle)', overflow: 'hidden',
     }}>
       <div style={{ flexShrink: 0, height: 44, borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', padding: '0 6px' }}>
-        <TabBtn id="prompts" label="Prompts" Icon={IconCode2} />
-        <TabBtn id="agent" label="Agent Skills" Icon={IconFileText} />
+        <TabBtn id="prompts" label={t('skills.tab.prompts')} Icon={IconCode2} />
+        <TabBtn id="agent" label={t('skills.tab.agent')} Icon={IconFileText} />
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         {tab === 'prompts'

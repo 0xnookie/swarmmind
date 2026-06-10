@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import type { AgentId } from '../store/workspace'
+import { useT, type TFunction, type TranslationKey } from '../i18n'
 
 interface RemoteWorkspace {
   id: string
@@ -15,7 +16,7 @@ interface WorkspaceSetupModalProps {
 
 const TERMINAL_COUNTS = [1, 2, 4, 6, 8, 10, 12] as const
 
-const STEPS = ['Folder', 'Layout', 'Agents'] as const
+const STEP_KEYS: TranslationKey[] = ['setup.step.folder', 'setup.step.layout', 'setup.step.agents']
 
 const AGENTS: { id: AgentId; label: string; color: string }[] = [
   { id: 'claude',   label: 'Claude Code', color: '#c084fc' },
@@ -89,10 +90,11 @@ function CheckIcon({ stroke = '#fff' }: { stroke?: string }) {
 
 // ── Stepper ──────────────────────────────────────────────────────────────────────
 
-function Stepper({ step, canGoTo, onGoTo }: { step: number; canGoTo: (i: number) => boolean; onGoTo: (i: number) => void }) {
+function Stepper({ step, canGoTo, onGoTo, t }: { step: number; canGoTo: (i: number) => boolean; onGoTo: (i: number) => void; t: TFunction }) {
   return (
     <div style={styles.stepper}>
-      {STEPS.map((label, i) => {
+      {STEP_KEYS.map((labelKey, i) => {
+        const label = t(labelKey)
         const state: 'done' | 'active' | 'future' = i < step ? 'done' : i === step ? 'active' : 'future'
         const clickable = canGoTo(i) && i !== step
         const bg = state === 'future' ? 'var(--bg-elevated)' : 'var(--accent)'
@@ -120,6 +122,7 @@ function Stepper({ step, canGoTo, onGoTo }: { step: number; canGoTo: (i: number)
 // ── Modal ──────────────────────────────────────────────────────────────────────
 
 export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModalProps) {
+  const t = useT()
   const [step, setStep] = useState(0)
   const [selectedPath, setSelectedPath] = useState('')
   const [name, setName] = useState('')
@@ -153,28 +156,28 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
   const back = () => setStep(s => Math.max(0, s - 1))
   const finish = () => { if (step0Valid) onComplete(selectedPath, terminalCount, name.trim(), agentId) }
 
-  const gridLabel = terminalCount === 1 ? '1 terminal · 1×1' : `${terminalCount} terminals · 2×${Math.ceil(terminalCount / 2)}`
+  const gridLabel = terminalCount === 1 ? t('setup.gridSingle') : t('setup.gridMulti', { n: terminalCount, rows: Math.ceil(terminalCount / 2) })
 
   return (
     <div style={styles.overlay} onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={styles.card}>
-        <Stepper step={step} canGoTo={canGoTo} onGoTo={goToStep} />
+        <Stepper step={step} canGoTo={canGoTo} onGoTo={goToStep} t={t} />
 
         {/* ── Step 0: Folder + Name ── */}
         {step === 0 && (
           <>
-            <h2 style={styles.title}>Set up your workspace</h2>
-            <p style={styles.subtitle}>Pick a folder to work in and give the workspace a name.</p>
+            <h2 style={styles.title}>{t('setup.folder.title')}</h2>
+            <p style={styles.subtitle}>{t('setup.folder.subtitle')}</p>
 
             <div style={styles.section}>
               <div style={styles.sectionHeader}>
-                <span style={styles.sectionLabel}>Working folder</span>
-                <span style={styles.sectionHint}>Where your terminals will start</span>
+                <span style={styles.sectionLabel}>{t('setup.workingFolder')}</span>
+                <span style={styles.sectionHint}>{t('setup.workingFolderHint')}</span>
               </div>
               <button style={styles.folderRow} onClick={handleBrowse}>
                 <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}><FolderIcon /></span>
                 <span style={{ flex: 1, minWidth: 0, textAlign: 'left', fontSize: 13, color: selectedPath ? 'var(--text-primary)' : 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {selectedPath || 'Select a folder…'}
+                  {selectedPath || t('setup.selectFolder')}
                 </span>
                 <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}><SearchIcon /></span>
               </button>
@@ -182,17 +185,17 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
 
             <div style={styles.section}>
               <div style={styles.sectionHeader}>
-                <span style={styles.sectionLabel}>Workspace name</span>
-                <span style={styles.sectionHint}>Shown in the sidebar</span>
+                <span style={styles.sectionLabel}>{t('setup.workspaceName')}</span>
+                <span style={styles.sectionHint}>{t('setup.workspaceNameHint')}</span>
               </div>
               <input
                 style={styles.nameInput}
                 value={name}
                 onChange={e => { setName(e.target.value); setNameEdited(true) }}
                 onKeyDown={e => { if (e.key === 'Enter') next() }}
-                placeholder={selectedPath ? basenameOf(selectedPath) : 'My workspace'}
+                placeholder={selectedPath ? basenameOf(selectedPath) : t('setup.namePlaceholder')}
                 spellCheck={false}
-                aria-label="Workspace name"
+                aria-label={t('setup.workspaceName')}
                 autoFocus
               />
             </div>
@@ -201,9 +204,9 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
               <div style={styles.section}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.06em', color: 'var(--text-muted)' }}>
-                    <ClockIcon /> Recent <span style={styles.countBadge}>{recent.length}</span>
+                    <ClockIcon /> {t('setup.recent')} <span style={styles.countBadge}>{recent.length}</span>
                   </span>
-                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>Reopen a workspace</span>
+                  <span style={{ fontSize: 11, color: 'var(--text-dim)' }}>{t('setup.reopen')}</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {recent.map(ws => (
@@ -228,11 +231,11 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
         {/* ── Step 1: Layout ── */}
         {step === 1 && (
           <>
-            <h2 style={styles.title}>Choose a layout</h2>
-            <p style={styles.subtitle}>How many terminals do you want open to start?</p>
+            <h2 style={styles.title}>{t('setup.layout.title')}</h2>
+            <p style={styles.subtitle}>{t('setup.layout.subtitle')}</p>
             <div style={styles.section}>
               <div style={styles.sectionHeader}>
-                <span style={styles.sectionLabel}>Terminals</span>
+                <span style={styles.sectionLabel}>{t('setup.terminals')}</span>
                 <span style={styles.gridBadge}>{gridLabel}</span>
               </div>
               <div style={styles.tileRow}>
@@ -257,8 +260,8 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
         {/* ── Step 2: Agent ── */}
         {step === 2 && (
           <>
-            <h2 style={styles.title}>Default agent</h2>
-            <p style={styles.subtitle}>Pick an agent to launch in each terminal. You can change it per-pane later.</p>
+            <h2 style={styles.title}>{t('setup.agents.title')}</h2>
+            <p style={styles.subtitle}>{t('setup.agents.subtitle')}</p>
             <div style={styles.section}>
               <div style={styles.agentGrid}>
                 <button
@@ -266,7 +269,7 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
                   style={{ ...styles.agentTile, borderColor: agentId === null ? 'var(--accent)' : 'var(--border)', background: agentId === null ? 'rgba(232,149,107,0.08)' : 'var(--bg-elevated)' }}
                 >
                   <span style={{ width: 9, height: 9, borderRadius: '50%', border: '1.5px dashed var(--text-dim)', flexShrink: 0 }} />
-                  <span style={{ fontSize: 12.5, fontWeight: 500, color: agentId === null ? 'var(--accent)' : 'var(--text-secondary)' }}>No agent</span>
+                  <span style={{ fontSize: 12.5, fontWeight: 500, color: agentId === null ? 'var(--accent)' : 'var(--text-secondary)' }}>{t('setup.noAgent')}</span>
                   {agentId === null && <span style={{ marginLeft: 'auto' }}><CheckIcon stroke="var(--accent)" /></span>}
                 </button>
                 {AGENTS.map(a => {
@@ -285,7 +288,7 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
                 })}
               </div>
               <p style={styles.agentNote}>
-                {agentId ? `Each terminal will auto-launch ${AGENTS.find(a => a.id === agentId)?.label}.` : 'Terminals will open a plain shell; spawn an agent from the pane menu anytime.'}
+                {agentId ? t('setup.agentNoteWith', { agent: AGENTS.find(a => a.id === agentId)?.label ?? '' }) : t('setup.agentNoteWithout')}
               </p>
             </div>
           </>
@@ -294,8 +297,8 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
         {/* ── Footer ── */}
         <div style={styles.footer}>
           {step === 0
-            ? <button style={styles.cancelBtn} onClick={onClose}>Cancel</button>
-            : <button style={styles.cancelBtn} onClick={back}>← Back</button>}
+            ? <button style={styles.cancelBtn} onClick={onClose}>{t('common.cancel')}</button>
+            : <button style={styles.cancelBtn} onClick={back}>{t('common.back')}</button>}
           {step < 2
             ? (
               <button
@@ -303,10 +306,10 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
                 onClick={next}
                 disabled={step === 0 && !step0Valid}
               >
-                Next →
+                {t('setup.next')}
               </button>
             ) : (
-              <button style={styles.createBtn} onClick={finish}>Create Workspace</button>
+              <button style={styles.createBtn} onClick={finish}>{t('setup.createWorkspace')}</button>
             )}
         </div>
       </div>

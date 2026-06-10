@@ -73,6 +73,12 @@ export default function App() {
     window.swarmmind.getAppSetting('terminalCursorBlink').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ terminalCursorBlink: val !== '0' })
     }).catch(() => {})
+    window.swarmmind.getAppSetting('closeToTray').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ closeToTray: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('language').then(val => {
+      if (val === 'en' || val === 'de') useWorkspaceStore.setState({ language: val })
+    }).catch(() => {})
 
     // Appearance — load all keys, then hydrate + apply once (validating each so
     // a stale/unknown persisted value falls back to the store default).

@@ -1,6 +1,15 @@
 import React, { useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { useMemory, type MemoryEntry, type Task } from '../hooks/useMemory'
+import { useT, type TFunction, type TranslationKey } from '../i18n'
+
+const STATUS_KEY: Record<string, TranslationKey> = {
+  pending: 'status.pending',
+  in_progress: 'status.in_progress',
+  needs_review: 'status.needs_review',
+  done: 'status.done',
+  failed: 'status.failed',
+}
 
 const STATUS_COLORS: Record<string, string> = {
   pending: 'var(--text-dim)',
@@ -11,6 +20,7 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 export function MemoryPanel() {
+  const t = useT()
   const workspace = useWorkspaceStore(s => s.workspace)
   const [tab, setTab] = useState<'memory' | 'tasks'>('memory')
   const [filter, setFilter] = useState('')
@@ -58,16 +68,16 @@ export function MemoryPanel() {
             style={{ ...styles.tab, ...(tab === 'memory' ? styles.tabActive : {}) }}
             onClick={() => setTab('memory')}
           >
-            Memory ({entries.length})
+            {t('mempanel.memory', { n: entries.length })}
           </button>
           <button
             style={{ ...styles.tab, ...(tab === 'tasks' ? styles.tabActive : {}) }}
             onClick={() => setTab('tasks')}
           >
-            Tasks ({tasks.length})
+            {t('mempanel.tasks', { n: tasks.length })}
           </button>
         </div>
-        <button style={styles.refreshBtn} onClick={refresh} title="Refresh">↻</button>
+        <button style={styles.refreshBtn} onClick={refresh} title={t('common.refresh')}>↻</button>
       </div>
 
       {tab === 'memory' && (
@@ -75,7 +85,7 @@ export function MemoryPanel() {
           <div style={styles.search}>
             <input
               style={styles.searchInput}
-              placeholder="Filter…"
+              placeholder={t('mempanel.filter')}
               value={filter}
               onChange={e => setFilter(e.target.value)}
             />
@@ -85,7 +95,7 @@ export function MemoryPanel() {
               <button
                 style={{ ...styles.agentChip, ...(agentFilter === 'all' ? styles.agentChipActive : {}) }}
                 onClick={() => setAgentFilter('all')}
-              >all</button>
+              >{t('mempanel.all')}</button>
               {agentIds.map(a => (
                 <button
                   key={a}
@@ -97,9 +107,9 @@ export function MemoryPanel() {
           )}
           <div style={styles.scroll}>
             {!workspace ? (
-              <p style={styles.empty}>No workspace open</p>
+              <p style={styles.empty}>{t('mempanel.noWorkspace')}</p>
             ) : entries.length === 0 ? (
-              <p style={styles.empty}>No memory entries yet</p>
+              <p style={styles.empty}>{t('mempanel.noEntries')}</p>
             ) : (
               Object.entries(grouped).map(([type, group]) => (
                 <div key={type}>
@@ -125,16 +135,16 @@ export function MemoryPanel() {
                               spellCheck={false}
                             />
                             <div style={styles.entryActions}>
-                              <button style={styles.entryBtn} onClick={() => handleSaveEdit(e)}>Save</button>
-                              <button style={styles.entryBtn} onClick={() => setEditing(null)}>Cancel</button>
+                              <button style={styles.entryBtn} onClick={() => handleSaveEdit(e)}>{t('common.save')}</button>
+                              <button style={styles.entryBtn} onClick={() => setEditing(null)}>{t('common.cancel')}</button>
                             </div>
                           </div>
                         ) : (
                           <div>
                             <pre style={styles.entryValue}>{e.value}</pre>
                             <div style={styles.entryActions}>
-                              <button style={styles.entryBtn} onClick={() => setEditing({ id: e.id, value: e.value })}>Edit</button>
-                              <button style={{ ...styles.entryBtn, ...styles.entryBtnDanger }} onClick={() => handleDelete(e)}>Delete</button>
+                              <button style={styles.entryBtn} onClick={() => setEditing({ id: e.id, value: e.value })}>{t('common.edit')}</button>
+                              <button style={{ ...styles.entryBtn, ...styles.entryBtnDanger }} onClick={() => handleDelete(e)}>{t('common.delete')}</button>
                             </div>
                           </div>
                         )
@@ -149,13 +159,13 @@ export function MemoryPanel() {
       )}
 
       {tab === 'tasks' && (
-        <TasksTab tasks={tasks} refresh={refresh} workspaceId={workspace?.id ?? null} />
+        <TasksTab tasks={tasks} refresh={refresh} workspaceId={workspace?.id ?? null} t={t} />
       )}
     </div>
   )
 }
 
-function TasksTab({ tasks, refresh, workspaceId }: { tasks: Task[]; refresh: () => void; workspaceId: string | null }) {
+function TasksTab({ tasks, refresh, workspaceId, t }: { tasks: Task[]; refresh: () => void; workspaceId: string | null; t: TFunction }) {
   const [newTitle, setNewTitle] = useState('')
 
   const createTask = async () => {
@@ -172,7 +182,7 @@ function TasksTab({ tasks, refresh, workspaceId }: { tasks: Task[]; refresh: () 
       <div style={styles.newTaskRow}>
         <input
           style={styles.newTaskInput}
-          placeholder="New task title…"
+          placeholder={t('mempanel.newTaskPlaceholder')}
           value={newTitle}
           onChange={e => setNewTitle(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && createTask()}
@@ -186,28 +196,28 @@ function TasksTab({ tasks, refresh, workspaceId }: { tasks: Task[]; refresh: () 
           return (
             <div key={status}>
               <div style={{ ...styles.groupLabel, color: STATUS_COLORS[status] ?? 'var(--text-dim)' }}>
-                {status.replace('_', ' ')} ({col.length})
+                {t(STATUS_KEY[status] ?? 'status.pending')} ({col.length})
               </div>
-              {col.map(t => (
-                <div key={t.id} style={styles.taskCard}>
-                  <div style={styles.taskTitle}>{t.title}</div>
-                  {t.description && <div style={styles.taskDesc}>{t.description}</div>}
-                  {t.assigned_agent && <div style={styles.taskAgent}>@{t.assigned_agent}</div>}
+              {col.map(tk => (
+                <div key={tk.id} style={styles.taskCard}>
+                  <div style={styles.taskTitle}>{tk.title}</div>
+                  {tk.description && <div style={styles.taskDesc}>{tk.description}</div>}
+                  {tk.assigned_agent && <div style={styles.taskAgent}>@{tk.assigned_agent}</div>}
                   <div style={styles.taskActions}>
                     {status !== 'done' && (
                       <button
                         style={styles.taskBtn}
-                        onClick={async () => { await window.swarmmind.taskUpdate(t.id, 'done'); refresh() }}
+                        onClick={async () => { await window.swarmmind.taskUpdate(tk.id, 'done'); refresh() }}
                       >
-                        ✓ Done
+                        {t('common.done')}
                       </button>
                     )}
                     {status === 'pending' && (
                       <button
                         style={styles.taskBtn}
-                        onClick={async () => { await window.swarmmind.taskUpdate(t.id, 'in_progress'); refresh() }}
+                        onClick={async () => { await window.swarmmind.taskUpdate(tk.id, 'in_progress'); refresh() }}
                       >
-                        Start
+                        {t('common.start')}
                       </button>
                     )}
                   </div>
