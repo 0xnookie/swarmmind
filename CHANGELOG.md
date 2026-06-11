@@ -6,6 +6,33 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0]
+
+### Added
+- **Code editor with syntax highlighting** — the built-in file editor now does
+  real syntax highlighting for ~150 languages (TypeScript, Python, Rust, Go,
+  PHP, SQL, YAML, Markdown, and more), lazy-loaded so the right parser only
+  loads when you first open a matching file. Highlighting follows the selected
+  theme, including the light Paper theme.
+- **Editor tabs** — open several files at once and switch between them with a
+  tab strip; each tab keeps its own unsaved edits, cursor, and scroll position.
+- **Editor status bar** — shows the current line and column, selection size,
+  multi-cursor count, and the detected language.
+- **Editor font size** — set the code editor's font size independently of the
+  terminal in **Settings ▸ Appearance**.
+- **SwarmVoice model picker** — choose the Whisper model in **Settings ▸
+  General ▸ SwarmVoice**: Tiny (fastest), Base (balanced, now the default and
+  noticeably more accurate), or Small (most accurate). The chosen model is
+  downloaded on next use and remembered.
+- **SwarmVoice preload** — optionally download and warm up the voice model in
+  the background shortly after launch so your first dictation starts instantly.
+
+### Fixed
+- **SwarmVoice no longer re-downloads its model on every launch** — the Whisper
+  model is now cached to disk under the app's data directory instead of the
+  renderer's non-persistent `file://` cache, so it's fetched once and reused.
+  Voice transcription also runs on the faster multi-threaded backend.
+
 ## [0.3.0]
 
 ### Added
@@ -46,5 +73,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   theme's accent color instead of a hardcoded warm-brown, so they look right
   under every theme.
 
+[0.4.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.4.0
 [0.3.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.3.0
 [0.2.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.2.0
