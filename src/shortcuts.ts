@@ -33,7 +33,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'broadcast',       label: 'Toggle broadcast bar',  category: 'Global', defaultKeys: 'Mod+B', global: true },
   { id: 'settings',        label: 'Open settings',         category: 'Global', defaultKeys: 'Mod+,', global: true },
   { id: 'new-pane',        label: 'New terminal pane',     category: 'Global', defaultKeys: 'Mod+T', global: true },
-  { id: 'voice',           label: 'Toggle SwarmVoice',     category: 'Global', defaultKeys: 'Mod+Shift+V', global: false },
+  // Mod+Shift+M ("mic") — deliberately NOT Mod+Shift+V, which is terminal paste.
+  { id: 'voice',           label: 'Toggle SwarmVoice',     category: 'Global', defaultKeys: 'Mod+Shift+M', global: false },
   { id: 'pane-search',     label: 'Search in pane',        category: 'Panes',  defaultKeys: 'Mod+F', global: false },
 ]
 

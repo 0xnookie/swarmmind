@@ -76,23 +76,60 @@ function FileIcon({ ext }: { ext: string }) {
   )
 }
 
-function fileColor(ext: string): string {
+export function fileColor(ext: string): string {
   switch (ext) {
     case '.ts':
     case '.tsx':
     case '.py':
+    case '.go':
       return '#60a5fa'
     case '.js':
     case '.jsx':
+    case '.mjs':
+    case '.cjs':
       return '#fbbf24'
     case '.css':
+    case '.scss':
+    case '.sass':
+    case '.less':
       return '#2dd4bf'
     case '.html':
+    case '.htm':
+    case '.xml':
+    case '.svg':
+    case '.vue':
+    case '.svelte':
       return '#fb923c'
     case '.json':
+    case '.yml':
+    case '.yaml':
+    case '.toml':
       return '#34d399'
     case '.md':
+    case '.mdx':
+    case '.txt':
       return '#a78bfa'
+    case '.php':
+    case '.sql':
+      return '#818cf8'
+    case '.rs':
+    case '.c':
+    case '.h':
+    case '.cpp':
+    case '.hpp':
+    case '.cs':
+    case '.java':
+    case '.kt':
+    case '.swift':
+      return '#f87171'
+    case '.sh':
+    case '.bash':
+    case '.ps1':
+    case '.bat':
+    case '.cmd':
+      return '#4ade80'
+    case '.rb':
+      return '#fb7185'
     default:
       return 'var(--text-muted)'
   }

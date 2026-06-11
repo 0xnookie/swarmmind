@@ -95,7 +95,14 @@ const en = {
   'settings.notifications.idleThreshold': 'Idle threshold',
   'settings.notifications.idleDesc': 'How long an agent’s output must stay quiet before it’s marked “waiting”. A desktop notification fires only after you’ve sent input and the window is unfocused.',
   'settings.voice.group': 'SwarmVoice',
-  'settings.voice.desc': 'Runs Whisper locally — no API key needed. First use downloads the Whisper Tiny model (~39 MB) and caches it permanently. Transcribed text is injected into the active pane (no newline; press Enter to submit). Shortcut:',
+  'settings.voice.desc': 'Runs Whisper locally — no API key needed. The model downloads once and is cached on disk. Transcribed text is injected into the active pane (no newline; press Enter to submit). Shortcut:',
+  'settings.voice.model': 'Whisper model',
+  'settings.voice.modelDesc': 'Larger models are more accurate but slower and a bigger one-time download. Applies the next time voice input is used.',
+  'settings.voice.model.tiny': 'Tiny — fastest (~40 MB)',
+  'settings.voice.model.base': 'Base — balanced, recommended (~75 MB)',
+  'settings.voice.model.small': 'Small — most accurate, slow (~250 MB)',
+  'settings.voice.preload': 'Preload model at startup',
+  'settings.voice.preloadDesc': 'Download and warm up the model in the background shortly after launch so the first dictation starts instantly.',
 
   // ── Settings: updates ──────────────────────────────────────────────────────
   'settings.updates.group': 'Updates',
@@ -130,6 +137,8 @@ const en = {
   'settings.appearance.uiFont': 'Interface font',
   'settings.appearance.monoFont': 'Editor & terminal font',
   'settings.appearance.fontsDesc': 'Changes apply instantly across the app.',
+  'settings.appearance.editorFontSize': 'Editor font size',
+  'settings.appearance.editorFontSizeDesc': 'Font size of the built-in code editor (the terminal has its own setting).',
 
   // ── Settings: shortcuts ────────────────────────────────────────────────────
   'settings.shortcuts.conflict': 'Also bound to “{label}”',
@@ -150,6 +159,23 @@ const en = {
   'settings.agent.extraFlagsHint': '(space-separated)',
   'settings.agent.extraFlagsPlaceholder': 'e.g. --verbose --no-auto-update',
   'settings.agent.storageNote': 'Keys are stored in the workspace SQLite database. The embedded MCP server is auto-configured at',
+
+  // ── SwarmVoice (TopBar button) ─────────────────────────────────────────────
+  'voice.flash.transcribing': 'Transcribing, please wait…',
+  'voice.flash.downloading': 'Downloading model…',
+  'voice.flash.downloadingPct': 'Downloading model… {pct}%',
+  'voice.flash.noPane': 'Click a terminal pane first',
+  'voice.tooltip.downloading': 'Downloading Whisper model…',
+  'voice.tooltip.transcribing': 'Transcribing…',
+  'voice.tooltip.recording': 'Recording — click to stop ({keys})',
+  'voice.tooltip.error': 'Error — click to retry',
+  'voice.tooltip.idle': 'Voice input — local Whisper ({keys})',
+  'voice.button.loading': 'Loading',
+  'voice.button.transcribing': 'Transcribing',
+  'voice.button.voice': 'Voice',
+  'voice.aria.stop': 'Stop recording',
+  'voice.aria.transcribing': 'Transcribing',
+  'voice.aria.start': 'Start voice input',
 
   // ── Command palette ────────────────────────────────────────────────────────
   'cmd.placeholder': 'Type a command…',
@@ -576,6 +602,10 @@ const en = {
   'file.noFileOpen': 'No file open',
   'file.unsavedTitle': 'Unsaved changes',
   'file.selectToEdit': 'Select a file to edit',
+  'file.lnCol': 'Ln {ln}, Col {col}',
+  'file.selected': '{n} selected',
+  'file.multiCursor': '{n} cursors',
+  'file.plainText': 'Plain text',
 
   // ── Workspace sidebar ──────────────────────────────────────────────────────
   'sidebar.workspaces': 'Workspaces',
@@ -687,7 +717,14 @@ const de: Record<TranslationKey, string> = {
   'settings.notifications.idleThreshold': 'Leerlauf-Schwelle',
   'settings.notifications.idleDesc': 'Wie lange die Ausgabe eines Agenten ruhig bleiben muss, bevor er als „wartend“ markiert wird. Eine Desktop-Benachrichtigung erscheint nur, nachdem du eine Eingabe gesendet hast und das Fenster nicht im Fokus ist.',
   'settings.voice.group': 'SwarmVoice',
-  'settings.voice.desc': 'Führt Whisper lokal aus — kein API-Schlüssel nötig. Beim ersten Mal wird das Whisper-Tiny-Modell (~39 MB) heruntergeladen und dauerhaft zwischengespeichert. Der transkribierte Text wird in das aktive Pane eingefügt (ohne Zeilenumbruch; mit Enter abschicken). Tastenkürzel:',
+  'settings.voice.desc': 'Führt Whisper lokal aus — kein API-Schlüssel nötig. Das Modell wird einmal heruntergeladen und dauerhaft auf der Festplatte zwischengespeichert. Der transkribierte Text wird in das aktive Pane eingefügt (ohne Zeilenumbruch; mit Enter abschicken). Tastenkürzel:',
+  'settings.voice.model': 'Whisper-Modell',
+  'settings.voice.modelDesc': 'Größere Modelle sind genauer, aber langsamer und ein größerer einmaliger Download. Gilt ab der nächsten Spracheingabe.',
+  'settings.voice.model.tiny': 'Tiny — am schnellsten (~40 MB)',
+  'settings.voice.model.base': 'Base — ausgewogen, empfohlen (~75 MB)',
+  'settings.voice.model.small': 'Small — am genauesten, langsam (~250 MB)',
+  'settings.voice.preload': 'Modell beim Start vorladen',
+  'settings.voice.preloadDesc': 'Lädt das Modell kurz nach dem Start im Hintergrund herunter und wärmt es auf, damit das erste Diktat sofort startet.',
 
   // ── Settings: updates ──────────────────────────────────────────────────────
   'settings.updates.group': 'Updates',
@@ -722,6 +759,8 @@ const de: Record<TranslationKey, string> = {
   'settings.appearance.uiFont': 'Oberflächen-Schrift',
   'settings.appearance.monoFont': 'Editor- & Terminal-Schrift',
   'settings.appearance.fontsDesc': 'Änderungen werden sofort in der ganzen App angewendet.',
+  'settings.appearance.editorFontSize': 'Editor-Schriftgröße',
+  'settings.appearance.editorFontSizeDesc': 'Schriftgröße des integrierten Code-Editors (das Terminal hat eine eigene Einstellung).',
 
   // ── Settings: shortcuts ────────────────────────────────────────────────────
   'settings.shortcuts.conflict': 'Auch belegt mit „{label}“',
@@ -742,6 +781,23 @@ const de: Record<TranslationKey, string> = {
   'settings.agent.extraFlagsHint': '(durch Leerzeichen getrennt)',
   'settings.agent.extraFlagsPlaceholder': 'z. B. --verbose --no-auto-update',
   'settings.agent.storageNote': 'Schlüssel werden in der SQLite-Datenbank des Workspace gespeichert. Der eingebettete MCP-Server wird automatisch konfiguriert unter',
+
+  // ── SwarmVoice (TopBar button) ─────────────────────────────────────────────
+  'voice.flash.transcribing': 'Transkription läuft, bitte warten…',
+  'voice.flash.downloading': 'Modell wird heruntergeladen…',
+  'voice.flash.downloadingPct': 'Modell wird heruntergeladen… {pct}%',
+  'voice.flash.noPane': 'Zuerst ein Terminal-Pane anklicken',
+  'voice.tooltip.downloading': 'Whisper-Modell wird heruntergeladen…',
+  'voice.tooltip.transcribing': 'Transkribiere…',
+  'voice.tooltip.recording': 'Aufnahme — zum Stoppen klicken ({keys})',
+  'voice.tooltip.error': 'Fehler — zum Wiederholen klicken',
+  'voice.tooltip.idle': 'Spracheingabe — lokales Whisper ({keys})',
+  'voice.button.loading': 'Lädt',
+  'voice.button.transcribing': 'Transkribiere',
+  'voice.button.voice': 'Sprache',
+  'voice.aria.stop': 'Aufnahme stoppen',
+  'voice.aria.transcribing': 'Transkribiere',
+  'voice.aria.start': 'Spracheingabe starten',
 
   // ── Command palette ────────────────────────────────────────────────────────
   'cmd.placeholder': 'Befehl eingeben…',
@@ -1168,6 +1224,10 @@ const de: Record<TranslationKey, string> = {
   'file.noFileOpen': 'Keine Datei geöffnet',
   'file.unsavedTitle': 'Ungespeicherte Änderungen',
   'file.selectToEdit': 'Wähle eine Datei zum Bearbeiten',
+  'file.lnCol': 'Z {ln}, Sp {col}',
+  'file.selected': '{n} ausgewählt',
+  'file.multiCursor': '{n} Cursor',
+  'file.plainText': 'Nur Text',
 
   // ── Workspace sidebar ──────────────────────────────────────────────────────
   'sidebar.workspaces': 'Workspaces',

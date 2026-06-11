@@ -1,49 +1,113 @@
-import React, { useMemo } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useT } from '../i18n'
-import ReactCodeMirror from '@uiw/react-codemirror'
-import { oneDark } from '@codemirror/theme-one-dark'
-import { javascript } from '@codemirror/lang-javascript'
-import { css } from '@codemirror/lang-css'
-import { html } from '@codemirror/lang-html'
-import { python } from '@codemirror/lang-python'
-import { json } from '@codemirror/lang-json'
+import { useWorkspaceStore } from '../store/workspace'
+import ReactCodeMirror, { type ViewUpdate } from '@uiw/react-codemirror'
+import { EditorView } from '@codemirror/view'
 import type { Extension } from '@codemirror/state'
+import { indentationMarkers } from '@replit/codemirror-indentation-markers'
+import { editorTheme } from '../editor/theme'
+import { loadLanguage, languageName } from '../editor/languages'
 
 export interface FileEditorProps {
   filePath: string | null
   fileName: string | null
+  /** Path relative to the workspace root, for the status-bar breadcrumb. */
+  relPath: string | null
   content: string
   isDirty: boolean
   onChange: (newContent: string) => void
   onSave: () => void
 }
 
-function getLanguageExtension(fileName: string | null): Extension[] {
-  if (!fileName) return []
-  const lower = fileName.toLowerCase()
-  if (lower.endsWith('.ts') || lower.endsWith('.tsx')) {
-    return [javascript({ typescript: true, jsx: true })]
-  }
-  if (lower.endsWith('.js') || lower.endsWith('.jsx')) {
-    return [javascript({ jsx: true })]
-  }
-  if (lower.endsWith('.css')) return [css()]
-  if (lower.endsWith('.html')) return [html()]
-  if (lower.endsWith('.py')) return [python()]
-  if (lower.endsWith('.json')) return [json()]
-  return []
+interface CursorInfo {
+  line: number
+  col: number
+  selected: number
+  cursors: number
 }
+
+// Static (per-mount) extensions: VS Code-style Alt+Click adds a cursor,
+// indent guides match the theme's border colours.
+const staticExtensions: Extension[] = [
+  editorTheme,
+  EditorView.clickAddsSelectionRange.of((e) => e.altKey),
+  indentationMarkers({
+    hideFirstIndent: true,
+    highlightActiveBlock: true,
+    thickness: 1,
+    colors: {
+      light: 'var(--border)',
+      dark: 'var(--border)',
+      activeLight: 'var(--border-active)',
+      activeDark: 'var(--border-active)',
+    },
+  }),
+]
 
 export function FileEditor({
   filePath,
   fileName,
+  relPath,
   content,
   isDirty,
   onChange,
   onSave,
 }: FileEditorProps) {
   const t = useT()
-  const extensions = useMemo(() => getLanguageExtension(fileName), [fileName])
+  const [langExt, setLangExt] = useState<Extension | null>(null)
+  const [cursor, setCursor] = useState<CursorInfo>({ line: 1, col: 1, selected: 0, cursors: 1 })
+  const editorWrapRef = useRef<HTMLDivElement>(null)
+  const setEditorFontSize = useWorkspaceStore((s) => s.setEditorFontSize)
+
+  // Ctrl+scroll zooms the editor font, like VS Code. Needs a native non-passive
+  // listener — React's onWheel is passive, so preventDefault would be ignored.
+  useEffect(() => {
+    const el = editorWrapRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return
+      e.preventDefault()
+      const current = useWorkspaceStore.getState().editorFontSize
+      setEditorFontSize(current + (e.deltaY < 0 ? 1 : -1))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [setEditorFontSize])
+
+  const langName = useMemo(() => (fileName ? languageName(fileName) : null), [fileName])
+
+  // Lazily import the parser for the open file's language.
+  useEffect(() => {
+    let cancelled = false
+    setLangExt(null)
+    if (!fileName) return
+    loadLanguage(fileName).then((ext) => {
+      if (!cancelled) setLangExt(ext)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [filePath, fileName])
+
+  const extensions = useMemo(
+    () => [...staticExtensions, ...(langExt ? [langExt] : [])],
+    [langExt]
+  )
+
+  const handleUpdate = (vu: ViewUpdate) => {
+    if (!vu.selectionSet && !vu.docChanged) return
+    const sel = vu.state.selection
+    const main = sel.main
+    const line = vu.state.doc.lineAt(main.head)
+    let selected = 0
+    for (const r of sel.ranges) selected += r.to - r.from
+    setCursor({
+      line: line.number,
+      col: main.head - line.from + 1,
+      selected,
+      cursors: sel.ranges.length,
+    })
+  }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') {
@@ -52,140 +116,127 @@ export function FileEditor({
     }
   }
 
+  if (filePath === null) {
+    return (
+      <div
+        style={{
+          flex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: 'var(--text-muted)',
+          fontSize: 13,
+          background: 'var(--bg-base)',
+        }}
+      >
+        {t('file.selectToEdit')}
+      </div>
+    )
+  }
+
   return (
     <div
       style={{
         display: 'flex',
         flexDirection: 'column',
         height: '100%',
+        minHeight: 0,
         background: 'var(--bg-base)',
         overflow: 'hidden',
       }}
       onKeyDown={handleKeyDown}
     >
-      {/* Header bar */}
+      {/* Editor */}
+      <div ref={editorWrapRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <ReactCodeMirror
+          value={content}
+          theme="none"
+          extensions={extensions}
+          onChange={onChange}
+          onUpdate={handleUpdate}
+          height="100%"
+          style={{ height: '100%' }}
+          basicSetup={{
+            lineNumbers: true,
+            foldGutter: true,
+            dropCursor: true,
+            allowMultipleSelections: true,
+            indentOnInput: true,
+            bracketMatching: true,
+            closeBrackets: true,
+            autocompletion: true,
+            rectangularSelection: true,
+            crosshairCursor: true,
+            highlightActiveLine: true,
+            highlightActiveLineGutter: true,
+            highlightSelectionMatches: true,
+            closeBracketsKeymap: true,
+            searchKeymap: true,
+          }}
+        />
+      </div>
+
+      {/* Status bar */}
       <div
         style={{
-          height: 32,
+          height: 24,
           flexShrink: 0,
           display: 'flex',
           alignItems: 'center',
-          paddingLeft: 12,
-          paddingRight: 8,
-          gap: 6,
+          padding: '0 10px',
+          gap: 14,
           background: 'var(--bg-panel)',
-          borderBottom: '1px solid var(--border-subtle)',
+          borderTop: '1px solid var(--border-subtle)',
+          fontSize: 11,
+          color: 'var(--text-muted)',
           userSelect: 'none',
+          whiteSpace: 'nowrap',
         }}
       >
-        {/* Filename */}
+        {/* Breadcrumb */}
         <span
           style={{
             flex: 1,
-            fontSize: 13,
-            color: fileName ? 'var(--text-secondary)' : 'var(--text-muted)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            fontFamily: 'var(--font-mono)',
+            color: 'var(--text-muted)',
           }}
+          title={filePath}
         >
-          {fileName ?? t('file.noFileOpen')}
+          {(relPath ?? fileName ?? '').split(/[\\/]/).join('  ›  ')}
         </span>
 
-        {/* Unsaved dot */}
-        {isDirty && (
-          <div
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background: '#fb923c',
-              flexShrink: 0,
-            }}
-            title={t('file.unsavedTitle')}
-          />
+        {cursor.cursors > 1 ? (
+          <span>{t('file.multiCursor', { n: String(cursor.cursors) })}</span>
+        ) : (
+          <span>
+            {t('file.lnCol', { ln: String(cursor.line), col: String(cursor.col) })}
+            {cursor.selected > 0 && ` (${t('file.selected', { n: String(cursor.selected) })})`}
+          </span>
         )}
 
-        {/* Save button */}
+        <span>{langName ?? t('file.plainText')}</span>
+
         <button
           onClick={onSave}
           disabled={!isDirty}
           style={{
-            height: 22,
+            height: 18,
             padding: '0 8px',
-            fontSize: 11,
-            fontWeight: 500,
+            fontSize: 10.5,
+            fontWeight: 600,
             border: 'none',
-            borderRadius: 4,
-            cursor: isDirty ? 'pointer' : 'not-allowed',
-            background: isDirty ? 'var(--accent)' : 'var(--bg-elevated)',
-            color: isDirty ? '#0d0d0d' : 'var(--text-muted)',
-            flexShrink: 0,
+            borderRadius: 3,
+            cursor: isDirty ? 'pointer' : 'default',
+            background: isDirty ? 'var(--accent)' : 'transparent',
+            color: isDirty ? 'var(--accent-fg)' : 'var(--text-dim)',
             transition: 'background 150ms, color 150ms',
           }}
+          title="Ctrl+S"
         >
-          {t('common.save')}
+          {isDirty ? t('common.save') : t('common.saved')}
         </button>
       </div>
-
-      {/* Editor area */}
-      {filePath === null ? (
-        <div
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: 'var(--text-muted)',
-            fontSize: 13,
-          }}
-        >
-          {t('file.selectToEdit')}
-        </div>
-      ) : (
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          <style>{`
-            .cm-editor {
-              height: 100% !important;
-              font-size: 13.5px !important;
-              -webkit-font-smoothing: antialiased;
-              text-rendering: optimizeLegibility;
-            }
-            .cm-editor .cm-scroller {
-              overflow: auto !important;
-              font-family: var(--font-editor) !important;
-              font-feature-settings: 'liga' 1, 'calt' 1;
-              font-variant-ligatures: contextual;
-              line-height: 1.6 !important;
-            }
-          `}</style>
-          <ReactCodeMirror
-            value={content}
-            theme={oneDark}
-            extensions={extensions}
-            onChange={onChange}
-            height="100%"
-            style={{ flex: 1, overflow: 'hidden' }}
-            basicSetup={{
-              lineNumbers: true,
-              foldGutter: true,
-              dropCursor: false,
-              allowMultipleSelections: false,
-              indentOnInput: true,
-              bracketMatching: true,
-              closeBrackets: true,
-              autocompletion: true,
-              rectangularSelection: false,
-              crosshairCursor: false,
-              highlightActiveLine: true,
-              highlightSelectionMatches: false,
-              closeBracketsKeymap: true,
-              searchKeymap: true,
-            }}
-          />
-        </div>
-      )}
     </div>
   )
 }

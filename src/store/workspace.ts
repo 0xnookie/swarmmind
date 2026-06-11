@@ -1,8 +1,10 @@
 import { create } from 'zustand'
 import { v4 as uuidv4 } from 'uuid'
 import type { Language } from '../i18n'
+import type { VoiceModel } from '../hooks/useVoice'
 import {
   applyAppearance,
+  clampEditorFontSize,
   DEFAULT_APPEARANCE,
   type ThemePreset,
   type UiDensity,
@@ -137,12 +139,18 @@ interface WorkspaceState {
   closeToTray: boolean
   // UI display language (persisted as the `language` app setting).
   language: Language
+  // ── SwarmVoice (persisted as `voiceModel` / `voicePreload` app settings) ──
+  // Which Whisper model to transcribe with, and whether to download/warm it in
+  // the background shortly after launch.
+  voiceModel: VoiceModel
+  voicePreload: boolean
   // ── Appearance (applied live via CSS variables, persisted) ────────────────
   themePreset: ThemePreset
   accentColor: string | null
   uiDensity: UiDensity
   uiFont: UiFontId
   monoFont: MonoFontId
+  editorFontSize: number
   // Bumped on any appearance change so the terminal can re-read CSS colours.
   appearanceVersion: number
   // ── Keyboard shortcuts: actionId → canonical combo overrides ──────────────
@@ -225,12 +233,15 @@ interface WorkspaceState {
   setTerminalCursorBlink: (b: boolean) => void
   setCloseToTray: (b: boolean) => void
   setLanguage: (lang: Language) => void
+  setVoiceModel: (m: VoiceModel) => void
+  setVoicePreload: (b: boolean) => void
   // Appearance setters — each persists and re-applies immediately.
   setThemePreset: (p: ThemePreset) => void
   setAccentColor: (hex: string | null) => void
   setUiDensity: (d: UiDensity) => void
   setUiFont: (f: UiFontId) => void
   setMonoFont: (f: MonoFontId) => void
+  setEditorFontSize: (n: number) => void
   hydrateAppearance: (a: Partial<AppearanceSettings>) => void
   // Keybindings — persisted as a JSON override map.
   setKeybinding: (id: string, keys: string) => void
@@ -360,6 +371,7 @@ function reapplyAppearance(
     uiDensity: s.uiDensity,
     uiFont: s.uiFont,
     monoFont: s.monoFont,
+    editorFontSize: s.editorFontSize,
   })
   set(st => ({ appearanceVersion: st.appearanceVersion + 1 }))
 }
@@ -428,11 +440,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   terminalCursorBlink: true,
   closeToTray: true,
   language: 'en',
+  voiceModel: 'base',
+  voicePreload: true,
   themePreset: DEFAULT_APPEARANCE.themePreset,
   accentColor: DEFAULT_APPEARANCE.accentColor,
   uiDensity: DEFAULT_APPEARANCE.uiDensity,
   uiFont: DEFAULT_APPEARANCE.uiFont,
   monoFont: DEFAULT_APPEARANCE.monoFont,
+  editorFontSize: DEFAULT_APPEARANCE.editorFontSize,
   appearanceVersion: 0,
   keybindings: {},
   activePaneId: null,
@@ -811,6 +826,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     window.swarmmind.setAppSetting('language', lang).catch(() => {})
   },
 
+  setVoiceModel: (m) => {
+    set({ voiceModel: m })
+    window.swarmmind.setAppSetting('voiceModel', m).catch(() => {})
+  },
+
+  setVoicePreload: (b) => {
+    set({ voicePreload: b })
+    window.swarmmind.setAppSetting('voicePreload', b ? '1' : '0').catch(() => {})
+  },
+
   // ── Appearance ─────────────────────────────────────────────────────────────
   // Re-apply CSS variables from the current store state and bump the version so
   // the terminal (which can't read CSS vars) re-syncs its colours/font.
@@ -839,6 +864,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     window.swarmmind.setAppSetting('monoFont', f).catch(() => {})
     reapplyAppearance(get, set)
   },
+  setEditorFontSize: (n) => {
+    const size = clampEditorFontSize(n)
+    set({ editorFontSize: size })
+    window.swarmmind.setAppSetting('editorFontSize', String(size)).catch(() => {})
+    reapplyAppearance(get, set)
+  },
 
   // Set values from persisted settings at startup without re-persisting them,
   // then apply once.
@@ -849,6 +880,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       uiDensity: a.uiDensity ?? s.uiDensity,
       uiFont: a.uiFont ?? s.uiFont,
       monoFont: a.monoFont ?? s.monoFont,
+      editorFontSize: a.editorFontSize ?? s.editorFontSize,
     }))
     reapplyAppearance(get, set)
   },

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
-import { useVoice } from '../hooks/useVoice'
-import { matchEvent, getEffectiveKeys } from '../shortcuts'
+import { useVoice, preloadVoiceModel } from '../hooks/useVoice'
+import { matchEvent, getEffectiveKeys, formatKeys } from '../shortcuts'
+import { useT } from '../i18n'
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -66,9 +67,16 @@ function WaveformBars({ levels }: { levels: number[] }) {
 // ── SwarmVoice ────────────────────────────────────────────────────────────────
 
 export function SwarmVoice() {
+  const t = useT()
   const activePaneId = useWorkspaceStore(s => s.activePaneId)
+  const voicePreload = useWorkspaceStore(s => s.voicePreload)
+  const voiceModel   = useWorkspaceStore(s => s.voiceModel)
+  const keybindings  = useWorkspaceStore(s => s.keybindings)
   const activePaneIdRef = useRef(activePaneId)
   useEffect(() => { activePaneIdRef.current = activePaneId }, [activePaneId])
+
+  // Pretty-printed effective shortcut for tooltips (honours rebinding).
+  const voiceKeys = formatKeys(getEffectiveKeys('voice', keybindings))
 
   const [flashMsg, setFlashMsg] = useState<string | null>(null)
   const [transcriptFlash, setTranscriptFlash] = useState('')
@@ -80,6 +88,18 @@ export function SwarmVoice() {
   }, [])
 
   const { status, modelProgress, audioLevels, lastTranscript, start, stop, error } = useVoice(handleTranscript)
+
+  // Warm the Whisper model in the background shortly after startup so the
+  // first dictation doesn't wait for download/init/warm-up. Delayed so it
+  // never competes with app launch for CPU/network; the model singleton makes
+  // a user click during (or before) this a single shared load. Gated on the
+  // `voicePreload` setting; re-runs when the user picks a different model so
+  // the new one is warmed too.
+  useEffect(() => {
+    if (!voicePreload) return
+    const timer = window.setTimeout(() => preloadVoiceModel(), 2500)
+    return () => window.clearTimeout(timer)
+  }, [voicePreload, voiceModel])
 
   const isModelLoading = status === 'model-loading'
   const isRecording    = status === 'recording'
@@ -105,10 +125,12 @@ export function SwarmVoice() {
   const handleToggle = useCallback(() => {
     switch (status) {
       case 'transcribing':
-        showFlash('Transcribing, please wait…')
+        showFlash(t('voice.flash.transcribing'))
         return
       case 'model-loading':
-        showFlash(modelProgress > 0 ? `Downloading model… ${modelProgress}%` : 'Downloading model…')
+        showFlash(modelProgress > 0
+          ? t('voice.flash.downloadingPct', { pct: String(modelProgress) })
+          : t('voice.flash.downloading'))
         return
       case 'recording':
         stop()
@@ -117,16 +139,16 @@ export function SwarmVoice() {
         // fall through — clicking in error state retries
       case 'idle':
         if (!activePaneIdRef.current) {
-          showFlash('Click a terminal pane first')
+          showFlash(t('voice.flash.noPane'))
           return
         }
         start()
         return
     }
-  }, [status, modelProgress, start, stop, showFlash])
+  }, [status, modelProgress, start, stop, showFlash, t])
 
   // Global voice toggle — binding comes from the shortcut registry (default
-  // Ctrl/Cmd+Shift+V) and honours any user rebinding.
+  // Ctrl/Cmd+Shift+M) and honours any user rebinding.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const keys = getEffectiveKeys('voice', useWorkspaceStore.getState().keybindings)
@@ -153,11 +175,11 @@ export function SwarmVoice() {
     : 'var(--text-muted)'
 
   const tooltip = isModelLoading
-    ? `Downloading Whisper model… ${modelProgress > 0 ? modelProgress + '%' : ''}`
-    : isTranscribing  ? 'Transcribing…'
-    : isRecording     ? 'Recording — click to stop (Ctrl+Shift+V)'
-    : isError         ? (error ?? 'Error — click to retry')
-    : 'Voice input — local Whisper (Ctrl+Shift+V)'
+    ? `${t('voice.tooltip.downloading')}${modelProgress > 0 ? ` ${modelProgress}%` : ''}`
+    : isTranscribing  ? t('voice.tooltip.transcribing')
+    : isRecording     ? t('voice.tooltip.recording', { keys: voiceKeys })
+    : isError         ? (error ?? t('voice.tooltip.error'))
+    : t('voice.tooltip.idle', { keys: voiceKeys })
 
   return (
     <>
@@ -191,7 +213,7 @@ export function SwarmVoice() {
 
       {/* ── Voice button ─────────────────────────────────────────────────────── */}
       <button
-        aria-label={isRecording ? 'Stop recording' : isTranscribing ? 'Transcribing' : 'Start voice input'}
+        aria-label={isRecording ? t('voice.aria.stop') : isTranscribing ? t('voice.aria.transcribing') : t('voice.aria.start')}
         title={tooltip}
         onClick={handleToggle}
         style={{
@@ -204,10 +226,10 @@ export function SwarmVoice() {
           flexShrink: 0, whiteSpace: 'nowrap',
         }}
       >
-        {isModelLoading && <><SpinnerIcon /><span>{modelProgress > 0 ? `${modelProgress}%` : 'Loading'}</span></>}
-        {isTranscribing  && <><SpinnerIcon /><span>Transcribing</span></>}
+        {isModelLoading && <><SpinnerIcon /><span>{modelProgress > 0 ? `${modelProgress}%` : t('voice.button.loading')}</span></>}
+        {isTranscribing  && <><SpinnerIcon /><span>{t('voice.button.transcribing')}</span></>}
         {isRecording     && <><BoltIcon /><WaveformBars levels={audioLevels} /></>}
-        {!isActive && !isModelLoading && <><MicIcon /><span>Voice</span></>}
+        {!isActive && !isModelLoading && <><MicIcon /><span>{t('voice.button.voice')}</span></>}
       </button>
     </>
   )

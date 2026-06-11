@@ -15,14 +15,18 @@ if (!existsSync(src)) {
 
 mkdirSync(dest, { recursive: true })
 
-// useVoice.ts forces the single-threaded backend (env.backends.onnx.wasm
-// .numThreads = 1, proxy = false), so the threaded WASM variants + their JS
-// glue/worker are never loaded — shipping them only bloated the build by ~18 MB.
-// onnxruntime-web picks ort-wasm-simd.wasm when WASM-SIMD is available (all
-// modern CPUs) and falls back to ort-wasm.wasm otherwise; we ship both.
+// useVoice.ts uses the multi-threaded backend when SharedArrayBuffer is
+// available (main.ts force-enables it via the SharedArrayBuffer feature flag),
+// so ship the threaded WASM variants and their pthread worker alongside the
+// single-threaded ones (the runtime falls back to those if SAB/threads are
+// unavailable). onnxruntime-web picks the -simd variant when WASM-SIMD is
+// available (all modern CPUs).
 const files = [
   'ort-wasm.wasm',
   'ort-wasm-simd.wasm',
+  'ort-wasm-threaded.wasm',
+  'ort-wasm-simd-threaded.wasm',
+  'ort-wasm-threaded.worker.js',
 ]
 
 for (const f of files) {

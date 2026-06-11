@@ -62,6 +62,9 @@ declare global {
       // App settings
       getAppSetting: (key: string) => Promise<string | null>
       setAppSetting: (key: string, value: string) => Promise<void>
+      // Persistent SwarmVoice model cache (filesystem-backed under userData)
+      voiceCacheMatch: (key: string) => Promise<{ data: ArrayBuffer; headers: Record<string, string> } | null>
+      voiceCachePut: (key: string, data: ArrayBuffer, headers: Record<string, string>) => Promise<boolean>
       // Window controls
       windowMinimize: () => void
       windowMaximize: () => void

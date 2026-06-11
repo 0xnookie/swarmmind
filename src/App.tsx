@@ -79,6 +79,12 @@ export default function App() {
     window.swarmmind.getAppSetting('language').then(val => {
       if (val === 'en' || val === 'de') useWorkspaceStore.setState({ language: val })
     }).catch(() => {})
+    window.swarmmind.getAppSetting('voiceModel').then(val => {
+      if (val === 'tiny' || val === 'base' || val === 'small') useWorkspaceStore.setState({ voiceModel: val })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('voicePreload').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ voicePreload: val !== '0' })
+    }).catch(() => {})
 
     // Appearance — load all keys, then hydrate + apply once (validating each so
     // a stale/unknown persisted value falls back to the store default).
@@ -88,7 +94,9 @@ export default function App() {
       window.swarmmind.getAppSetting('uiDensity'),
       window.swarmmind.getAppSetting('uiFont'),
       window.swarmmind.getAppSetting('monoFont'),
-    ]).then(([theme, accent, density, uiFont, monoFont]) => {
+      window.swarmmind.getAppSetting('editorFontSize'),
+    ]).then(([theme, accent, density, uiFont, monoFont, editorFontSize]) => {
+      const edSize = editorFontSize ? Number(editorFontSize) : NaN
       useWorkspaceStore.getState().hydrateAppearance({
         themePreset: theme && theme in THEMES ? (theme as ThemePreset) : undefined,
         accentColor: accent ? accent : (accent === '' ? null : undefined),
@@ -96,6 +104,7 @@ export default function App() {
           ? (density as UiDensity) : undefined,
         uiFont: uiFont && uiFont in UI_FONTS ? (uiFont as UiFontId) : undefined,
         monoFont: monoFont && monoFont in MONO_FONTS ? (monoFont as MonoFontId) : undefined,
+        editorFontSize: Number.isFinite(edSize) ? edSize : undefined,
       })
     }).catch(() => {
       // Even on failure, apply the defaults so density/zoom is initialised.

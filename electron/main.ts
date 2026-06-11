@@ -13,6 +13,7 @@ import { registerGitHandlers } from './ipc/git'
 import { registerAgentSkillHandlers } from './ipc/agent-skills'
 import { registerEventHandlers } from './ipc/events'
 import { registerCheckpointHandlers } from './ipc/checkpoints'
+import { registerVoiceCacheHandlers } from './ipc/voice-cache'
 import { registerUpdater } from './updater'
 import { killAll } from './pty-manager'
 import { existsSync, mkdirSync } from 'fs'
@@ -22,6 +23,13 @@ import { existsSync, mkdirSync } from 'fs'
 // Disable GPU acceleration for more stable rendering on all hardware
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch('disable-features', 'HardwareMediaKeyHandling')
+
+// SwarmVoice: onnxruntime-web can only run its multi-threaded WASM backend when
+// SharedArrayBuffer exists, and SAB normally requires cross-origin isolation —
+// which neither the dev server (plain http://localhost) nor the packaged
+// renderer (file://) has. Force-enable it process-wide; safe because the
+// renderer only ever loads our own bundled code (no remote content).
+app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer')
 
 // ── App-level DB (workspaces registry, skills, app_state) ─────────────────────
 
@@ -197,6 +205,7 @@ app.whenReady().then(async () => {
   registerSessionHandlers()
   registerGitHandlers()
   registerAgentSkillHandlers()
+  registerVoiceCacheHandlers()
 
   ipcMain.handle('app:version', () => app.getVersion())
 

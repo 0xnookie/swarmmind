@@ -2,10 +2,19 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useWorkspaceStore, type AgentId, type ShellStyle } from '../store/workspace'
 import {
   THEME_LIST, ACCENT_PRESETS, UI_FONTS, MONO_FONTS, DENSITY_LIST, isValidHex,
+  EDITOR_FONT_SIZE_MIN, EDITOR_FONT_SIZE_MAX,
   type ThemePreset, type UiDensity, type UiFontId, type MonoFontId,
 } from '../appearance'
 import { SHORTCUTS, getEffectiveKeys, formatKeys, eventToKeys, findConflict } from '../shortcuts'
 import { useT, LANGUAGES, type TFunction, type Language } from '../i18n'
+import { type VoiceModel } from '../hooks/useVoice'
+
+// Whisper model choices for SwarmVoice (Settings → General).
+const VOICE_MODEL_OPTIONS: { value: VoiceModel; labelKey: 'settings.voice.model.tiny' | 'settings.voice.model.base' | 'settings.voice.model.small' }[] = [
+  { value: 'tiny',  labelKey: 'settings.voice.model.tiny' },
+  { value: 'base',  labelKey: 'settings.voice.model.base' },
+  { value: 'small', labelKey: 'settings.voice.model.small' },
+]
 
 // Agents that expose configurable launch settings (API key, model, …).
 const AGENTS: { id: AgentId; label: string }[] = [
@@ -69,6 +78,10 @@ export function SettingsModal() {
   const setTerminalCursorBlink = useWorkspaceStore(s => s.setTerminalCursorBlink)
   const storeCloseToTray = useWorkspaceStore(s => s.closeToTray)
   const setCloseToTray = useWorkspaceStore(s => s.setCloseToTray)
+  const storeVoiceModel = useWorkspaceStore(s => s.voiceModel)
+  const setVoiceModelStore = useWorkspaceStore(s => s.setVoiceModel)
+  const storeVoicePreload = useWorkspaceStore(s => s.voicePreload)
+  const setVoicePreloadStore = useWorkspaceStore(s => s.setVoicePreload)
 
   // Appearance + shortcuts apply instantly (no draft/Save), so we read live
   // store values and call setters directly from the controls.
@@ -82,6 +95,8 @@ export function SettingsModal() {
   const setUiDensity = useWorkspaceStore(s => s.setUiDensity)
   const setUiFont = useWorkspaceStore(s => s.setUiFont)
   const setMonoFont = useWorkspaceStore(s => s.setMonoFont)
+  const editorFontSize = useWorkspaceStore(s => s.editorFontSize)
+  const setEditorFontSize = useWorkspaceStore(s => s.setEditorFontSize)
   const keybindings = useWorkspaceStore(s => s.keybindings)
   const setKeybinding = useWorkspaceStore(s => s.setKeybinding)
   const resetKeybinding = useWorkspaceStore(s => s.resetKeybinding)
@@ -98,6 +113,8 @@ export function SettingsModal() {
   const [defaultAgent, setDefaultAgent] = useState<AgentId | null>(storeDefaultAgentId)
   const [idleSeconds, setIdleSeconds] = useState(4)
   const [closeTray, setCloseTray] = useState(storeCloseToTray)
+  const [voiceModelDraft, setVoiceModelDraft] = useState<VoiceModel>(storeVoiceModel)
+  const [voicePreloadDraft, setVoicePreloadDraft] = useState(storeVoicePreload)
   // Terminal-section draft
   const [fontSize, setFontSize] = useState(storeFontSize)
   const [cursorBlink, setCursorBlink] = useState(storeCursorBlink)
@@ -136,6 +153,8 @@ export function SettingsModal() {
     setFontSize(storeFontSize)
     setCursorBlink(storeCursorBlink)
     setCloseTray(storeCloseToTray)
+    setVoiceModelDraft(storeVoiceModel)
+    setVoicePreloadDraft(storeVoicePreload)
     setRecordingId(null)
     setAccentDraft(useWorkspaceStore.getState().accentColor ?? '')
 
@@ -204,6 +223,8 @@ export function SettingsModal() {
       const clamped = Math.min(60, Math.max(1, Math.round(idleSeconds) || 4))
       await window.swarmmind.setAppSetting('agentIdleMs', String(clamped * 1000))
       setCloseToTray(closeTray)
+      setVoiceModelStore(voiceModelDraft)
+      setVoicePreloadStore(voicePreloadDraft)
     }
     if (terminalDirty) {
       setTerminalFontSize(fontSize)
@@ -219,6 +240,7 @@ export function SettingsModal() {
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, shell, defaultAgent, idleSeconds, closeTray,
+      voiceModelDraft, voicePreloadDraft, setVoiceModelStore, setVoicePreloadStore,
       fontSize, cursorBlink, setShellStyle, setDefaultAgentId, setTerminalFontSize, setTerminalCursorBlink, setCloseToTray])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -385,9 +407,42 @@ export function SettingsModal() {
                 </Group>
 
                 <Group title={t('settings.voice.group')}>
+                  <FieldLabel htmlFor="voice-model">{t('settings.voice.model')}</FieldLabel>
+                  <select
+                    id="voice-model"
+                    style={styles.select}
+                    value={voiceModelDraft}
+                    onChange={e => { setVoiceModelDraft(e.target.value as VoiceModel); setGeneralDirty(true) }}
+                  >
+                    {VOICE_MODEL_OPTIONS.map(o => (
+                      <option key={o.value} value={o.value}>{t(o.labelKey)}</option>
+                    ))}
+                  </select>
+                  <p style={styles.desc}>{t('settings.voice.modelDesc')}</p>
+
+                  <div style={styles.rowBetween}>
+                    <div>
+                      <FieldLabel>{t('settings.voice.preload')}</FieldLabel>
+                      <p style={{ ...styles.desc, marginTop: 2 }}>
+                        {t('settings.voice.preloadDesc')}
+                      </p>
+                    </div>
+                    <button
+                      className="settings-toggle"
+                      role="switch"
+                      aria-checked={voicePreloadDraft}
+                      aria-label={t('settings.voice.preload')}
+                      onClick={() => { setVoicePreloadDraft(v => !v); setGeneralDirty(true) }}
+                    />
+                  </div>
+
                   <p style={styles.desc}>
-                    {t('settings.voice.desc')} <kbd style={styles.kbd}>Ctrl</kbd>+
-                    <kbd style={styles.kbd}>Shift</kbd>+<kbd style={styles.kbd}>V</kbd>.
+                    {t('settings.voice.desc')}{' '}
+                    {formatKeys(getEffectiveKeys('voice', keybindings)).split('+').map((k, i, arr) => (
+                      <React.Fragment key={i}>
+                        <kbd style={styles.kbd}>{k}</kbd>{i < arr.length - 1 ? '+' : ''}
+                      </React.Fragment>
+                    ))}.
                   </p>
                 </Group>
 
@@ -538,6 +593,22 @@ export function SettingsModal() {
                     ))}
                   </select>
                   <p style={styles.desc}>{t('settings.appearance.fontsDesc')}</p>
+
+                  <div style={{ ...styles.rowBetween, marginTop: 14 }}>
+                    <FieldLabel htmlFor="editor-font-size">{t('settings.appearance.editorFontSize')}</FieldLabel>
+                    <span style={styles.value}>{editorFontSize}px</span>
+                  </div>
+                  <input
+                    id="editor-font-size"
+                    type="range"
+                    min={EDITOR_FONT_SIZE_MIN}
+                    max={EDITOR_FONT_SIZE_MAX}
+                    step={1}
+                    value={editorFontSize}
+                    onChange={e => setEditorFontSize(Number(e.target.value))}
+                    style={styles.range}
+                  />
+                  <p style={styles.desc}>{t('settings.appearance.editorFontSizeDesc')}</p>
                 </Group>
               </div>
             )}

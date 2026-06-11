@@ -116,6 +116,11 @@ contextBridge.exposeInMainWorld('swarmmind', {
   getAppSetting: (key: string) => ipcRenderer.invoke('appsetting:get', key),
   setAppSetting: (key: string, value: string) => ipcRenderer.invoke('appsetting:set', key, value),
 
+  // Persistent SwarmVoice model cache (backs @xenova/transformers' custom cache).
+  voiceCacheMatch: (key: string) => ipcRenderer.invoke('voiceCache:match', key),
+  voiceCachePut: (key: string, data: ArrayBuffer, headers: Record<string, string>) =>
+    ipcRenderer.invoke('voiceCache:put', key, data, headers),
+
   fsListDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
   fsReadFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
   fsWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeFile', filePath, content),

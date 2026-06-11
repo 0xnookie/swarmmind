@@ -20,6 +20,8 @@ export interface AppearanceSettings {
   uiDensity: UiDensity
   uiFont: UiFontId
   monoFont: MonoFontId
+  // Code-editor font size in px (the terminal has its own fontSize setting).
+  editorFontSize: number
 }
 
 export const DEFAULT_APPEARANCE: AppearanceSettings = {
@@ -28,6 +30,15 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   uiDensity: 'default',
   uiFont: 'inter',
   monoFont: 'sfmono',
+  editorFontSize: 13,
+}
+
+export const EDITOR_FONT_SIZE_MIN = 9
+export const EDITOR_FONT_SIZE_MAX = 28
+
+export function clampEditorFontSize(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_APPEARANCE.editorFontSize
+  return Math.min(EDITOR_FONT_SIZE_MAX, Math.max(EDITOR_FONT_SIZE_MIN, Math.round(n)))
 }
 
 interface ThemeDef {
@@ -41,6 +52,8 @@ interface ThemeDef {
   // this and inherit ANSI_DEFAULT; light themes (e.g. Paper) must supply a darker
   // palette so coloured terminal output stays legible on a pale background.
   term?: Partial<Record<AnsiKey, string>>
+  // Optional override of the editor syntax palette (defaults to SYN_DEFAULT).
+  syn?: Partial<Record<SynKey, string>>
 }
 
 // ── Terminal ANSI palette ────────────────────────────────────────────────────
@@ -67,6 +80,32 @@ export const TERM_ANSI_KEYS = Object.keys(ANSI_DEFAULT) as AnsiKey[]
 export function termAnsiVar(k: AnsiKey): string {
   return '--term-' + k.replace(/([A-Z])/g, '-$1').toLowerCase()
 }
+
+// ── Editor syntax palette ────────────────────────────────────────────────────
+// Token colours for the built-in code editor (src/editor/theme.ts reads these
+// as `--syn-*` custom properties). Deliberately separate from the terminal's
+// ANSI palette: greyscale themes (Mono) keep their muted terminal, but code
+// highlighting must stay colourful everywhere. Defaults follow VS Code Dark+;
+// light themes override with the Light+ palette so tokens stay legible.
+
+export type SynKey =
+  | 'comment' | 'keyword' | 'string' | 'regexp' | 'number' | 'atom'
+  | 'function' | 'type' | 'property' | 'tag' | 'invalid'
+
+export const SYN_DEFAULT: Record<SynKey, string> = {
+  comment: '#6a9955', keyword: '#c586c0', string: '#ce9178', regexp: '#d16969',
+  number: '#b5cea8', atom: '#569cd6', function: '#dcdcaa', type: '#4ec9b0',
+  property: '#9cdcfe', tag: '#569cd6', invalid: '#f44747',
+}
+
+// VS Code Light+ equivalents, for light backgrounds (Paper).
+export const SYN_LIGHT: Record<SynKey, string> = {
+  comment: '#008000', keyword: '#af00db', string: '#a31515', regexp: '#811f3f',
+  number: '#098658', atom: '#0000ff', function: '#795e26', type: '#267f99',
+  property: '#001080', tag: '#800000', invalid: '#cd3131',
+}
+
+export const SYN_KEYS = Object.keys(SYN_DEFAULT) as SynKey[]
 
 export const THEMES: Record<ThemePreset, ThemeDef> = {
   warm: {
@@ -156,6 +195,7 @@ export const THEMES: Record<ThemePreset, ThemeDef> = {
       brightYellow: '#c79100', brightBlue: '#1976d2', brightMagenta: '#9c27b0',
       brightCyan: '#0097a7', brightWhite: '#1a1a1a',
     },
+    syn: SYN_LIGHT,
   },
   forest: {
     id: 'forest',
@@ -287,6 +327,8 @@ export function applyAppearance(s: AppearanceSettings): void {
   for (const [k, v] of Object.entries(theme.vars)) root.style.setProperty(k, v)
   // Publish the terminal ANSI palette (theme override falls back to the default).
   for (const k of TERM_ANSI_KEYS) root.style.setProperty(termAnsiVar(k), theme.term?.[k] ?? ANSI_DEFAULT[k])
+  // Publish the editor syntax palette likewise.
+  for (const k of SYN_KEYS) root.style.setProperty('--syn-' + k, theme.syn?.[k] ?? SYN_DEFAULT[k])
   // Accent: explicit override wins over the theme's own accent.
   applyAccent(root, s.accentColor || theme.vars['--accent'])
   // Fonts.
@@ -294,6 +336,7 @@ export function applyAppearance(s: AppearanceSettings): void {
   const mono = (MONO_FONTS[s.monoFont] ?? MONO_FONTS.sfmono).stack
   root.style.setProperty('--font-mono', mono)
   root.style.setProperty('--font-editor', mono)
+  root.style.setProperty('--editor-font-size', clampEditorFontSize(s.editorFontSize) + 'px')
   // Density via Chromium `zoom` — scales the whole UI without touching the
   // hundreds of hardcoded px values in inline styles. (`zoom` isn't in the TS
   // CSS typings, so set it via setProperty.)
