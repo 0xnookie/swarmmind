@@ -6,6 +6,29 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0]
+
+### Added
+- **Connect multiple accounts per agent** — connect several Claude, Codex, or
+  OpenCode accounts and switch between them in a click, handy when one account
+  hits a usage limit. Connecting is one click: SwarmMind runs the CLI's own
+  sign-in (the same browser login you'd get from the command line) in an
+  embedded terminal — **no API key needed**. Manage accounts in **Settings ▸**
+  the agent's tab, or switch on the fly from a pane's right-click **Account**
+  menu. Accounts are shared across every workspace and stored securely.
+- **Accounts apply everywhere** — the active account is used not just by
+  auto-launched panes but by any terminal: type `claude`, `codex`, or
+  `opencode` by hand in any SwarmMind shell and it's already signed in with the
+  active account.
+
+### Changed
+- **Find/replace bar polish** — the code editor's Ctrl-F search panel is
+  re-laid-out into two comfortable rows with larger inputs and clearer spacing.
+- **Broadcast & Orchestrator controls** are now disabled when a center overlay
+  (board, memory graph, editor, …) is covering the terminal panes, since those
+  bars act on the panes; the command-palette Broadcast entry now surfaces the
+  panes first instead of silently doing nothing.
+
 ## [0.4.0]
 
 ### Added
@@ -73,6 +96,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   theme's accent color instead of a hardcoded warm-brown, so they look right
   under every theme.
 
+[0.5.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.5.0
 [0.4.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.4.0
 [0.3.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.3.0
 [0.2.0]: https://github.com/0xnookie/swarmmind/releases/tag/v0.2.0
