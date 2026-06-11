@@ -34,7 +34,9 @@ export function CommandPalette() {
     const close = () => setOpen(false)
     const list: Command[] = [
       { id: 'new-pane', title: t('cmd.newPane'), section: t('cmd.section.panes'), run: () => { s.addPane(); close() } },
-      { id: 'broadcast', title: t('cmd.broadcast'), section: t('cmd.section.view'), run: () => { s.toggleBroadcastBar(); close() } },
+      // Broadcast renders inside the terminal grid, so surface the panes first
+      // (close any overlay), then ensure the bar is open.
+      { id: 'broadcast', title: t('cmd.broadcast'), section: t('cmd.section.view'), run: () => { s.showTerminals(); if (!s.broadcastBarOpen) s.toggleBroadcastBar(); close() } },
       { id: 'preview', title: t('cmd.preview'), section: t('cmd.section.view'), run: () => { s.togglePreviewPanel(); close() } },
       { id: 'memory', title: t('cmd.memory'), section: t('cmd.section.view'), run: () => { s.toggleMemoryPanel(); close() } },
       { id: 'code', title: t('cmd.code'), section: t('cmd.section.view'), run: () => { s.toggleFilePanel(); close() } },

@@ -109,6 +109,14 @@ contextBridge.exposeInMainWorld('swarmmind', {
   getAgentConfig: (agentId: string) => ipcRenderer.invoke('settings:getAgentConfig', agentId),
   setAgentConfig: (agentId: string, config: unknown) => ipcRenderer.invoke('settings:setAgentConfig', agentId, config),
 
+  // Global agent accounts (connect multiple logins per agent, switch between them)
+  listAgentAccounts: (agentId: string) => ipcRenderer.invoke('accounts:list', agentId),
+  saveAgentAccounts: (agentId: string, accounts: unknown, activeId?: string) => ipcRenderer.invoke('accounts:save', agentId, accounts, activeId),
+  setActiveAgentAccount: (agentId: string, accountId: string) => ipcRenderer.invoke('accounts:setActive', agentId, accountId),
+  connectAgentAccount: (agentId: string, label: string) => ipcRenderer.invoke('accounts:connect', agentId, label),
+  ptyCreateLogin: (paneId: string, agentId: string, profileDir: string, shellStyle: string, cols?: number, rows?: number) =>
+    ipcRenderer.invoke('pty:createLogin', paneId, agentId, profileDir, shellStyle, cols, rows),
+
   windowMinimize: () => ipcRenderer.send('window:minimize'),
   windowMaximize: () => ipcRenderer.send('window:maximize'),
   windowClose:    () => ipcRenderer.send('window:close'),

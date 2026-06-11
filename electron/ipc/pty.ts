@@ -1,6 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { join } from 'path'
-import { ptyCreate, ptyCreateShell, ptyInput, ptyResize, ptyKill, ptyStatus, agentCountsByWorkspace, type ShellStyle } from '../pty-manager'
+import { ptyCreate, ptyCreateShell, ptyCreateLogin, ptyInput, ptyResize, ptyKill, ptyStatus, agentCountsByWorkspace, type ShellStyle } from '../pty-manager'
 import { type AgentId, getWorkspaceById } from '../../memory/queries'
 import { ensureWorkspaceConnection } from '../../memory/db'
 
@@ -40,6 +40,19 @@ export function registerPtyHandlers(getWin: () => BrowserWindow | null, getWorks
     if (!win) return { error: 'No window' }
     try {
       ptyCreateShell(paneId, cwd, win, shellStyle, cols, rows)
+      return { ok: true }
+    } catch (err) {
+      return { error: String(err) }
+    }
+  })
+
+  // The "connect account" login terminal embedded in Settings — runs the agent
+  // CLI's own login flow against an isolated profile dir. No workspace needed.
+  ipcMain.handle('pty:createLogin', (_event, paneId: string, agentId: AgentId, profileDir: string, shellStyle: ShellStyle, cols?: number, rows?: number) => {
+    const win = getWin()
+    if (!win) return { error: 'No window' }
+    try {
+      ptyCreateLogin(paneId, agentId, profileDir, win, shellStyle, cols, rows)
       return { ok: true }
     } catch (err) {
       return { error: String(err) }

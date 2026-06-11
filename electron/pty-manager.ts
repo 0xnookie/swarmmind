@@ -4,6 +4,7 @@ import { join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { type AgentId } from '../memory/queries'
 import { readAgentConfigForSpawn } from './agent-config'
+import { getActiveAccount, profileEnv, allProfileEnv, PROFILE_LOGIN } from './agent-accounts'
 import { getMcpPort, getMcpToken } from '../mcp/server'
 import { eventEmit } from '../memory/events'
 import { runWithWorkspace } from '../memory/db'
@@ -367,7 +368,10 @@ export function ptyCreateShell(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     TERM: 'xterm-256color',
-    COLORTERM: 'truecolor'
+    COLORTERM: 'truecolor',
+    // Route hand-typed agent CLIs (`claude`, `codex`, …) at each agent's active
+    // connected account, same as auto-spawned panes.
+    ...allProfileEnv()
   }
 
   const ptyProcess = pty.spawn(file, args, {
@@ -375,6 +379,47 @@ export function ptyCreateShell(
     cols,
     rows,
     cwd,
+    env: env as Record<string, string>
+  })
+
+  attachPty(paneId, ptyProcess, win)
+}
+
+// Run an agent CLI's own login flow against an isolated profile dir — the
+// "connect account" terminal embedded in Settings. The config env var
+// (CLAUDE_CONFIG_DIR / CODEX_HOME / …) routes the CLI's credential write into
+// `profileDir`, so completing the login binds that account. Attached without an
+// agentId/workspaceId: it's a transient utility terminal, not a swarm member —
+// no activity tracking, notifications, or event-log entries.
+export function ptyCreateLogin(
+  paneId: string,
+  agentId: AgentId,
+  profileDir: string,
+  win: BrowserWindow,
+  shellStyle: ShellStyle,
+  cols = 80,
+  rows = 24
+): void {
+  const sup = PROFILE_LOGIN[agentId]
+  if (!sup) throw new Error(`Agent "${agentId}" has no CLI login flow`)
+  ptyKill(paneId, true)
+
+  const defaults = AGENT_DEFAULTS[agentId]
+  const fullCmd = buildShellCommand([defaults.cmd, ...sup.loginArgs], shellStyle)
+  const { file, args } = resolveSpawn(fullCmd, shellStyle)
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    TERM: 'xterm-256color',
+    COLORTERM: 'truecolor',
+    [sup.envVar]: profileDir
+  }
+
+  const ptyProcess = pty.spawn(file, args, {
+    name: 'xterm-256color',
+    cols,
+    rows,
+    cwd: profileDir,
     env: env as Record<string, string>
   })
 
@@ -405,6 +450,17 @@ export function ptyCreate(
   // readAgentConfigForSpawn drops executablePath/extraFlags/env unless they were
   // signed by this install, so an untrusted workspace DB can't dictate the command.
   const storedConfig = readAgentConfigForSpawn(workspaceId, agentId)
+
+  // Overlay the active global account (if any). Accounts live in app.db (userData),
+  // so they're trusted and let the user switch credentials when one hits a limit.
+  // A connected account fully defines the credential: a CLI-login account routes
+  // the agent at its profile dir (profileEnv) and must NOT inherit the workspace
+  // apiKey (a stray ANTHROPIC_API_KEY would shadow the OAuth login); an API-key
+  // account brings its own key. Only with no accounts at all do we fall back to
+  // the per-workspace config key.
+  const account = getActiveAccount(agentId)
+  const effectiveApiKey = account ? account.apiKey : storedConfig.apiKey
+  const accountEnv = { ...profileEnv(agentId, account), ...(account?.env ?? {}) }
   const defaults = AGENT_DEFAULTS[agentId]
   const baseCmd = storedConfig.executablePath ?? defaults.cmd
   const baseArgs = buildLaunchArgs(agentId, resume, sessionId, defaults.args)
@@ -421,14 +477,19 @@ export function ptyCreate(
     KILOCODE_MCP_URL: mcpUrl,
     CODEX_MCP_URL: mcpUrl,
     CLINE_MCP_URL: mcpUrl,
-    ...(storedConfig.apiKey
+    // Every agent's active account env first (so a *different* CLI typed by hand
+    // in this pane's wrapper shell also connects), then this pane's own agent
+    // account/config overlays, which win on conflict.
+    ...allProfileEnv(),
+    ...(effectiveApiKey
       ? agentId === 'claude'
-        ? { ANTHROPIC_API_KEY: storedConfig.apiKey }
+        ? { ANTHROPIC_API_KEY: effectiveApiKey }
         : agentId === 'codex' || agentId === 'cursor' || agentId === 'windsurf'
-        ? { OPENAI_API_KEY: storedConfig.apiKey }
-        : { API_KEY: storedConfig.apiKey }
+        ? { OPENAI_API_KEY: effectiveApiKey }
+        : { API_KEY: effectiveApiKey }
       : {}),
-    ...(storedConfig.env ?? {})
+    ...(storedConfig.env ?? {}),
+    ...accountEnv
   }
 
   const ptyProcess = pty.spawn(spawnFile, spawnArgs, {

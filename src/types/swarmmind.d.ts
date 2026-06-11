@@ -1,5 +1,14 @@
 export {}
 
+interface AgentAccount {
+  id: string
+  label: string
+  profileDir?: string
+  apiKey?: string
+  model?: string
+  env?: Record<string, string>
+}
+
 declare global {
   interface Window {
     swarmmind: {
@@ -59,6 +68,12 @@ declare global {
       // Settings
       getAgentConfig: (agentId: string) => Promise<Record<string, unknown>>
       setAgentConfig: (agentId: string, config: unknown) => Promise<void>
+      // Global agent accounts
+      listAgentAccounts: (agentId: string) => Promise<{ accounts: AgentAccount[]; activeId?: string }>
+      saveAgentAccounts: (agentId: string, accounts: AgentAccount[], activeId?: string) => Promise<void>
+      setActiveAgentAccount: (agentId: string, accountId: string) => Promise<void>
+      connectAgentAccount: (agentId: string, label: string) => Promise<{ account?: AgentAccount; error?: string }>
+      ptyCreateLogin: (paneId: string, agentId: string, profileDir: string, shellStyle: string, cols?: number, rows?: number) => Promise<{ ok?: boolean; error?: string }>
       // App settings
       getAppSetting: (key: string) => Promise<string | null>
       setAppSetting: (key: string, value: string) => Promise<void>

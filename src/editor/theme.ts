@@ -106,42 +106,107 @@ const chrome = EditorView.theme({
   },
   '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--border)' },
   '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--border)' },
+  // The Ctrl-F find / replace bar. CodeMirror lays it out as inline elements
+  // with a <br> between the find and replace rows; flex + wrap (with the <br>
+  // forced to a full-width break) turns that into two comfortable rows with
+  // even spacing instead of the cramped default.
   '.cm-panel.cm-search': {
-    padding: '6px 8px',
+    position: 'relative',
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: '7px 8px',
+    padding: '10px 40px 10px 12px', // right pad clears the absolute close button
     fontFamily: 'var(--font-ui)',
-    fontSize: '12px',
+    fontSize: '13px',
   },
-  '.cm-panel.cm-search input': {
+  // Force the find/replace split onto its own row.
+  '.cm-panel.cm-search br': {
+    flexBasis: '100%',
+    height: 0,
+    margin: 0,
+    border: 'none',
+  },
+  '.cm-panel.cm-search .cm-textfield': {
     background: 'var(--bg-input)',
     border: '1px solid var(--border)',
-    borderRadius: '4px',
+    borderRadius: '6px',
     color: 'var(--text-primary)',
     outline: 'none',
-    padding: '3px 6px',
+    padding: '6px 10px',
+    margin: 0,
+    fontSize: '13px',
+    minWidth: '240px',
+    flex: '1 1 240px',
+    maxWidth: '420px',
   },
-  '.cm-panel.cm-search input:focus': {
+  '.cm-panel.cm-search .cm-textfield::placeholder': {
+    color: 'var(--text-dim)',
+  },
+  '.cm-panel.cm-search .cm-textfield:focus': {
     borderColor: 'var(--accent)',
+    boxShadow: '0 0 0 2px var(--accent-subtle)',
   },
-  '.cm-panel.cm-search button': {
+  '.cm-panel.cm-search .cm-button': {
     background: 'var(--bg-elevated)',
     border: '1px solid var(--border)',
-    borderRadius: '4px',
+    borderRadius: '6px',
     color: 'var(--text-secondary)',
     cursor: 'pointer',
     backgroundImage: 'none',
+    padding: '6px 12px',
+    margin: 0,
+    fontSize: '12.5px',
+    fontWeight: '500',
+    whiteSpace: 'nowrap',
+    transition: 'background 0.12s, border-color 0.12s, color 0.12s',
   },
-  '.cm-panel.cm-search button:hover': {
+  '.cm-panel.cm-search .cm-button:hover': {
     background: 'var(--bg-elevated-2)',
     color: 'var(--text-primary)',
+    borderColor: 'var(--border-active)',
+  },
+  '.cm-panel.cm-search .cm-button:active': {
+    background: 'var(--overlay-active)',
   },
   '.cm-panel.cm-search label': {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '5px',
+    margin: 0,
     color: 'var(--text-secondary)',
-    fontSize: '11px',
+    fontSize: '12.5px',
+    userSelect: 'none',
+    cursor: 'pointer',
+  },
+  '.cm-panel.cm-search label input': {
+    margin: 0,
+    accentColor: 'var(--accent)',
+    cursor: 'pointer',
   },
   '.cm-panel.cm-search button[name="close"]': {
+    position: 'absolute',
+    top: '50%',
+    right: '8px',
+    transform: 'translateY(-50%)',
+    width: '24px',
+    height: '24px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    margin: 0,
     color: 'var(--text-muted)',
     background: 'transparent',
     border: 'none',
+    borderRadius: '5px',
+    fontSize: '18px',
+    lineHeight: 1,
+    cursor: 'pointer',
+  },
+  '.cm-panel.cm-search button[name="close"]:hover': {
+    color: 'var(--text-primary)',
+    background: 'var(--overlay-hover)',
   },
   // Tooltips + autocomplete dropdown
   '.cm-tooltip': {

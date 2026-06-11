@@ -100,6 +100,14 @@ const AGENTS: { id: AgentId; label: string; color: string }[] = [
 
 const PANE_COLORS = ['#e8956b', '#34d399', '#60a5fa', '#c084fc', '#fbbf24', '#f472b6']
 
+interface AgentAccount {
+  id: string
+  label: string
+  apiKey?: string
+  model?: string
+  env?: Record<string, string>
+}
+
 // ── AgentPane ─────────────────────────────────────────────────────────────────
 
 interface AgentPaneProps {
@@ -249,6 +257,17 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       .catch(() => {})
   }, [contextMenu, paneWorkspaceId])
 
+  // Connected accounts for this pane's agent — the in-menu quick switcher. Loaded
+  // when the context menu opens so a switch made elsewhere (Settings) shows up.
+  const [paneAccounts, setPaneAccounts] = useState<{ accounts: AgentAccount[]; activeId?: string }>({ accounts: [] })
+  useEffect(() => {
+    if (!contextMenu || !agentId) return
+    window.swarmmind.listAgentAccounts(agentId)
+      .then(res => setPaneAccounts({ accounts: res?.accounts ?? [], activeId: res?.activeId }))
+      .catch(() => {})
+  }, [contextMenu, agentId])
+  const openSettings = useWorkspaceStore(s => s.openSettings)
+
   const agentInfo = AGENTS.find(a => a.id === agentId)
   // Resolve the pane's owning workspace. A foreign pane (workspaceId set) uses
   // that workspace's root; otherwise the host workspace. ownerWorkspace is null
@@ -365,6 +384,17 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   }, [agentId, effectiveCwd, resolveSpawnCwd, spawn, shellStyle, paneId, setPtyStatus, setAgentRunning, setSessionId, sessionId, paneWorkspaceId])
 
   const handleKill = useCallback(async () => { await kill() }, [kill])
+
+  // Quick-switch the active global account for this pane's agent. Accounts are
+  // applied at spawn time (the API key/env are injected into the agent's
+  // environment), so a running agent must be restarted to pick up the change —
+  // we say so rather than killing its conversation out from under the user.
+  const switchAccount = useCallback(async (acc: AgentAccount) => {
+    if (!agentId) return
+    await window.swarmmind.setActiveAgentAccount(agentId, acc.id)
+    setPaneAccounts(prev => ({ ...prev, activeId: acc.id }))
+    writeNotice(t('pane.ctx.accountSwitched', { label: acc.label || acc.id }))
+  }, [agentId, writeNotice, t])
 
   // Remove this pane's worktree from disk (branch kept, so committed work
   // survives). Best done while no agent is running in it.
@@ -831,6 +861,35 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
               {agentId === a.id && <CheckIcon />}
             </button>
           ))}
+          {/* Account quick-switch: rotate to another connected login for this
+              agent (e.g. when the current one hits a usage limit). */}
+          {agentId && (
+            <>
+              <div style={styles.ctxDivider} />
+              <div style={styles.ctxLabel}>{t('pane.ctx.account')}</div>
+              {paneAccounts.accounts.map((acc, idx) => {
+                const active = paneAccounts.activeId === acc.id
+                return (
+                  <button
+                    key={acc.id}
+                    className="ctx-menu-item"
+                    onClick={() => { switchAccount(acc); setContextMenu(null) }}
+                  >
+                    <span style={{ flex: 1, color: active ? 'var(--accent)' : undefined, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {acc.label || t('settings.agent.accounts.untitled', { n: idx + 1 })}
+                    </span>
+                    {active && <CheckIcon />}
+                  </button>
+                )
+              })}
+              <button
+                className="ctx-menu-item"
+                onClick={() => { setContextMenu(null); openSettings(agentId) }}
+              >
+                <span style={{ flex: 1, color: 'var(--text-muted)' }}>{t('pane.ctx.accountManage')}</span>
+              </button>
+            </>
+          )}
           {/* Mixed workspace: run this pane's agent as a member of another
               workspace. Only offered when more than one workspace exists, and
               only changeable while no agent is running here. */}

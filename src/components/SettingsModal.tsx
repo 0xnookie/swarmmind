@@ -8,6 +8,12 @@ import {
 import { SHORTCUTS, getEffectiveKeys, formatKeys, eventToKeys, findConflict } from '../shortcuts'
 import { useT, LANGUAGES, type TFunction, type Language } from '../i18n'
 import { type VoiceModel } from '../hooks/useVoice'
+import { LoginTerminal } from './LoginTerminal'
+
+// Agents whose CLIs support one-click connect (an isolated profile dir + the
+// CLI's own browser-OAuth login flow). Mirrors PROFILE_LOGIN in
+// electron/agent-accounts.ts. Other agents fall back to manual API-key entry.
+const PROFILE_AGENTS = new Set<AgentId>(['claude', 'codex', 'opencode'])
 
 // Whisper model choices for SwarmVoice (Settings → General).
 const VOICE_MODEL_OPTIONS: { value: VoiceModel; labelKey: 'settings.voice.model.tiny' | 'settings.voice.model.base' | 'settings.voice.model.small' }[] = [
@@ -52,6 +58,23 @@ interface AgentConfig {
   model?: string
   executablePath?: string
   extraFlags?: string[]
+}
+
+// Accounts keep it simple on purpose: a name plus either a CLI login (profileDir)
+// or an API key. model/env still exist in the stored shape (older saves carry
+// them and the spawn path honours them) but are no longer editable here.
+interface AgentAccount {
+  id: string
+  label: string
+  profileDir?: string
+  apiKey?: string
+  model?: string
+  env?: Record<string, string>
+}
+
+interface AgentAccountsState {
+  accounts: AgentAccount[]
+  activeId?: string
 }
 
 type Section = 'general' | 'appearance' | 'shortcuts' | 'terminal' | AgentId
@@ -120,6 +143,10 @@ export function SettingsModal() {
   const [cursorBlink, setCursorBlink] = useState(storeCursorBlink)
   // Agent drafts, lazily loaded and edited in place
   const [agentConfigs, setAgentConfigs] = useState<Record<string, AgentConfig>>({})
+  // Global per-agent accounts (apiKey/model/env), lazily loaded with the config.
+  const [agentAccounts, setAgentAccounts] = useState<Record<string, AgentAccountsState>>({})
+  // The open "connect account" login terminal, if any.
+  const [loginSession, setLoginSession] = useState<{ agentId: AgentId; agentLabel: string; accountId: string; profileDir: string } | null>(null)
 
   // Per-section dirty tracking so Save can commit everything at once (switching
   // sections no longer discards unsaved edits) and nav items can show a dot.
@@ -147,6 +174,7 @@ export function SettingsModal() {
     setTerminalDirty(false)
     setDirtyAgents(new Set())
     setAgentConfigs({})
+    setAgentAccounts({})
     loadedAgentsRef.current = new Set()
     setShell(storeShellStyle)
     setDefaultAgent(storeDefaultAgentId)
@@ -181,6 +209,9 @@ export function SettingsModal() {
     loadedAgentsRef.current.add(id)
     window.swarmmind.getAgentConfig(id).then((cfg: AgentConfig) => {
       setAgentConfigs(prev => ({ ...prev, [id]: cfg ?? {} }))
+    }).catch(() => {})
+    window.swarmmind.listAgentAccounts(id).then((res) => {
+      setAgentAccounts(prev => ({ ...prev, [id]: { accounts: res?.accounts ?? [], activeId: res?.activeId } }))
     }).catch(() => {})
   }, [section, settingsOpen])
 
@@ -232,6 +263,16 @@ export function SettingsModal() {
     }
     for (const id of dirtyAgents) {
       await window.swarmmind.setAgentConfig(id, agentConfigs[id] ?? {})
+      const acct = agentAccounts[id]
+      if (acct) {
+        // Drop blank manual accounts (no name and no key) so an empty "+ Add"
+        // row doesn't persist; CLI-login accounts always survive (their
+        // credential lives in the profile dir, not in these fields). Keep the
+        // active id pointing at a surviving account.
+        const accounts = acct.accounts.filter(a => a.profileDir || a.label.trim() || a.apiKey?.trim())
+        const activeId = accounts.some(a => a.id === acct.activeId) ? acct.activeId : accounts[0]?.id
+        await window.swarmmind.saveAgentAccounts(id, accounts, activeId)
+      }
     }
     setGeneralDirty(false)
     setTerminalDirty(false)
@@ -239,7 +280,7 @@ export function SettingsModal() {
     setSaving(false)
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
-  }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, shell, defaultAgent, idleSeconds, closeTray,
+  }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, agentAccounts, shell, defaultAgent, idleSeconds, closeTray,
       voiceModelDraft, voicePreloadDraft, setVoiceModelStore, setVoicePreloadStore,
       fontSize, cursorBlink, setShellStyle, setDefaultAgentId, setTerminalFontSize, setTerminalCursorBlink, setCloseToTray])
 
@@ -272,6 +313,56 @@ export function SettingsModal() {
   const editAgent = (id: AgentId, patch: Partial<AgentConfig>) => {
     setAgentConfigs(prev => ({ ...prev, [id]: { ...(prev[id] ?? {}), ...patch } }))
     markAgentDirty(id)
+  }
+
+  // ── Account editing ──────────────────────────────────────────────────────
+  const updateAccounts = (id: AgentId, fn: (s: AgentAccountsState) => AgentAccountsState) => {
+    setAgentAccounts(prev => ({ ...prev, [id]: fn(prev[id] ?? { accounts: [] }) }))
+    markAgentDirty(id)
+  }
+
+  const addAccount = (id: AgentId) => {
+    const acc: AgentAccount = { id: crypto.randomUUID(), label: '' }
+    updateAccounts(id, s => ({
+      accounts: [...s.accounts, acc],
+      // First account becomes active automatically.
+      activeId: s.accounts.length === 0 ? acc.id : s.activeId,
+    }))
+  }
+
+  // One-click connect: the main process creates (and persists) a fresh profile-dir
+  // account, then we open the embedded login terminal running the agent CLI's own
+  // sign-in flow. No dirty-marking — the account is already saved; the login
+  // credential lands in the profile dir, outside the Settings draft model.
+  const connectAccount = async (id: AgentId, agentLabel: string) => {
+    const n = (agentAccounts[id]?.accounts.length ?? 0) + 1
+    const res = await window.swarmmind.connectAgentAccount(id, t('settings.agent.accounts.untitled', { n }))
+    if (!res?.account) return
+    const acc = res.account
+    setAgentAccounts(prev => {
+      const s = prev[id] ?? { accounts: [] }
+      return { ...prev, [id]: { accounts: [...s.accounts, acc], activeId: s.activeId ?? acc.id } }
+    })
+    setLoginSession({ agentId: id, agentLabel, accountId: acc.id, profileDir: acc.profileDir! })
+  }
+
+  const editAccount = (id: AgentId, accId: string, patch: Partial<AgentAccount>) => {
+    updateAccounts(id, s => ({
+      ...s,
+      accounts: s.accounts.map(a => (a.id === accId ? { ...a, ...patch } : a)),
+    }))
+  }
+
+  const removeAccount = (id: AgentId, accId: string) => {
+    updateAccounts(id, s => {
+      const accounts = s.accounts.filter(a => a.id !== accId)
+      const activeId = s.activeId === accId ? accounts[0]?.id : s.activeId
+      return { accounts, activeId }
+    })
+  }
+
+  const setActiveAccount = (id: AgentId, accId: string) => {
+    updateAccounts(id, s => ({ ...s, activeId: accId }))
   }
 
   const navItem = (id: Section, label: string, icon: React.ReactNode, dirty: boolean) => (
@@ -665,29 +756,101 @@ export function SettingsModal() {
             {section !== 'general' && section !== 'terminal' && section !== 'appearance' && section !== 'shortcuts' && (() => {
               const id = section as AgentId
               const cfg = agentConfigs[id] ?? {}
+              const agentLabel = AGENTS.find(a => a.id === id)?.label ?? id
+              const acctState = agentAccounts[id] ?? { accounts: [] }
+              const keyPlaceholder = API_KEY_ENV[id] ?? `${id.toUpperCase()}_API_KEY`
               return (
                 <div style={styles.fields}>
-                  <Group title={t('settings.agent.configuration', { agent: AGENTS.find(a => a.id === id)?.label ?? id })}>
-                    <FieldLabel htmlFor={`${id}-key`}>{t('settings.agent.apiKey')}</FieldLabel>
-                    <input
-                      id={`${id}-key`}
-                      style={styles.input}
-                      type="password"
-                      placeholder={API_KEY_ENV[id] ?? `${id.toUpperCase()}_API_KEY`}
-                      value={cfg.apiKey ?? ''}
-                      onChange={e => editAgent(id, { apiKey: e.target.value })}
-                    />
+                  <Group title={t('settings.agent.accounts.group')}>
+                    <p style={styles.desc}>{t('settings.agent.accounts.desc', { agent: agentLabel })}</p>
 
-                    <FieldLabel htmlFor={`${id}-model`}>{t('settings.agent.model')} <span style={styles.optional}>{t('common.optional')}</span></FieldLabel>
-                    <input
-                      id={`${id}-model`}
-                      style={styles.input}
-                      type="text"
-                      placeholder={t('settings.agent.modelPlaceholder')}
-                      value={cfg.model ?? ''}
-                      onChange={e => editAgent(id, { model: e.target.value })}
-                    />
+                    {acctState.accounts.length === 0 && (
+                      <p style={styles.accountEmpty}>{t('settings.agent.accounts.empty')}</p>
+                    )}
 
+                    {acctState.accounts.map((acc, idx) => {
+                      const active = acctState.activeId === acc.id
+                      return (
+                        <div key={acc.id} style={{ ...styles.accountCard, ...(active ? styles.accountCardActive : {}) }}>
+                          <div style={styles.accountHead}>
+                            <button
+                              type="button"
+                              role="radio"
+                              aria-checked={active}
+                              aria-label={t('settings.agent.accounts.setActive')}
+                              title={t('settings.agent.accounts.setActive')}
+                              onClick={() => setActiveAccount(id, acc.id)}
+                              style={{ ...styles.accountRadio, ...(active ? { borderColor: 'var(--accent)' } : {}) }}
+                            >
+                              {active && <span style={styles.accountRadioDot} />}
+                            </button>
+                            <input
+                              style={{ ...styles.input, flex: 1 }}
+                              type="text"
+                              placeholder={t('settings.agent.accounts.untitled', { n: idx + 1 })}
+                              value={acc.label}
+                              onChange={e => editAccount(id, acc.id, { label: e.target.value })}
+                            />
+                            {active && <span style={styles.accountActiveTag}>{t('settings.agent.accounts.active')}</span>}
+                            <button
+                              className="pane-action-btn"
+                              title={t('settings.agent.accounts.remove')}
+                              aria-label={t('settings.agent.accounts.remove')}
+                              onClick={() => removeAccount(id, acc.id)}
+                            >
+                              ✕
+                            </button>
+                          </div>
+
+                          {acc.profileDir ? (
+                            // CLI-login account: the credential lives in its profile
+                            // dir (written by the agent's own login flow) — nothing
+                            // to type here. Offer a re-login for expired sessions.
+                            <div style={styles.rowBetween}>
+                              <span style={styles.cliBadge}>{t('settings.agent.accounts.cliBadge')}</span>
+                              <button
+                                className="settings-card"
+                                style={styles.inlineBtn}
+                                onClick={() => setLoginSession({ agentId: id, agentLabel, accountId: acc.id, profileDir: acc.profileDir! })}
+                              >
+                                {t('settings.agent.accounts.relogin')}
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <FieldLabel htmlFor={`${acc.id}-key`}>{t('settings.agent.apiKey')}</FieldLabel>
+                              <input
+                                id={`${acc.id}-key`}
+                                style={styles.input}
+                                type="password"
+                                autoComplete="off"
+                                placeholder={keyPlaceholder}
+                                value={acc.apiKey ?? ''}
+                                onChange={e => editAccount(id, acc.id, { apiKey: e.target.value })}
+                              />
+                            </>
+                          )}
+                        </div>
+                      )
+                    })}
+
+                    <div style={styles.rowInline}>
+                      {PROFILE_AGENTS.has(id) && (
+                        <button style={styles.connectBtn} onClick={() => connectAccount(id, agentLabel)}>
+                          {t('settings.agent.accounts.connect', { agent: agentLabel })}
+                        </button>
+                      )}
+                      <button
+                        className="settings-card"
+                        style={styles.addAccountBtn}
+                        onClick={() => addAccount(id)}
+                      >
+                        {PROFILE_AGENTS.has(id) ? t('settings.agent.accounts.addManual') : t('settings.agent.accounts.add')}
+                      </button>
+                    </div>
+                  </Group>
+
+                  <Group title={t('settings.agent.launch.group')}>
                     <FieldLabel htmlFor={`${id}-path`}>{t('settings.agent.execPath')} <span style={styles.optional}>{t('common.optional')}</span></FieldLabel>
                     <input
                       id={`${id}-path`}
@@ -725,6 +888,18 @@ export function SettingsModal() {
           </button>
         </div>
       </div>
+
+      {/* Embedded CLI-login terminal for "connect account" (renders its own
+          fixed overlay above this modal). */}
+      {loginSession && (
+        <LoginTerminal
+          agentId={loginSession.agentId}
+          agentLabel={loginSession.agentLabel}
+          accountId={loginSession.accountId}
+          profileDir={loginSession.profileDir}
+          onClose={() => setLoginSession(null)}
+        />
+      )}
     </div>
   )
 }
@@ -973,6 +1148,89 @@ const styles: Record<string, React.CSSProperties> = {
     outline: 'none',
     cursor: 'pointer',
     width: '100%'
+  },
+  accountEmpty: {
+    fontSize: 11,
+    color: 'var(--text-muted)',
+    fontStyle: 'italic',
+    padding: '4px 0',
+  },
+  accountCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    padding: '12px 12px 14px',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius)',
+    background: 'var(--bg-base)',
+  },
+  accountCardActive: {
+    borderColor: 'var(--accent)',
+    boxShadow: '0 0 0 1px var(--accent) inset',
+  },
+  accountHead: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  accountRadio: {
+    flexShrink: 0,
+    width: 18,
+    height: 18,
+    borderRadius: '50%',
+    border: '1.5px solid var(--border-strong)',
+    background: 'var(--bg-elevated)',
+    cursor: 'pointer',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+  },
+  accountRadioDot: {
+    width: 8,
+    height: 8,
+    borderRadius: '50%',
+    background: 'var(--accent)',
+  },
+  accountActiveTag: {
+    fontSize: 9.5,
+    fontWeight: 600,
+    letterSpacing: '0.05em',
+    textTransform: 'uppercase',
+    color: 'var(--accent)',
+    flexShrink: 0,
+  },
+  addAccountBtn: {
+    width: 'auto',
+    alignSelf: 'flex-start',
+    padding: '7px 14px',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  connectBtn: {
+    background: 'var(--accent)',
+    border: 'none',
+    borderRadius: 'var(--radius)',
+    color: 'var(--accent-fg)',
+    padding: '8px 16px',
+    cursor: 'pointer',
+    fontSize: 12,
+    fontWeight: 600,
+    marginTop: 4,
+  },
+  cliBadge: {
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: '0.05em',
+    textTransform: 'uppercase',
+    color: 'var(--text-secondary)',
+    background: 'var(--bg-elevated)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius)',
+    padding: '3px 8px',
   },
   cardGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 },
   cardTitle: { fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' },

@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { useWorkspaceStore } from '../store/workspace'
+import { useWorkspaceStore, selectTerminalsVisible } from '../store/workspace'
 import { useT } from '../i18n'
 import { SwarmVoice } from './SwarmVoice'
 import { NotificationCenter } from './NotificationCenter'
@@ -150,12 +150,14 @@ interface IconBtnProps {
   label: string
   onClick?: () => void
   active?: boolean
+  disabled?: boolean
   children: React.ReactNode
   style?: React.CSSProperties
 }
 
-function IconBtn({ label, onClick, active, children, style }: IconBtnProps) {
+function IconBtn({ label, onClick, active, disabled, children, style }: IconBtnProps) {
   const [hovered, setHovered] = useState(false)
+  const showActive = !disabled && (active || hovered)
 
   const baseStyle: React.CSSProperties = {
     width: 28,
@@ -165,9 +167,10 @@ function IconBtn({ label, onClick, active, children, style }: IconBtnProps) {
     justifyContent: 'center',
     borderRadius: 6,
     border: 'none',
-    cursor: 'pointer',
-    color: active || hovered ? 'var(--text-secondary)' : 'var(--text-muted)',
-    background: active || hovered ? 'var(--bg-elevated)' : 'transparent',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    color: disabled ? 'var(--text-dim)' : showActive ? 'var(--text-secondary)' : 'var(--text-muted)',
+    background: showActive ? 'var(--bg-elevated)' : 'transparent',
+    opacity: disabled ? 0.4 : 1,
     transition: 'background 150ms ease-out, color 150ms ease-out',
     position: 'relative',
     ...style,
@@ -179,6 +182,7 @@ function IconBtn({ label, onClick, active, children, style }: IconBtnProps) {
       title={label}
       style={baseStyle}
       onClick={onClick}
+      disabled={disabled}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
@@ -286,6 +290,9 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const toggleOrchestratorBar = useWorkspaceStore(s => s.toggleOrchestratorBar)
   const orchestratorBarOpen = useWorkspaceStore(s => s.orchestratorBarOpen)
   const orchestrationMode = useWorkspaceStore(s => s.orchestrationMode)
+  // Broadcast/Orchestrator bars live inside the terminal grid; they can't render
+  // over the board/graph/editor overlays, so disable their triggers there.
+  const terminalsVisible = useWorkspaceStore(selectTerminalsVisible)
 
   const totalCost = Object.values(paneCost).reduce((sum, c) => sum + (c?.usd ?? 0), 0)
 
@@ -417,11 +424,11 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
           <IconGlobe />
         </IconBtn>
 
-        <IconBtn label={t('topbar.broadcast')} onClick={toggleBroadcastBar} active={broadcastBarOpen}>
+        <IconBtn label={terminalsVisible ? t('topbar.broadcast') : t('topbar.broadcastDisabled')} onClick={toggleBroadcastBar} active={broadcastBarOpen} disabled={!terminalsVisible}>
           <IconBroadcast />
         </IconBtn>
 
-        <IconBtn label={t('topbar.orchestrator')} onClick={toggleOrchestratorBar} active={orchestratorBarOpen}>
+        <IconBtn label={terminalsVisible ? t('topbar.orchestrator') : t('topbar.orchestratorDisabled')} onClick={toggleOrchestratorBar} active={orchestratorBarOpen} disabled={!terminalsVisible}>
           <IconConductor />
           {orchestrationMode !== 'off' && (
             <span style={{

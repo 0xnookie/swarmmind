@@ -414,6 +414,18 @@ const ALL_OVERLAYS_CLOSED = {
   checkpointsOpen: false,
 } as const
 
+// The terminal pane grid (CenterArea) is shown only when a workspace is open and
+// every center overlay is closed. Broadcast/Orchestrator act on the panes, so
+// their controls are only meaningful here — gate them on this single source of
+// truth rather than re-deriving the overlay list in each consumer.
+export function selectTerminalsVisible(
+  s: { workspace: unknown } & Record<keyof typeof ALL_OVERLAYS_CLOSED, boolean>,
+): boolean {
+  if (!s.workspace) return false
+  return (Object.keys(ALL_OVERLAYS_CLOSED) as (keyof typeof ALL_OVERLAYS_CLOSED)[])
+    .every(k => !s[k])
+}
+
 const initialRoot: PaneGroup = {
   type: 'group',
   id: uuidv4(),

@@ -18,7 +18,7 @@ import { CommandPalette } from './components/CommandPalette'
 import { UpdateBanner } from './components/UpdateBanner'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { useConductor } from './hooks/useConductor'
-import { useWorkspaceStore, buildLayoutForCount, type AgentId, type ShellStyle } from './store/workspace'
+import { useWorkspaceStore, buildLayoutForCount, selectTerminalsVisible, type AgentId, type ShellStyle } from './store/workspace'
 import { SHORTCUTS, matchEvent, getEffectiveKeys } from './shortcuts'
 import type { ThemePreset, UiDensity, UiFontId, MonoFontId } from './appearance'
 import { THEMES, UI_FONTS, MONO_FONTS } from './appearance'
@@ -175,7 +175,9 @@ export default function App() {
         e.preventDefault()
         switch (def.id) {
           case 'command-palette': s.toggleCommandPalette(); break
-          case 'broadcast': s.toggleBroadcastBar(); break
+          // Broadcast only renders inside the terminal grid — ignore the shortcut
+          // when an overlay (board/graph/editor/…) is covering the panes.
+          case 'broadcast': if (selectTerminalsVisible(s)) s.toggleBroadcastBar(); break
           case 'settings': s.openSettings(); break
           case 'new-pane': s.addPane(); break
         }

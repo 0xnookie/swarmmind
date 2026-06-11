@@ -22,6 +22,7 @@ import {
   type AgentId
 } from '../../memory/queries'
 import { readAgentConfig, writeAgentConfig } from '../agent-config'
+import { listAccounts, saveAccounts, setActiveAccount, createProfileAccount, type AgentAccount } from '../agent-accounts'
 
 export function registerMemoryHandlers(getWorkspaceId: () => string | null): void {
   ipcMain.handle('memory:list', (_event, type?: MemoryType, agentId?: string) => {
@@ -100,6 +101,27 @@ export function registerMemoryHandlers(getWorkspaceId: () => string | null): voi
     const wsId = getWorkspaceId()
     if (!wsId) return
     writeAgentConfig(wsId, agentId, config as Parameters<typeof writeAgentConfig>[2])
+  })
+
+  // ── Agent accounts (global, in app.db — not per-workspace) ────────────────
+  ipcMain.handle('accounts:list', (_event, agentId: AgentId) => listAccounts(agentId))
+
+  ipcMain.handle('accounts:save', (_event, agentId: AgentId, accounts: unknown, activeId?: string) => {
+    saveAccounts(agentId, accounts as AgentAccount[], activeId)
+  })
+
+  ipcMain.handle('accounts:setActive', (_event, agentId: AgentId, accountId: string) => {
+    setActiveAccount(agentId, accountId)
+  })
+
+  // One-click connect: create a fresh profile-dir account for the agent's CLI
+  // login flow. The renderer follows up with pty:createLogin to run the login.
+  ipcMain.handle('accounts:connect', (_event, agentId: AgentId, label: string) => {
+    try {
+      return { account: createProfileAccount(agentId, label) }
+    } catch (err) {
+      return { error: String(err) }
+    }
   })
 
   // ── Skills (global, not per-workspace) ────────────────────────────────────
