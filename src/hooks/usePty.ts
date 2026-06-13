@@ -135,6 +135,10 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
         return !e.shiftKey
       }
       if (key === 'v') {
+        // preventDefault stops the browser's native `paste` event (which xterm
+        // also handles) from firing — without it the text is pasted twice: once
+        // here and once by xterm's built-in paste listener.
+        e.preventDefault()
         navigator.clipboard.readText().then(text => { if (text) term.paste(text) }).catch(() => {})
         return false
       }
