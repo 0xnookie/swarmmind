@@ -6,6 +6,14 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1]
+
+### Fixed
+- **Pasted text no longer duplicated** — pasting into a terminal pane with
+  Ctrl/⌘-V inserted the text twice, because both our key handler and xterm's
+  built-in paste listener fired. The key handler now suppresses the native
+  paste event so the text is inserted exactly once.
+
 ## [0.5.0]
 
 ### Added
