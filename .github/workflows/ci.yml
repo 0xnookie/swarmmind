@@ -45,7 +45,11 @@ jobs:
 
   smoke:
     name: Smoke (Windows)
-    runs-on: windows-latest
+    # Pinned to windows-2022: node-gyp 9.4.1 (rebuilds node-pty from source)
+    # can't locate Visual Studio on the Server 2025 image that windows-latest
+    # now resolves to. 2022 is the known-good image. Keep in sync with the
+    # release workflow; revisit if node-gyp is bumped to v10+.
+    runs-on: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
