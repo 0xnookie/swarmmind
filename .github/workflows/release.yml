@@ -19,7 +19,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          # Pinned to windows-2022: node-gyp 9.4.1 (compiles node-pty from
+          # source) can't locate Visual Studio on the Server 2025 image that
+          # `windows-latest` now points to, so it falls through to the legacy
+          # VS2013/2015 detection and fails. 2022 is the known-good image that
+          # built every prior release. Revisit if node-gyp is bumped to v10+.
+          - os: windows-2022
             artifact: windows
           - os: macos-latest
             artifact: macos
