@@ -11,10 +11,12 @@ import { WorktreeReview } from './components/WorktreeReview'
 import { SwarmTimeline } from './components/SwarmTimeline'
 import { ChangesPanel } from './components/ChangesPanel'
 import { CheckpointPanel } from './components/CheckpointPanel'
+import { BenchmarksPanel } from './components/BenchmarksPanel'
 import { StartScreen } from './components/StartScreen'
 import { SettingsModal } from './components/SettingsModal'
 import { WorkspaceSetupModal } from './components/WorkspaceSetupModal'
 import { CommandPalette } from './components/CommandPalette'
+import { LoadingOverlay } from './components/LoadingOverlay'
 import { UpdateBanner } from './components/UpdateBanner'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { useConductor } from './hooks/useConductor'
@@ -35,6 +37,7 @@ export default function App() {
   const timelineOpen = useWorkspaceStore(s => s.timelineOpen)
   const changesOpen = useWorkspaceStore(s => s.changesOpen)
   const checkpointsOpen = useWorkspaceStore(s => s.checkpointsOpen)
+  const benchmarksOpen = useWorkspaceStore(s => s.benchmarksOpen)
   const toggleMemoryPanel = useWorkspaceStore(s => s.toggleMemoryPanel)
   const setupModalOpen = useWorkspaceStore(s => s.setupModalOpen)
   const openSetupModal = useWorkspaceStore(s => s.openSetupModal)
@@ -251,6 +254,10 @@ export default function App() {
           <ErrorBoundary label="CheckpointPanel">
             <CheckpointPanel />
           </ErrorBoundary>
+        ) : benchmarksOpen ? (
+          <ErrorBoundary label="BenchmarksPanel">
+            <BenchmarksPanel />
+          </ErrorBoundary>
         ) : filePanelOpen ? (
           <ErrorBoundary label="FilePanel">
             <FilePanel />
@@ -283,6 +290,7 @@ export default function App() {
       )}
       <CommandPalette />
       <UpdateBanner />
+      <LoadingOverlay />
     </div>
   )
 }

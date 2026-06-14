@@ -49,4 +49,50 @@ export function registerFsHandlers(): void {
   ipcMain.handle('fs:writeFile', async (_e, filePath: string, content: string): Promise<void> => {
     await writeFile(filePath, content, 'utf-8')
   })
+
+  // Read an image file as a base64 data URL plus metadata (max 25MB)
+  ipcMain.handle('fs:readImage', async (_e, filePath: string): Promise<ImageData> => {
+    const stat = statSync(filePath, { throwIfNoEntry: false })
+    if (!stat || !stat.isFile() || stat.size > 25 * 1024 * 1024) {
+      throw new Error('Image not found or too large')
+    }
+    const mime = imageMime(extname(filePath).slice(1).toLowerCase())
+    if (!mime) throw new Error('Unsupported image type')
+    const buf = await readFile(filePath)
+    return {
+      dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
+      mime,
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+    }
+  })
+}
+
+export interface ImageData {
+  dataUrl: string
+  mime: string
+  size: number
+  mtimeMs: number
+}
+
+function imageMime(ext: string): string | null {
+  switch (ext) {
+    case 'png':
+      return 'image/png'
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg'
+    case 'gif':
+      return 'image/gif'
+    case 'webp':
+      return 'image/webp'
+    case 'bmp':
+      return 'image/bmp'
+    case 'ico':
+      return 'image/x-icon'
+    case 'avif':
+      return 'image/avif'
+    default:
+      return null
+  }
 }

@@ -1,0 +1,29 @@
+{
+  "updatedAt": "2026-06-14",
+  "provisional": true,
+  "source": "https://artificialanalysis.ai/agents/coding-agents",
+  "agents": [
+    { "name": "Claude Code",  "model": "Claude Opus 4.8",   "index": 72.4, "cpt": 1.85, "timePerTask": 210, "deepSWE": 68, "terminalBench": 74, "sweAtlasQnA": 80, "inputTokens": 90000,  "cachedTokens": 320000, "outputTokens": 28000, "turns": 22 },
+    { "name": "Codex CLI",    "model": "GPT-5.5",            "index": 70.8, "cpt": 1.60, "timePerTask": 245, "deepSWE": 66, "terminalBench": 83, "sweAtlasQnA": 76, "inputTokens": 110000, "cachedTokens": 200000, "outputTokens": 32000, "turns": 28 },
+    { "name": "Cursor CLI",   "model": "Claude Opus 4.8",    "index": 69.1, "cpt": 2.10, "timePerTask": 198, "deepSWE": 65, "terminalBench": 71, "sweAtlasQnA": 78, "inputTokens": 85000,  "cachedTokens": 260000, "outputTokens": 25000, "turns": 20 },
+    { "name": "Amp",          "model": "Claude Opus 4.8",    "index": 67.0, "cpt": 2.40, "timePerTask": 205, "deepSWE": 64, "terminalBench": 70, "sweAtlasQnA": 75, "inputTokens": 100000, "cachedTokens": 300000, "outputTokens": 30000, "turns": 24 },
+    { "name": "Gemini CLI",   "model": "Gemini 3 Pro",       "index": 64.5, "cpt": 1.20, "timePerTask": 230, "deepSWE": 61, "terminalBench": 66, "sweAtlasQnA": 72, "inputTokens": 130000, "cachedTokens": 180000, "outputTokens": 35000, "turns": 26 },
+    { "name": "Cline",        "model": "Claude Sonnet 4.6",  "index": 63.2, "cpt": 0.95, "timePerTask": 240, "deepSWE": 60, "terminalBench": 64, "sweAtlasQnA": 71, "inputTokens": 75000,  "cachedTokens": 150000, "outputTokens": 22000, "turns": 19 },
+    { "name": "OpenCode",     "model": "Claude Opus 4.7",    "index": 61.3, "cpt": 1.40, "timePerTask": 220, "deepSWE": 58, "terminalBench": 63, "sweAtlasQnA": 70, "inputTokens": 95000,  "cachedTokens": 210000, "outputTokens": 27000, "turns": 23 },
+    { "name": "Aider",        "model": "GPT-5.1",            "index": 58.7, "cpt": 0.80, "timePerTask": 260, "deepSWE": 55, "terminalBench": 60, "sweAtlasQnA": 68, "inputTokens": 60000,  "cachedTokens": 90000,  "outputTokens": 18000, "turns": 16 },
+    { "name": "Windsurf",     "model": "Claude Sonnet 4.6",  "index": 57.4, "cpt": 1.05, "timePerTask": 215, "deepSWE": 54, "terminalBench": 58, "sweAtlasQnA": 66, "inputTokens": 80000,  "cachedTokens": 170000, "outputTokens": 24000, "turns": 21 },
+    { "name": "Kilo Code",    "model": "Qwen3 Coder",        "index": 52.1, "cpt": 0.45, "timePerTask": 250, "deepSWE": 49, "terminalBench": 53, "sweAtlasQnA": 61, "inputTokens": 70000,  "cachedTokens": 120000, "outputTokens": 20000, "turns": 18 }
+  ],
+  "models": [
+    { "name": "Claude Opus 4.8",  "creator": "Anthropic", "intelligence": 73, "priceIn": 15,   "priceOut": 75 },
+    { "name": "GPT-5.5",          "creator": "OpenAI",    "intelligence": 71, "priceIn": 10,   "priceOut": 40 },
+    { "name": "Gemini 3 Pro",     "creator": "Google",    "intelligence": 70, "priceIn": 5,    "priceOut": 30 },
+    { "name": "Claude Opus 4.7",  "creator": "Anthropic", "intelligence": 68, "priceIn": 15,   "priceOut": 75 },
+    { "name": "GPT-5.1",          "creator": "OpenAI",    "intelligence": 66, "priceIn": 10,   "priceOut": 30 },
+    { "name": "Claude Sonnet 4.6","creator": "Anthropic", "intelligence": 64, "priceIn": 3,    "priceOut": 15 },
+    { "name": "Grok 4",           "creator": "xAI",       "intelligence": 63, "priceIn": 5,    "priceOut": 25 },
+    { "name": "DeepSeek V4",      "creator": "DeepSeek",  "intelligence": 60, "priceIn": 0.5,  "priceOut": 2.2 },
+    { "name": "Gemini 2.5 Pro",   "creator": "Google",    "intelligence": 58, "priceIn": 1.25, "priceOut": 10 },
+    { "name": "Qwen3 Coder",      "creator": "Alibaba",   "intelligence": 55, "priceIn": 0.3,  "priceOut": 1.2 }
+  ]
+}

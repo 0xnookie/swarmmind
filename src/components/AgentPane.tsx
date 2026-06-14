@@ -54,6 +54,15 @@ function CheckIcon() {
   )
 }
 
+function UserIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </svg>
+  )
+}
+
 function ExpandIcon() {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -103,6 +112,9 @@ const PANE_COLORS = ['#e8956b', '#34d399', '#60a5fa', '#c084fc', '#fbbf24', '#f4
 interface AgentAccount {
   id: string
   label: string
+  // CLI-login accounts carry a profile dir (credential lives there); API-key
+  // accounts carry an apiKey instead. Used to label the account's type.
+  profileDir?: string
   apiKey?: string
   model?: string
   env?: Record<string, string>
@@ -257,15 +269,22 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       .catch(() => {})
   }, [contextMenu, paneWorkspaceId])
 
-  // Connected accounts for this pane's agent — the in-menu quick switcher. Loaded
-  // when the context menu opens so a switch made elsewhere (Settings) shows up.
+  // Connected accounts for this pane's agent — drives both the title-bar badge
+  // and the in-menu quick switcher. Loaded on agent change, and re-loaded each
+  // time the context menu opens so a switch made elsewhere (Settings, another
+  // pane) is reflected.
   const [paneAccounts, setPaneAccounts] = useState<{ accounts: AgentAccount[]; activeId?: string }>({ accounts: [] })
-  useEffect(() => {
-    if (!contextMenu || !agentId) return
+  const loadAccounts = useCallback(() => {
+    if (!agentId) { setPaneAccounts({ accounts: [] }); return }
     window.swarmmind.listAgentAccounts(agentId)
       .then(res => setPaneAccounts({ accounts: res?.accounts ?? [], activeId: res?.activeId }))
       .catch(() => {})
-  }, [contextMenu, agentId])
+  }, [agentId])
+  useEffect(() => { loadAccounts() }, [loadAccounts])
+  useEffect(() => { if (contextMenu) loadAccounts() }, [contextMenu, loadAccounts])
+  // The account currently in effect for this pane's agent (falls back to the
+  // first connected one, matching the main-process spawn resolution).
+  const activeAccount = paneAccounts.accounts.find(a => a.id === paneAccounts.activeId) ?? paneAccounts.accounts[0]
   const openSettings = useWorkspaceStore(s => s.openSettings)
 
   const agentInfo = AGENTS.find(a => a.id === agentId)
@@ -386,15 +405,25 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const handleKill = useCallback(async () => { await kill() }, [kill])
 
   // Quick-switch the active global account for this pane's agent. Accounts are
-  // applied at spawn time (the API key/env are injected into the agent's
-  // environment), so a running agent must be restarted to pick up the change —
-  // we say so rather than killing its conversation out from under the user.
+  // applied at spawn time (the credential env is injected when the process
+  // starts), so the switch only takes effect on (re)launch. If an agent is live
+  // in this pane we restart it right here — resuming its session — so the new
+  // login is in effect immediately instead of leaving the user to stop/start by
+  // hand; otherwise the next spawn just picks it up. (ptyCreate replaces the old
+  // process silently, so there's no shell flash between kill and respawn.)
   const switchAccount = useCallback(async (acc: AgentAccount) => {
     if (!agentId) return
+    const label = acc.label || acc.id
+    if (acc.id === (paneAccounts.activeId ?? paneAccounts.accounts[0]?.id)) return  // already active — no-op
     await window.swarmmind.setActiveAgentAccount(agentId, acc.id)
     setPaneAccounts(prev => ({ ...prev, activeId: acc.id }))
-    writeNotice(t('pane.ctx.accountSwitched', { label: acc.label || acc.id }))
-  }, [agentId, writeNotice, t])
+    if (ptyStatusRef.current === 'running') {
+      writeNotice(t('pane.ctx.accountSwitchedRestart', { label }))
+      await handleSpawn(true)
+    } else {
+      writeNotice(t('pane.ctx.accountSwitched', { label }))
+    }
+  }, [agentId, paneAccounts, writeNotice, t, handleSpawn])
 
   // Remove this pane's worktree from disk (branch kept, so committed work
   // survives). Best done while no agent is running in it.
@@ -715,6 +744,25 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
           </span>
         ) : null}
 
+        {/* Active-account badge — shows which connected login this pane's agent
+            uses, and clicking it opens the context menu (positioned under the
+            badge) so the account submenu is one click away. Only shown when more
+            than one account exists, since switching is meaningless otherwise. */}
+        {activeAccount && paneAccounts.accounts.length > 1 && (
+          <span
+            style={styles.accountBadge}
+            title={t('pane.activeAccount', { label: activeAccount.label || agentInfo?.label || agentId || '' })}
+            onClick={e => {
+              e.stopPropagation()
+              const r = e.currentTarget.getBoundingClientRect()
+              setContextMenu({ x: Math.round(r.left), y: Math.round(r.bottom + 4) })
+            }}
+          >
+            <UserIcon />
+            {activeAccount.label || t('settings.agent.accounts.untitled', { n: 1 })}
+          </span>
+        )}
+
         {/* Spacer */}
         <div style={{ flex: 1 }} />
 
@@ -867,8 +915,12 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
             <>
               <div style={styles.ctxDivider} />
               <div style={styles.ctxLabel}>{t('pane.ctx.account')}</div>
+              {paneAccounts.accounts.length === 0 && (
+                <div style={styles.ctxHint}>{t('pane.ctx.accountNone')}</div>
+              )}
               {paneAccounts.accounts.map((acc, idx) => {
-                const active = paneAccounts.activeId === acc.id
+                const active = (paneAccounts.activeId ?? paneAccounts.accounts[0]?.id) === acc.id
+                const typeLabel = acc.profileDir ? t('pane.ctx.accountTypeCli') : t('pane.ctx.accountTypeApi')
                 return (
                   <button
                     key={acc.id}
@@ -878,6 +930,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
                     <span style={{ flex: 1, color: active ? 'var(--accent)' : undefined, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {acc.label || t('settings.agent.accounts.untitled', { n: idx + 1 })}
                     </span>
+                    <span style={styles.ctxTypeBadge}>{typeLabel}</span>
                     {active && <CheckIcon />}
                   </button>
                 )
@@ -886,7 +939,9 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
                 className="ctx-menu-item"
                 onClick={() => { setContextMenu(null); openSettings(agentId) }}
               >
-                <span style={{ flex: 1, color: 'var(--text-muted)' }}>{t('pane.ctx.accountManage')}</span>
+                <span style={{ flex: 1, color: 'var(--text-muted)' }}>
+                  {paneAccounts.accounts.length === 0 ? t('pane.ctx.accountAdd') : t('pane.ctx.accountManage')}
+                </span>
               </button>
             </>
           )}
@@ -1080,6 +1135,24 @@ const styles: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap',
     letterSpacing: '0.01em',
   },
+  accountBadge: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 10,
+    color: 'var(--text-secondary)',
+    background: 'var(--bg-elevated-2)',
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    padding: '1px 7px 1px 6px',
+    maxWidth: 130,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    letterSpacing: '0.01em',
+    flexShrink: 0,
+    cursor: 'pointer',
+  },
   worktreeBadge: {
     fontSize: 10,
     color: 'var(--accent)',
@@ -1231,5 +1304,23 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: '0.08em',
     textTransform: 'uppercase',
     userSelect: 'none',
+  },
+  ctxHint: {
+    fontSize: 11,
+    color: 'var(--text-dim)',
+    fontStyle: 'italic',
+    padding: '2px 14px 4px',
+    userSelect: 'none',
+  },
+  ctxTypeBadge: {
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: '0.06em',
+    color: 'var(--text-muted)',
+    background: 'var(--bg-elevated-2)',
+    border: '1px solid var(--border-subtle)',
+    borderRadius: 6,
+    padding: '0 5px',
+    flexShrink: 0,
   },
 }

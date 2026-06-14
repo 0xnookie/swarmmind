@@ -1,5 +1,7 @@
 export {}
 
+import type { BenchmarkSnapshot } from '../data/benchmarks'
+
 interface AgentAccount {
   id: string
   label: string
@@ -77,6 +79,9 @@ declare global {
       // App settings
       getAppSetting: (key: string) => Promise<string | null>
       setAppSetting: (key: string, value: string) => Promise<void>
+      // Coding-agent benchmarks: best-effort live refresh (falls back to the
+      // bundled snapshot on failure).
+      fetchBenchmarks: () => Promise<BenchmarkSnapshot | { error: string }>
       // Persistent SwarmVoice model cache (filesystem-backed under userData)
       voiceCacheMatch: (key: string) => Promise<{ data: ArrayBuffer; headers: Record<string, string> } | null>
       voiceCachePut: (key: string, data: ArrayBuffer, headers: Record<string, string>) => Promise<boolean>
@@ -94,6 +99,7 @@ declare global {
       fsListDir: (dirPath: string) => Promise<FsEntry[]>
       fsReadFile: (filePath: string) => Promise<string>
       fsWriteFile: (filePath: string, content: string) => Promise<void>
+      fsReadImage: (filePath: string) => Promise<ImageData>
       // Sessions & scrollback
       sessionList: (rootPath: string) => Promise<SessionInfo[]>
       scrollbackLoad: (paneId: string) => Promise<string>
@@ -220,6 +226,13 @@ declare global {
     path: string
     type: 'file' | 'dir'
     ext: string
+  }
+
+  interface ImageData {
+    dataUrl: string
+    mime: string
+    size: number
+    mtimeMs: number
   }
 
   interface AgentSkillInfo {

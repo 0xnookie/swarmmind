@@ -124,6 +124,9 @@ contextBridge.exposeInMainWorld('swarmmind', {
   getAppSetting: (key: string) => ipcRenderer.invoke('appsetting:get', key),
   setAppSetting: (key: string, value: string) => ipcRenderer.invoke('appsetting:set', key, value),
 
+  // Best-effort live refresh of the coding-agent benchmarks leaderboard.
+  fetchBenchmarks: () => ipcRenderer.invoke('benchmarks:fetch'),
+
   // Persistent SwarmVoice model cache (backs @xenova/transformers' custom cache).
   voiceCacheMatch: (key: string) => ipcRenderer.invoke('voiceCache:match', key),
   voiceCachePut: (key: string, data: ArrayBuffer, headers: Record<string, string>) =>
@@ -132,6 +135,7 @@ contextBridge.exposeInMainWorld('swarmmind', {
   fsListDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
   fsReadFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
   fsWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeFile', filePath, content),
+  fsReadImage: (filePath: string) => ipcRenderer.invoke('fs:readImage', filePath),
 
   sessionList: (rootPath: string) => ipcRenderer.invoke('session:list', rootPath),
   scrollbackLoad: (paneId: string) => ipcRenderer.invoke('scrollback:load', paneId),

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
-import { useVoice, preloadVoiceModel } from '../hooks/useVoice'
+import { useVoice, preloadVoiceModel, VOICE_MODELS } from '../hooks/useVoice'
+import { useLoadingStore } from '../store/loading'
 import { matchEvent, getEffectiveKeys, formatKeys } from '../shortcuts'
 import { useT } from '../i18n'
 
@@ -89,17 +90,69 @@ export function SwarmVoice() {
 
   const { status, modelProgress, audioLevels, lastTranscript, start, stop, error } = useVoice(handleTranscript)
 
+  // Localised model label + one-time download size, shared by both the overlay
+  // (foreground) and the ambient pill (background preload).
+  const modelLabel = voiceModel.charAt(0).toUpperCase() + voiceModel.slice(1)
+  const modelSize = String(VOICE_MODELS[voiceModel].sizeMB)
+
   // Warm the Whisper model in the background shortly after startup so the
   // first dictation doesn't wait for download/init/warm-up. Delayed so it
   // never competes with app launch for CPU/network; the model singleton makes
   // a user click during (or before) this a single shared load. Gated on the
   // `voicePreload` setting; re-runs when the user picks a different model so
-  // the new one is warmed too.
+  // the new one is warmed too. Surfaces a small ambient pill (bottom-left) so
+  // the user can see what's loading without being interrupted.
   useEffect(() => {
     if (!voicePreload) return
-    const timer = window.setTimeout(() => preloadVoiceModel(), 2500)
-    return () => window.clearTimeout(timer)
-  }, [voicePreload, voiceModel])
+    const { startLoading, updateLoading, finishLoading } = useLoadingStore.getState()
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      startLoading('voice-preload', {
+        variant: 'ambient',
+        title: t('loading.voice.ambient'),
+        progress: null,
+      })
+      preloadVoiceModel(pct => {
+        if (!cancelled) updateLoading('voice-preload', { progress: pct })
+      }).finally(() => finishLoading('voice-preload'))
+    }, 2500)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+      useLoadingStore.getState().finishLoading('voice-preload')
+    }
+  }, [voicePreload, voiceModel, t])
+
+  // Foreground model load — when the user actually triggers voice and the model
+  // isn't ready yet, show the centred loading overlay. A single 'voice-model'
+  // task is created on entering `model-loading` (variant set once so a later
+  // "Continue in background" dismissal sticks) and removed when it ends.
+  useEffect(() => {
+    const { startLoading, finishLoading } = useLoadingStore.getState()
+    if (status === 'model-loading') {
+      startLoading('voice-model', {
+        variant: 'overlay',
+        title: t('loading.voice.title'),
+        detail: t('loading.voice.detail', { model: modelLabel, size: modelSize }),
+        hint: t('loading.voice.hint'),
+        progress: modelProgress > 0 ? modelProgress : null,
+      })
+    } else {
+      finishLoading('voice-model')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status])
+
+  // Keep the overlay's progress (and localised strings) in sync without
+  // re-creating the task, so a dismissal to the ambient pill isn't undone.
+  useEffect(() => {
+    useLoadingStore.getState().updateLoading('voice-model', {
+      title: t('loading.voice.title'),
+      detail: t('loading.voice.detail', { model: modelLabel, size: modelSize }),
+      hint: t('loading.voice.hint'),
+      progress: modelProgress > 0 ? modelProgress : null,
+    })
+  }, [modelProgress, modelLabel, modelSize, t])
 
   const isModelLoading = status === 'model-loading'
   const isRecording    = status === 'recording'

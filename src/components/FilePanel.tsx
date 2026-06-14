@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { FileExplorer, fileColor } from './FileExplorer'
 import { FileEditor } from './FileEditor'
+import { ImageViewer } from './ImageViewer'
 import { useT } from '../i18n'
 
 interface OpenFile {
@@ -9,11 +10,30 @@ interface OpenFile {
   name: string
   content: string
   dirty: boolean
+  // Image tabs carry their decoded data instead of editable text.
+  image?: ImageData
 }
 
 function extOf(name: string): string {
   const i = name.lastIndexOf('.')
   return i >= 0 ? name.slice(i).toLowerCase() : ''
+}
+
+// Raster image formats open in the viewer; SVG stays in the text editor (it's
+// editable markup and gets syntax highlighting).
+const IMAGE_EXTS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.bmp',
+  '.ico',
+  '.avif',
+])
+
+function isImageName(name: string): boolean {
+  return IMAGE_EXTS.has(extOf(name))
 }
 
 function relativeTo(root: string, filePath: string): string {
@@ -42,8 +62,13 @@ export function FilePanel() {
       }
       setLoading(true)
       try {
-        const text = await window.swarmmind.fsReadFile(filePath)
-        setOpenFiles((prev) => [...prev, { path: filePath, name: fileName, content: text, dirty: false }])
+        if (isImageName(fileName)) {
+          const image = await window.swarmmind.fsReadImage(filePath)
+          setOpenFiles((prev) => [...prev, { path: filePath, name: fileName, content: '', dirty: false, image }])
+        } else {
+          const text = await window.swarmmind.fsReadFile(filePath)
+          setOpenFiles((prev) => [...prev, { path: filePath, name: fileName, content: text, dirty: false }])
+        }
         setActivePath(filePath)
       } catch (err) {
         console.error('Failed to read file:', err)
@@ -194,6 +219,17 @@ export function FilePanel() {
           >
             {t('common.loading')}
           </div>
+        ) : active?.image ? (
+          <ImageViewer
+            key={active.path}
+            filePath={active.path}
+            fileName={active.name}
+            relPath={relativeTo(workspace.rootPath, active.path)}
+            dataUrl={active.image.dataUrl}
+            mime={active.image.mime}
+            size={active.image.size}
+            mtimeMs={active.image.mtimeMs}
+          />
         ) : (
           <FileEditor
             key={active?.path ?? 'empty'}

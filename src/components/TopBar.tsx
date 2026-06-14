@@ -131,6 +131,18 @@ function IconRewind() {
   )
 }
 
+function IconBenchmarks() {
+  // A bar-chart / leaderboard glyph — model & agent rankings.
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 21h18" />
+      <rect x="5" y="11" width="4" height="7" rx="1" />
+      <rect x="10" y="7" width="4" height="11" rx="1" />
+      <rect x="15" y="13" width="4" height="5" rx="1" />
+    </svg>
+  )
+}
+
 function IconConductor() {
   // A hub-and-spoke glyph: a lead node dispatching to workers.
   return (
@@ -286,6 +298,8 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const contendedPaths = useWorkspaceStore(s => s.contendedPaths)
   const toggleCheckpoints = useWorkspaceStore(s => s.toggleCheckpoints)
   const checkpointsOpen = useWorkspaceStore(s => s.checkpointsOpen)
+  const toggleBenchmarks = useWorkspaceStore(s => s.toggleBenchmarks)
+  const benchmarksOpen = useWorkspaceStore(s => s.benchmarksOpen)
   const paneCost = useWorkspaceStore(s => s.paneCost)
   const toggleOrchestratorBar = useWorkspaceStore(s => s.toggleOrchestratorBar)
   const orchestratorBarOpen = useWorkspaceStore(s => s.orchestratorBarOpen)
@@ -382,7 +396,7 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
           WebkitAppRegion: 'no-drag',
         }}
       >
-        <IconBtn label={t('topbar.showTerminals')} onClick={showTerminals} active={!boardOpen && !graphOpen && !filePanelOpen && !reviewOpen && !timelineOpen && !changesOpen && !checkpointsOpen}>
+        <IconBtn label={t('topbar.showTerminals')} onClick={showTerminals} active={!boardOpen && !graphOpen && !filePanelOpen && !reviewOpen && !timelineOpen && !changesOpen && !checkpointsOpen && !benchmarksOpen}>
           <IconGrid />
         </IconBtn>
 
@@ -408,6 +422,10 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
 
         <IconBtn label={t('topbar.checkpoints')} onClick={toggleCheckpoints} active={checkpointsOpen}>
           <IconRewind />
+        </IconBtn>
+
+        <IconBtn label={t('topbar.benchmarks')} onClick={toggleBenchmarks} active={benchmarksOpen}>
+          <IconBenchmarks />
         </IconBtn>
 
         <IconBtn label={contendedPaths.length ? t('topbar.changesContended') : t('topbar.changes')} onClick={toggleChanges} active={changesOpen}>

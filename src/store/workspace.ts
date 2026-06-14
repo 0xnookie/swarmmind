@@ -176,6 +176,7 @@ interface WorkspaceState {
   timelineOpen: boolean
   changesOpen: boolean
   checkpointsOpen: boolean
+  benchmarksOpen: boolean
   // Paths currently flagged as contended (≥2 active agents touched them recently),
   // driving the Changes-button warning dot. Cleared when the panel is opened.
   contendedPaths: string[]
@@ -267,6 +268,7 @@ interface WorkspaceState {
   toggleTimeline: () => void
   toggleChanges: () => void
   toggleCheckpoints: () => void
+  toggleBenchmarks: () => void
   addContendedPath: (path: string) => void
   updatePaneCost: (paneId: string, usd: number, tokens: number) => void
   showTerminals: () => void
@@ -412,6 +414,7 @@ const ALL_OVERLAYS_CLOSED = {
   timelineOpen: false,
   changesOpen: false,
   checkpointsOpen: false,
+  benchmarksOpen: false,
 } as const
 
 // The terminal pane grid (CenterArea) is shown only when a workspace is open and
@@ -474,6 +477,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   timelineOpen: false,
   changesOpen: false,
   checkpointsOpen: false,
+  benchmarksOpen: false,
   contendedPaths: [],
   paneCost: {},
   orchestratorBarOpen: false,
@@ -765,6 +769,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     contendedPaths: !s.changesOpen ? [] : s.contendedPaths,
   })),
   toggleCheckpoints: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, checkpointsOpen: !s.checkpointsOpen })),
+  toggleBenchmarks: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, benchmarksOpen: !s.benchmarksOpen })),
   addContendedPath: (path) =>
     set(s => (s.contendedPaths.includes(path) ? s : { contendedPaths: [...s.contendedPaths, path].slice(-50) })),
   updatePaneCost: (paneId, usd, tokens) =>

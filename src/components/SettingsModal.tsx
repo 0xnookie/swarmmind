@@ -807,7 +807,10 @@ export function SettingsModal() {
                             // dir (written by the agent's own login flow) — nothing
                             // to type here. Offer a re-login for expired sessions.
                             <div style={styles.rowBetween}>
-                              <span style={styles.cliBadge}>{t('settings.agent.accounts.cliBadge')}</span>
+                              <span style={styles.cliBadge} title={acc.profileDir}>
+                                <span style={styles.cliBadgeDot} />
+                                {t('settings.agent.accounts.cliBadge')}
+                              </span>
                               <button
                                 className="settings-card"
                                 style={styles.inlineBtn}
@@ -1222,6 +1225,9 @@ const styles: Record<string, React.CSSProperties> = {
     marginTop: 4,
   },
   cliBadge: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
     fontSize: 10,
     fontWeight: 600,
     letterSpacing: '0.05em',
@@ -1231,6 +1237,13 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--border)',
     borderRadius: 'var(--radius)',
     padding: '3px 8px',
+  },
+  cliBadgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: '50%',
+    background: 'var(--success)',
+    flexShrink: 0,
   },
   cardGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 },
   cardTitle: { fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' },

@@ -14,6 +14,7 @@ import { registerAgentSkillHandlers } from './ipc/agent-skills'
 import { registerEventHandlers } from './ipc/events'
 import { registerCheckpointHandlers } from './ipc/checkpoints'
 import { registerVoiceCacheHandlers } from './ipc/voice-cache'
+import { registerBenchmarkHandlers } from './ipc/benchmarks'
 import { registerUpdater } from './updater'
 import { killAll } from './pty-manager'
 import { existsSync, mkdirSync } from 'fs'
@@ -206,6 +207,7 @@ app.whenReady().then(async () => {
   registerGitHandlers()
   registerAgentSkillHandlers()
   registerVoiceCacheHandlers()
+  registerBenchmarkHandlers()
 
   ipcMain.handle('app:version', () => app.getVersion())
 

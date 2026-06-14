@@ -130,6 +130,15 @@ export function fileColor(ext: string): string {
       return '#4ade80'
     case '.rb':
       return '#fb7185'
+    case '.png':
+    case '.jpg':
+    case '.jpeg':
+    case '.gif':
+    case '.webp':
+    case '.bmp':
+    case '.ico':
+    case '.avif':
+      return '#c084fc'
     default:
       return 'var(--text-muted)'
   }

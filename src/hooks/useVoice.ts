@@ -208,12 +208,14 @@ async function loadModel(model: VoiceModel): Promise<void> {
   }
 }
 
-// Kick off model download + init + warm-up in the background (fire-and-forget).
-// Called shortly after app start so the first real use of SwarmVoice is
-// instant instead of waiting for a download and WASM warm-up. Errors are
-// swallowed — a normal user-triggered load will retry and surface them.
-export function preloadVoiceModel(): void {
-  ensureModel().catch(err => {
+// Kick off model download + init + warm-up in the background. Called shortly
+// after app start so the first real use of SwarmVoice is instant instead of
+// waiting for a download and WASM warm-up. Errors are swallowed — a normal
+// user-triggered load will retry and surface them. Resolves when the model is
+// ready (or the attempt failed); `onProgress` lets a caller reflect download %
+// in an ambient loading indicator.
+export function preloadVoiceModel(onProgress?: (pct: number) => void): Promise<void> {
+  return ensureModel(onProgress).catch(err => {
     console.debug('[SwarmVoice] background preload failed (will retry on first use):', err)
   })
 }
