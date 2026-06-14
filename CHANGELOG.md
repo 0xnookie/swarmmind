@@ -6,6 +6,25 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0]
+
+### Added
+- **Coding-agent benchmarks leaderboard** — a new toolbar overlay (the
+  bar-chart icon) ranks today's coding agents and models on the Artificial
+  Analysis Coding Agent Index, with score bars for quick comparison. It ships
+  with a bundled snapshot so it works offline and refreshes live in the
+  background when a newer leaderboard is available.
+- **Image viewer** — open PNG, JPEG, GIF, WebP, BMP, ICO, and AVIF files from
+  the file explorer and they render in a proper image viewer (with file name,
+  path, type, and size) instead of garbled text. Each image opens in its own
+  tab alongside your code. SVGs still open in the editor since they're editable
+  markup.
+- **Loading indicators for SwarmVoice** — downloading or warming up the Whisper
+  voice model now shows clear progress: a centred overlay when you trigger
+  dictation before the model is ready (dismissable to keep working), and a
+  small ambient pill in the corner while the model preloads quietly in the
+  background.
+
 ## [0.5.1]
 
 ### Fixed
