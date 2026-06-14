@@ -6,6 +6,16 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0]
+
+### Changed
+- **Agent brand logos** — each coding agent is now shown with its real logo
+  (Claude Code, Codex, Cursor, Windsurf, Kilo Code, OpenCode, Cline) in place
+  of the old colour dots, across the agent switcher, pane title bar, workspace
+  setup, Kanban board, notifications, Settings, the Changes and Timeline feeds,
+  and the orchestrator and broadcast bars — so you can tell agents apart at a
+  glance.
+
 ## [0.6.0]
 
 ### Added
