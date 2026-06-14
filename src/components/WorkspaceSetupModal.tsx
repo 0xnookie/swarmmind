@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import type { AgentId } from '../store/workspace'
+import { AGENTS, AgentIcon } from '../data/agents'
 import { useT, type TFunction, type TranslationKey } from '../i18n'
 
 interface RemoteWorkspace {
@@ -17,16 +18,6 @@ interface WorkspaceSetupModalProps {
 const TERMINAL_COUNTS = [1, 2, 4, 6, 8, 10, 12] as const
 
 const STEP_KEYS: TranslationKey[] = ['setup.step.folder', 'setup.step.layout', 'setup.step.agents']
-
-const AGENTS: { id: AgentId; label: string; color: string }[] = [
-  { id: 'claude',   label: 'Claude Code', color: '#c084fc' },
-  { id: 'codex',    label: 'Codex',       color: '#34d399' },
-  { id: 'cursor',   label: 'Cursor',      color: '#60a5fa' },
-  { id: 'windsurf', label: 'Windsurf',    color: '#fb923c' },
-  { id: 'kilo',     label: 'Kilo Code',   color: '#fbbf24' },
-  { id: 'opencode', label: 'OpenCode',    color: '#f472b6' },
-  { id: 'cline',    label: 'Cline',       color: '#a78bfa' },
-]
 
 function basenameOf(p: string): string {
   return p.split(/[\\/]/).filter(Boolean).pop() ?? ''
@@ -280,7 +271,7 @@ export function WorkspaceSetupModal({ onComplete, onClose }: WorkspaceSetupModal
                       onClick={() => setAgentId(a.id)}
                       style={{ ...styles.agentTile, borderColor: active ? 'var(--accent)' : 'var(--border)', background: active ? 'rgba(232,149,107,0.08)' : 'var(--bg-elevated)' }}
                     >
-                      <span style={{ width: 9, height: 9, borderRadius: '50%', background: a.color, flexShrink: 0 }} />
+                      <AgentIcon id={a.id} size={16} />
                       <span style={{ fontSize: 12.5, fontWeight: 500, color: active ? 'var(--accent)' : 'var(--text-secondary)' }}>{a.label}</span>
                       {active && <span style={{ marginLeft: 'auto' }}><CheckIcon stroke="var(--accent)" /></span>}
                     </button>

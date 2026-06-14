@@ -8,6 +8,7 @@ import {
 import { SHORTCUTS, getEffectiveKeys, formatKeys, eventToKeys, findConflict } from '../shortcuts'
 import { useT, LANGUAGES, type TFunction, type Language } from '../i18n'
 import { type VoiceModel } from '../hooks/useVoice'
+import { AgentIcon } from '../data/agents'
 import { LoginTerminal } from './LoginTerminal'
 
 // Agents whose CLIs support one-click connect (an isolated profile dir + the
@@ -403,7 +404,7 @@ export function SettingsModal() {
             {navItem('shortcuts', t('settings.nav.shortcuts'), <KeyIcon />, false)}
             {navItem('terminal', t('settings.nav.terminal'), <TerminalIcon />, terminalDirty)}
             <div style={styles.navLabel}>{t('settings.nav.agents')}</div>
-            {AGENTS.map(a => navItem(a.id, a.label, <AgentDot />, dirtyAgents.has(a.id)))}
+            {AGENTS.map(a => navItem(a.id, a.label, <AgentIcon id={a.id} size={14} />, dirtyAgents.has(a.id)))}
           </nav>
 
           {/* Content panel */}
@@ -1042,16 +1043,6 @@ function KeyIcon() {
       <line x1="14" y1="10" x2="14" y2="10" />
       <line x1="18" y1="10" x2="18" y2="10" />
       <line x1="7" y1="14" x2="17" y2="14" />
-    </svg>
-  )
-}
-
-function AgentDot() {
-  return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <circle cx="9" cy="12" r="1" fill="currentColor" />
-      <circle cx="15" cy="12" r="1" fill="currentColor" />
     </svg>
   )
 }

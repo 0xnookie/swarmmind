@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { AgentIcon } from '../data/agents'
 import { useT, type TFunction } from '../i18n'
 
 // ── Changes panel (shared world model) ────────────────────────────────────────
@@ -10,12 +11,7 @@ import { useT, type TFunction } from '../i18n'
 // the proactive "you're both editing auth.ts" warning that saves a merge fight.
 // Event-sourced: no extra IPC, it reads the same bus the timeline does.
 
-const AGENT_IDS = ['claude', 'codex', 'cursor', 'windsurf', 'kilo', 'opencode', 'cline']
 const FILE_TYPES = ['file_changed', 'contention', 'file_intent']
-
-function agentColor(id: string): string {
-  return AGENT_IDS.includes(id) ? `var(--agent-${id})` : 'var(--text-muted)'
-}
 
 interface FileEntry {
   path: string
@@ -149,10 +145,12 @@ export function ChangesPanel() {
                 {f.contended && <span style={styles.contendTag}>{t('changes.contendedTag')}</span>}
                 <div style={styles.dots}>
                   {Array.from(f.agents).map(a => (
-                    <span key={a} title={t('changes.changedThis', { agent: a })} style={{ ...styles.dot, background: agentColor(a) }} />
+                    <AgentIcon key={a} id={a} size={13} title={t('changes.changedThis', { agent: a })} />
                   ))}
                   {Array.from(f.intents).filter(a => !f.agents.has(a)).map(a => (
-                    <span key={`i-${a}`} title={t('changes.declaredIntent', { agent: a })} style={{ ...styles.dot, ...styles.dotIntent, borderColor: agentColor(a) }} />
+                    <span key={`i-${a}`} style={{ display: 'inline-flex', opacity: 0.4 }}>
+                      <AgentIcon id={a} size={13} title={t('changes.declaredIntent', { agent: a })} />
+                    </span>
                   ))}
                 </div>
                 {f.count > 0 && <span style={styles.changeCount}>{f.count}×</span>}
@@ -187,9 +185,7 @@ const styles: Record<string, React.CSSProperties> = {
   filePath: { fontSize: 11, color: 'var(--text-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
   rowRight: { display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 },
   contendTag: { fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--danger, #e5484d)', fontWeight: 700 },
-  dots: { display: 'flex', gap: 3 },
-  dot: { width: 9, height: 9, borderRadius: '50%', display: 'inline-block' },
-  dotIntent: { background: 'transparent', border: '1.5px solid', boxSizing: 'border-box' },
+  dots: { display: 'flex', alignItems: 'center', gap: 3 },
   changeCount: { fontSize: 11, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' },
   time: { fontSize: 11, color: 'var(--text-dim)', minWidth: 56, textAlign: 'right' },
 }

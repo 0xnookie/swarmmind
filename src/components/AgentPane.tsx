@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { usePty } from '../hooks/usePty'
 import { SessionPicker } from './SessionPicker'
 import { useWorkspaceStore, type AgentId, type PtyStatus } from '../store/workspace'
+import { AGENTS, AgentIcon } from '../data/agents'
 import { matchEvent, getEffectiveKeys } from '../shortcuts'
 import { resolveTemplate, extractInputTokens } from '../lib/skillTemplate'
 import { useT } from '../i18n'
@@ -96,16 +97,7 @@ function GripIcon() {
 }
 
 // ── Agent registry ────────────────────────────────────────────────────────────
-
-const AGENTS: { id: AgentId; label: string; color: string }[] = [
-  { id: 'claude',    label: 'Claude Code', color: '#c084fc' },
-  { id: 'codex',     label: 'Codex',       color: '#34d399' },
-  { id: 'cursor',    label: 'Cursor',      color: '#60a5fa' },
-  { id: 'windsurf',  label: 'Windsurf',    color: '#fb923c' },
-  { id: 'kilo',      label: 'Kilo Code',   color: '#fbbf24' },
-  { id: 'opencode',  label: 'OpenCode',    color: '#f472b6' },
-  { id: 'cline',     label: 'Cline',       color: '#a78bfa' },
-]
+// Shared source of truth (id/label/colour/icon) lives in src/data/agents.tsx.
 
 const PANE_COLORS = ['#e8956b', '#34d399', '#60a5fa', '#c084fc', '#fbbf24', '#f472b6']
 
@@ -683,8 +675,9 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
           <span
             onDoubleClick={e => { e.stopPropagation(); setTitleDraft(paneTitle ?? agentInfo?.label ?? ''); setEditingTitle(true) }}
             title={t('pane.renameTitle')}
-            style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', flexShrink: 0 }}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', flexShrink: 0 }}
           >
+            {agentId && <AgentIcon id={agentId} size={14} />}
             {paneTitle || (agentInfo ? agentInfo.label : <em style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>{t('pane.noAgent')}</em>)}
           </span>
         )}
@@ -904,7 +897,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
               className="ctx-menu-item"
               onClick={() => { setAgentId(paneId, a.id); setContextMenu(null) }}
             >
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: a.color, flexShrink: 0 }} />
+              <AgentIcon id={a.id} size={15} />
               <span style={{ flex: 1, color: agentId === a.id ? a.color : undefined }}>{a.label}</span>
               {agentId === a.id && <CheckIcon />}
             </button>

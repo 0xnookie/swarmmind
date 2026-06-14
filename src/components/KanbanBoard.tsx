@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { useWorkspaceStore, type AgentId } from '../store/workspace'
+import { AGENTS, AgentIcon } from '../data/agents'
 import { useT, type TranslationKey } from '../i18n'
 
 export interface KanbanTask {
@@ -21,16 +22,6 @@ const COLUMNS: { key: KanbanTask['status']; labelKey: TranslationKey }[] = [
   { key: 'needs_review', labelKey: 'kanban.col.needs_review' },
   { key: 'done',         labelKey: 'kanban.col.done' },
   { key: 'failed',       labelKey: 'kanban.col.failed' },
-]
-
-const AGENTS: { id: AgentId; label: string; color: string }[] = [
-  { id: 'claude',   label: 'Claude Code', color: 'var(--agent-claude)' },
-  { id: 'codex',    label: 'Codex',       color: 'var(--agent-codex)' },
-  { id: 'cursor',   label: 'Cursor',      color: 'var(--agent-cursor)' },
-  { id: 'windsurf', label: 'Windsurf',    color: 'var(--agent-windsurf)' },
-  { id: 'kilo',     label: 'Kilo Code',   color: 'var(--agent-kilo)' },
-  { id: 'opencode', label: 'OpenCode',    color: 'var(--agent-opencode)' },
-  { id: 'cline',    label: 'Cline',       color: 'var(--agent-cline)' },
 ]
 
 export function KanbanBoard() {
@@ -207,6 +198,7 @@ export function KanbanBoard() {
                         <span style={styles.cardTitle}>{task.title}</span>
                         {agent && (
                           <span style={{ ...styles.agentChip, color: agent.color, borderColor: agent.color }}>
+                            <AgentIcon id={agent.id} size={12} />
                             {agent.label}
                           </span>
                         )}
@@ -471,6 +463,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500
   },
   agentChip: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
     fontSize: 9,
     fontWeight: 600,
     border: '1px solid',

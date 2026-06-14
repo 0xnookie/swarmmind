@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { AgentIcon } from '../data/agents'
 import { useT, type TFunction, type TranslationKey } from '../i18n'
 
 // ── Swarm Timeline ────────────────────────────────────────────────────────────
@@ -144,7 +145,7 @@ export function SwarmTimeline() {
         <div style={styles.chips}>
           <Chip label={t('timeline.all')} active={filter === null} color="var(--accent)" onClick={() => setFilter(null)} />
           {agents.map(a => (
-            <Chip key={a} label={a} active={filter === a} color={agentColor(a)} onClick={() => setFilter(filter === a ? null : a)} />
+            <Chip key={a} label={a} iconId={a} active={filter === a} color={agentColor(a)} onClick={() => setFilter(filter === a ? null : a)} />
           ))}
         </div>
       </div>
@@ -165,7 +166,12 @@ export function SwarmTimeline() {
                 <span style={{ ...styles.glyph, color }}>{glyph}</span>
                 <div style={styles.body}>
                   <div style={styles.line1}>
-                    {ev.agent_id && <span style={{ ...styles.agent, color }}>{ev.agent_id}</span>}
+                    {ev.agent_id && (
+                      <span style={{ ...styles.agent, color, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <AgentIcon id={ev.agent_id} size={12} />
+                        {ev.agent_id}
+                      </span>
+                    )}
                     <span style={styles.text}>{summarize(ev, t)}</span>
                   </div>
                   <div style={styles.meta}>
@@ -182,17 +188,21 @@ export function SwarmTimeline() {
   )
 }
 
-function Chip({ label, active, color, onClick }: { label: string; active: boolean; color: string; onClick: () => void }) {
+function Chip({ label, active, color, iconId, onClick }: { label: string; active: boolean; color: string; iconId?: string; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       style={{
         ...styles.chip,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
         background: active ? color : 'transparent',
         color: active ? 'var(--accent-fg)' : 'var(--text-secondary)',
         borderColor: active ? color : 'var(--border-strong)',
       }}
     >
+      {iconId && <AgentIcon id={iconId} size={12} />}
       {label}
     </button>
   )

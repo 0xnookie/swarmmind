@@ -1,18 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { useWorkspaceStore, type AgentId } from '../store/workspace'
+import { useWorkspaceStore } from '../store/workspace'
+import { AGENT_META, AgentIcon } from '../data/agents'
 import { useT, type TFunction } from '../i18n'
-
-// Display names + accent colours for agents, mirroring the AGENTS table in
-// AgentPane.tsx (kept local so the notification center is self-contained).
-const AGENT_META: Record<AgentId, { label: string; color: string }> = {
-  claude:   { label: 'Claude Code', color: '#c084fc' },
-  codex:    { label: 'Codex',       color: '#34d399' },
-  cursor:   { label: 'Cursor',      color: '#60a5fa' },
-  windsurf: { label: 'Windsurf',    color: '#fb923c' },
-  kilo:     { label: 'Kilo Code',   color: '#fbbf24' },
-  opencode: { label: 'OpenCode',    color: '#f472b6' },
-  cline:    { label: 'Cline',       color: '#a78bfa' },
-}
 
 function relativeTime(ts: number, t: TFunction): string {
   const s = Math.floor((Date.now() - ts) / 1000)
@@ -254,16 +243,22 @@ export function NotificationCenter() {
                     }}
                   >
                     {/* Unread dot / agent colour */}
-                    <span
-                      style={{
-                        width: 8,
-                        height: 8,
-                        borderRadius: 9999,
-                        marginTop: 5,
-                        flexShrink: 0,
-                        background: n.read ? 'var(--border-strong)' : (meta?.color ?? 'var(--accent)'),
-                      }}
-                    />
+                    {meta ? (
+                      <span style={{ marginTop: 2, flexShrink: 0, opacity: n.read ? 0.45 : 1 }}>
+                        <AgentIcon id={meta.id} size={15} title={meta.label} />
+                      </span>
+                    ) : (
+                      <span
+                        style={{
+                          width: 8,
+                          height: 8,
+                          borderRadius: 9999,
+                          marginTop: 5,
+                          flexShrink: 0,
+                          background: n.read ? 'var(--border-strong)' : 'var(--accent)',
+                        }}
+                      />
+                    )}
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div
                         style={{

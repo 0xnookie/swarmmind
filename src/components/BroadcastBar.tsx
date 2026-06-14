@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useWorkspaceStore, type PaneNode, type PaneLeaf, type AgentId } from '../store/workspace'
+import { AgentIcon } from '../data/agents'
 import { useT } from '../i18n'
 
 const AGENT_LABEL: Record<AgentId, string> = {
@@ -90,7 +91,9 @@ export function BroadcastBar() {
               }}
               title={usingSelection ? t('broadcast.chipToggle') : t('broadcast.chipPick')}
             >
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: accent, flexShrink: 0 }} />
+              {leaf.agentId
+                ? <AgentIcon id={leaf.agentId} size={13} />
+                : <span style={{ width: 7, height: 7, borderRadius: '50%', background: accent, flexShrink: 0 }} />}
               <span style={styles.chipLabel}>{labelFor(leaf, i)}</span>
             </button>
           )

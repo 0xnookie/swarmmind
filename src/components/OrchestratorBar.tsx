@@ -7,6 +7,7 @@ import {
   type OrchestrationMode,
 } from '../store/workspace'
 import { conductorControls } from '../hooks/useConductor'
+import { AgentIcon } from '../data/agents'
 import { useT, type TranslationKey } from '../i18n'
 
 const AGENT_LABEL: Record<AgentId, string> = {
@@ -161,7 +162,9 @@ export function OrchestratorBar() {
               const idx = leaves.findIndex(l => l.id === paneId)
               return (
                 <div key={paneId} style={styles.workerRow}>
-                  <span style={styles.workerDot} />
+                  {leaf?.agentId
+                    ? <AgentIcon id={leaf.agentId} size={13} />
+                    : <span style={styles.workerDot} />}
                   <span style={styles.workerName}>{leaf ? labelFor(leaf, idx) : t('orch.proposalPane')}</span>
                   <span style={styles.workerTask}>{taskTitles[taskId] ?? taskId.slice(0, 8)}</span>
                 </div>
