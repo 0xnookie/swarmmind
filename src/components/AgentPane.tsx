@@ -143,6 +143,26 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const [searchQuery, setSearchQuery] = useState('')
   // Pending {{input:…}} collection for a skill awaiting user-supplied values.
   const [skillInputReq, setSkillInputReq] = useState<{ promptText: string; submit: boolean; labels: string[] } | null>(null)
+  // Boot loader state: shows a swarm animation over the black terminal while a
+  // shell/agent is starting and nothing has been drawn yet. 'leaving' plays the
+  // fade-out once the first output lands; an effect then unmounts it.
+  const [boot, setBoot] = useState<'off' | 'on' | 'leaving'>('off')
+  const startBooting = useCallback(() => setBoot('on'), [])
+  // Flip to fade-out only if the loader is currently showing; ignore output that
+  // arrives when no boot is in progress (e.g. a live reconnect's cache replay).
+  const handleOutput = useCallback(() => setBoot(b => (b === 'on' ? 'leaving' : b)), [])
+  // Remove the loader after its fade-out animation finishes.
+  useEffect(() => {
+    if (boot !== 'leaving') return
+    const id = setTimeout(() => setBoot('off'), 340)
+    return () => clearTimeout(id)
+  }, [boot])
+  // Safety net: never let the loader linger if a process produces no output.
+  useEffect(() => {
+    if (boot !== 'on') return
+    const id = setTimeout(() => setBoot('leaving'), 12000)
+    return () => clearTimeout(id)
+  }, [boot])
 
   const workspace = useWorkspaceStore(s => s.workspace)
   const setAgentId = useWorkspaceStore(s => s.setAgentId)
@@ -299,7 +319,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const handleExitRef = useRef<(code: number) => void>(() => {})
 
   const { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, copySelection, paste, getRecentOutput, findNext, findPrevious, clearSearch } =
-    usePty(paneId, containerRef, { onExit: code => handleExitRef.current(code) })
+    usePty(paneId, containerRef, { onExit: code => handleExitRef.current(code), onOutput: handleOutput })
 
   // When this pane becomes the visible fullscreen tab, it was just un-hidden
   // (display:none → flex). The ResizeObserver refits it on the size change, but
@@ -347,8 +367,9 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const startShell = useCallback(() => {
     if (!effectiveCwd) return
     lastShellStartRef.current = Date.now()
+    startBooting()
     spawnShell(effectiveCwd, shellStyle)
-  }, [effectiveCwd, shellStyle, spawnShell])
+  }, [effectiveCwd, shellStyle, spawnShell, startBooting])
 
   // When the pane is set to run in a git worktree, resolve (creating on first
   // use, reusing the persisted path on resume) the worktree directory and use it
@@ -375,6 +396,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
 
   const handleSpawn = useCallback(async (resume = false, explicitSessionId?: string) => {
     if (!agentId || !effectiveCwd) return
+    startBooting()
     const spawnCwd = await resolveSpawnCwd()
     setPtyStatus(paneId, 'running')        // marks this pane as agent-occupied
     setAgentRunning(paneId, true)          // persist so the session can resume on reopen
@@ -392,7 +414,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       doResume = false
     }
     await spawn(agentId, spawnCwd, shellStyle, undefined, doResume, sid, paneWorkspaceId)
-  }, [agentId, effectiveCwd, resolveSpawnCwd, spawn, shellStyle, paneId, setPtyStatus, setAgentRunning, setSessionId, sessionId, paneWorkspaceId])
+  }, [agentId, effectiveCwd, resolveSpawnCwd, spawn, shellStyle, paneId, setPtyStatus, setAgentRunning, setSessionId, sessionId, paneWorkspaceId, startBooting])
 
   const handleKill = useCallback(async () => { await kill() }, [kill])
 
@@ -828,6 +850,19 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
         {!workspace && (
           <div style={styles.emptyState}>
             <p>{t('pane.openWorkspacePrompt')}</p>
+          </div>
+        )}
+        {workspace && boot !== 'off' && (
+          <div className={`term-boot${boot === 'leaving' ? ' term-boot--leaving' : ''}`} style={styles.bootOverlay} aria-hidden="true">
+            <div className="term-boot-label">
+              <span className="term-boot-text">{t('pane.starting')}</span>
+              <span className="term-boot-ellipsis">
+                <span className="loading-dot" style={{ animationDelay: '0s' }}>.</span>
+                <span className="loading-dot" style={{ animationDelay: '0.2s' }}>.</span>
+                <span className="loading-dot" style={{ animationDelay: '0.4s' }}>.</span>
+              </span>
+            </div>
+            <div className="term-boot-bar"><span className="term-boot-bar-fill" /></div>
           </div>
         )}
         <div ref={containerRef} style={{ ...styles.terminal, opacity: !workspace ? 0 : 1 }} />
@@ -1272,6 +1307,19 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-dim)',
     fontSize: 13,
     zIndex: 1,
+  },
+  bootOverlay: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+    background: 'var(--bg-terminal)',
+    overflow: 'hidden',
+    zIndex: 5,
+    pointerEvents: 'none',
   },
   contextMenu: {
     position: 'fixed',

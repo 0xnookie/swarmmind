@@ -168,6 +168,66 @@ button:disabled { opacity: 0.38; cursor: not-allowed; }
 .loading-bar-shine { animation: loading-bar-shine 1.4s ease-in-out infinite; }
 .loading-dot { animation: loading-dots 1.4s ease-in-out infinite; }
 
+/* ── Terminal boot loader ──────────────────────────── */
+@keyframes term-boot-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes term-boot-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes term-boot-shimmer {
+  from { background-position: 220% 0; }
+  to   { background-position: -120% 0; }
+}
+@keyframes term-boot-bar {
+  0%   { left: -40%; width: 40%; }
+  50%  { width: 58%; }
+  100% { left: 100%; width: 40%; }
+}
+
+.term-boot {
+  animation: term-boot-in 220ms ease-out both;
+}
+.term-boot--leaving {
+  animation: term-boot-out 300ms ease-in both;
+}
+
+.term-boot-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+/* Light sweeps left→right across the word while loading. */
+.term-boot-text {
+  background: linear-gradient(100deg, var(--text-dim) 30%, var(--accent) 50%, var(--text-dim) 70%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: term-boot-shimmer 2.4s linear infinite;
+}
+.term-boot-ellipsis { display: inline-flex; width: 14px; }
+.term-boot-ellipsis .loading-dot { color: var(--accent); }
+
+/* Indeterminate glowing sweep. */
+.term-boot-bar {
+  position: relative;
+  width: 160px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--accent-subtle);
+  overflow: hidden;
+}
+.term-boot-bar-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  box-shadow: 0 0 10px var(--accent-glow);
+  animation: term-boot-bar 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
 /* ── Start screen ──────────────────────────────────── */
 @keyframes start-logo-glow {
   0%, 100% { filter: drop-shadow(0 0 18px var(--accent-glow)); }

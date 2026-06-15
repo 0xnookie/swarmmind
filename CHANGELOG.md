@@ -6,6 +6,15 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0]
+
+### Added
+- **Terminal start animation** — panes no longer flash a blank black screen
+  while a shell or agent is spinning up. A clean, themed loading indicator
+  ("Starting terminal" with a glowing sweep bar) now fills the pane during
+  startup and fades out the moment the first output appears. It shows on every
+  fresh spawn, agent launch, and session resume.
+
 ## [0.7.0]
 
 ### Changed

@@ -67,6 +67,10 @@ interface UsePtyOptions {
   // the exit reaction (e.g. respawning a shell); the default "[process exited]"
   // line and status update are skipped.
   onExit?: (code: number) => void
+  // Called whenever the terminal gains content — live PTY output or a cached/
+  // persisted scrollback replay. Lets the caller dismiss the boot loader as soon
+  // as anything is actually drawn, instead of leaving a black pane.
+  onOutput?: () => void
 }
 
 export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElement>, opts?: UsePtyOptions) {
@@ -159,11 +163,13 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
     const cached = rawOutputCache.get(paneId)
     if (cached) {
       term.write(cached)
+      optsRef.current?.onOutput?.()
     } else {
       window.swarmmind.scrollbackLoad(paneId).then(saved => {
         if (saved && !rawOutputCache.get(paneId) && termRef.current === term) {
           term.write(saved)
           rawOutputCache.set(paneId, saved)
+          optsRef.current?.onOutput?.()
         }
       }).catch(() => {})
     }
@@ -182,6 +188,7 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
         term.write(data)
         appendToCache(paneId, data)
         scheduleScrollbackSave(paneId)
+        optsRef.current?.onOutput?.()
       }
     })
 
