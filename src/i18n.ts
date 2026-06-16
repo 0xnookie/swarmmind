@@ -358,6 +358,16 @@ const en = {
   'kanban.launch': '▶ Launch Agent',
   'kanban.dropHere': 'Drop tasks here',
   'kanban.agentFallback': 'agent',
+  'kanban.search': 'Search tasks…',
+  'kanban.filterAll': 'All',
+  'kanban.filterUnassigned': 'Unassigned',
+  'kanban.blocked': 'Blocked · {n}',
+  'kanban.dependsOn': 'Depends on',
+  'kanban.addPrereqs': 'Prerequisites (optional)',
+  'kanban.noPrereqs': 'No other tasks yet',
+  'kanban.noMatches': 'No tasks match your filters',
+  'kanban.progress': '{done}/{total} done',
+  'kanban.confirmDelete': 'Delete?',
 
   // ── Memory view / panel ────────────────────────────────────────────────────
   'memview.graph': 'Graph',
@@ -1088,6 +1098,16 @@ const de: Record<TranslationKey, string> = {
   'kanban.launch': '▶ Agent starten',
   'kanban.dropHere': 'Aufgaben hierher ziehen',
   'kanban.agentFallback': 'Agent',
+  'kanban.search': 'Aufgaben suchen…',
+  'kanban.filterAll': 'Alle',
+  'kanban.filterUnassigned': 'Nicht zugewiesen',
+  'kanban.blocked': 'Blockiert · {n}',
+  'kanban.dependsOn': 'Hängt ab von',
+  'kanban.addPrereqs': 'Voraussetzungen (optional)',
+  'kanban.noPrereqs': 'Noch keine anderen Aufgaben',
+  'kanban.noMatches': 'Keine Aufgaben entsprechen den Filtern',
+  'kanban.progress': '{done}/{total} fertig',
+  'kanban.confirmDelete': 'Löschen?',
 
   // ── Memory view / panel ────────────────────────────────────────────────────
   'memview.graph': 'Graph',

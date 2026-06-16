@@ -8,6 +8,7 @@ import {
   taskCreate,
   taskUpdate,
   taskAppendNote,
+  taskDelete,
   taskList,
   messagesUndelivered,
   messageMarkDelivered,
@@ -73,6 +74,10 @@ export function registerMemoryHandlers(getWorkspaceId: () => string | null): voi
 
   ipcMain.handle('task:appendNote', (_event, id: string, note: string) => {
     return taskAppendNote(id, note)
+  })
+
+  ipcMain.handle('task:delete', (_event, id: string) => {
+    return taskDelete(id)
   })
 
   ipcMain.handle('messages:undelivered', () => {

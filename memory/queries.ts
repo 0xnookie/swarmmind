@@ -269,6 +269,21 @@ export function taskAppendNote(id: string, note: string): Task | null {
   return { ...task, notes: newNotes, updated_at: now }
 }
 
+export function taskDelete(id: string): boolean {
+  const db = getWorkspaceDb()
+  // Drop this id from any other task's depends_on so a deleted prerequisite can't
+  // block its dependents forever (the conductor waits for every dep to be `done`).
+  const dependents = db.prepare("SELECT id, depends_on FROM tasks WHERE depends_on IS NOT NULL AND depends_on != ''").all() as Pick<Task, 'id' | 'depends_on'>[]
+  const now = Date.now()
+  for (const d of dependents) {
+    const deps = (d.depends_on ?? '').split(',').map(s => s.trim()).filter(Boolean)
+    if (!deps.includes(id)) continue
+    const next = deps.filter(x => x !== id)
+    db.prepare('UPDATE tasks SET depends_on = ?, updated_at = ? WHERE id = ?').run(next.length ? next.join(',') : null, now, d.id)
+  }
+  return db.prepare('DELETE FROM tasks WHERE id = ?').run(id).changes > 0
+}
+
 export function taskList(workspaceId: string, status?: TaskStatus, assignedAgent?: string): Task[] {
   const db = getWorkspaceDb()
   if (status && assignedAgent) {

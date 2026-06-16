@@ -58,6 +58,8 @@ contextBridge.exposeInMainWorld('swarmmind', {
     ipcRenderer.invoke('task:update', id, status, assignedAgent, notes),
   taskAppendNote: (id: string, note: string) =>
     ipcRenderer.invoke('task:appendNote', id, note),
+  taskDelete: (id: string) =>
+    ipcRenderer.invoke('task:delete', id),
 
   messagesUndelivered: () => ipcRenderer.invoke('messages:undelivered'),
   messageMarkDelivered: (id: string) => ipcRenderer.invoke('messages:markDelivered', id),

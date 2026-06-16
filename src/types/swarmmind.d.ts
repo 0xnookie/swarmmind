@@ -37,6 +37,7 @@ declare global {
       taskCreate: (title: string, description?: string, assignedAgent?: string, dependsOn?: string[]) => Promise<unknown>
       taskUpdate: (id: string, status: string, assignedAgent?: string, notes?: string) => Promise<unknown>
       taskAppendNote: (id: string, note: string) => Promise<unknown>
+      taskDelete: (id: string) => Promise<boolean>
       // Agent-to-agent messages (delivery driven by the conductor)
       messagesUndelivered: () => Promise<AgentMessage[]>
       messageMarkDelivered: (id: string) => Promise<void>

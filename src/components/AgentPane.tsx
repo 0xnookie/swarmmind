@@ -225,6 +225,17 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     return findLeaf(s.rootPane)?.resume ?? false
   })
   const clearPendingAutoSpawn = useWorkspaceStore(s => s.clearPendingAutoSpawn)
+  // Task queued for this pane by the Kanban "Launch Agent" button. Injected as a
+  // prompt once the freshly spawned agent is ready (see the auto-task effect).
+  const leafTaskId = useWorkspaceStore(s => {
+    function findLeaf(node: import('../store/workspace').PaneNode): import('../store/workspace').PaneLeaf | null {
+      if (node.type === 'leaf') return node.id === paneId ? node : null
+      for (const c of node.children) { const f = findLeaf(c); if (f) return f }
+      return null
+    }
+    return findLeaf(s.rootPane)?.taskId ?? null
+  })
+  const setTaskId = useWorkspaceStore(s => s.setTaskId)
   const setPaneWorktree = useWorkspaceStore(s => s.setPaneWorktree)
   const setPaneWorktreeName = useWorkspaceStore(s => s.setPaneWorktreeName)
   const setPaneWorktreeInfo = useWorkspaceStore(s => s.setPaneWorktreeInfo)
@@ -552,6 +563,52 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     return () => { cancelled = true }
   }, [workspace, effectiveCwd, pendingAutoSpawn, paneId, startShell, ptyStatus])
 
+  // Deliver a task queued by the Kanban "Launch Agent" button. The pane is
+  // spawned with a `taskId`, but a freshly launched CLI can't accept input for a
+  // second or two while it boots, so we can't inject immediately. Strategy:
+  //   • Fast path — inject as soon as the agent boots and goes quiet
+  //     (`attention === 'waiting'`, the same "at prompt / finished a turn" signal
+  //     the conductor uses).
+  //   • Fallback — if the agent never reports idle (startup spinner/animation
+  //     keeps the activity signal 'working', or the idle threshold is long),
+  //     inject anyway a few seconds after launch so the task always lands.
+  // A ref guards against sending twice; `setTaskId(null)` clears the queue so it
+  // never re-fires when the agent later goes idle again.
+  const injectedTaskRef = useRef<string | null>(null)
+  const taskFallbackRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const deliverTask = useCallback(async (tid: string) => {
+    if (injectedTaskRef.current === tid) return
+    injectedTaskRef.current = tid
+    if (taskFallbackRef.current) { clearTimeout(taskFallbackRef.current); taskFallbackRef.current = null }
+    const list = await window.swarmmind.taskList() as Array<{ id: string; title: string; description: string | null }>
+    const task = list?.find(t => t.id === tid)
+    if (!task || !mountedRef.current) { setTaskId(paneId, null); return }
+    const prompt = t('pane.taskPrompt', { title: task.title }) + (task.description ? ' ' + task.description : '')
+    // Send the prompt and the Enter as SEPARATE writes (mirrors the working
+    // conductor `inject`). TUI CLIs (e.g. Claude Code) treat a paste+newline in
+    // one write as literal text and never submit it; a distinct, slightly delayed
+    // carriage return reliably triggers submission.
+    injectText(prompt)
+    setTimeout(() => { if (mountedRef.current) injectText('\r') }, 120)
+    setTaskId(paneId, null)
+  }, [paneId, setTaskId, injectText, t])
+
+  useEffect(() => {
+    if (!leafTaskId || ptyStatus !== 'running') return
+    if (injectedTaskRef.current === leafTaskId) return
+    if (attention === 'waiting') { void deliverTask(leafTaskId); return }
+    if (!taskFallbackRef.current) {
+      const tid = leafTaskId
+      taskFallbackRef.current = setTimeout(() => {
+        taskFallbackRef.current = null
+        if (mountedRef.current) void deliverTask(tid)
+      }, 10000)
+    }
+  }, [leafTaskId, ptyStatus, attention, deliverTask])
+
+  // Drop any pending fallback if the pane goes away before it fires.
+  useEffect(() => () => { if (taskFallbackRef.current) clearTimeout(taskFallbackRef.current) }, [])
+
   useEffect(() => {
     if (!contextMenu) return
     const handler = () => setContextMenu(null)
@@ -618,7 +675,10 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       window.swarmmind.memoryWrite('current_task', JSON.stringify(task), 'context', aid ?? undefined).catch(() => {})
       window.swarmmind.taskUpdate(task.id, 'in_progress').catch(() => {})
       const prompt = t('pane.taskPrompt', { title: task.title }) + (task.description ? ' ' + task.description : '')
-      injectText(prompt + '\r')
+      // Separate writes for the prompt and the Enter so TUI agents submit it
+      // (see deliverTask for the rationale).
+      injectText(prompt)
+      setTimeout(() => injectText('\r'), 120)
     }
   }
 

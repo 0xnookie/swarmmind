@@ -6,6 +6,31 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.9.0]
+
+### Added
+- **Task dependencies on the Kanban board** — when creating a task you can now
+  pick which other tasks must finish first. Cards whose prerequisites aren't all
+  done show a "Blocked" badge and list exactly what they're waiting on, mirroring
+  the order the orchestrator dispatches work in.
+- **Search & agent filtering** — filter the board by a text search over task
+  titles/descriptions and by assigned agent, with a quick "Unassigned" filter.
+- **Delete tasks** — remove a task straight from its card (with a confirm step).
+  Deleting a task also cleans it out of any other task's prerequisites so nothing
+  is left blocked on a task that no longer exists.
+- **Board progress indicator** — the header shows how many tasks are done out of
+  the total.
+
+### Changed
+- **Larger, more readable Kanban board** — bigger task cards, action buttons, and
+  input fields throughout the board and the new-task form.
+
+### Fixed
+- **"Launch Agent" now actually runs the task** — launching an agent from a task
+  card sends the task to the freshly spawned agent and reliably submits it,
+  instead of just opening an idle agent. Dragging a task onto a running pane
+  submits reliably too.
+
 ## [0.8.0]
 
 ### Added
