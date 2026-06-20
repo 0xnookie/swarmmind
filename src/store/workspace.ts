@@ -119,6 +119,51 @@ export interface OrchestratorLogEntry {
   text: string
 }
 
+// ── Loops (recurring prompt schedules) ──────────────────────────────────────
+// A "loop" is a saved schedule that re-injects a prompt into an agent pane on a
+// fixed interval — SwarmMind's take on Claude Code's `/loop`. The runner lives
+// in hooks/useLoops.ts; loops are persisted per-workspace (app setting
+// `loops:<workspaceId>`) so they survive a restart.
+export interface SwarmLoop {
+  id: string
+  // The schedule's display name and a short description of what it does.
+  name: string
+  description: string
+  // The prompt/command injected into the target pane(s) on each run.
+  prompt: string
+  // How often it runs, in seconds.
+  intervalSec: number
+  // Target pane id, or null = every running agent pane (broadcast).
+  paneId: string | null
+  // Snapshot of the target pane's agent at create time, for display.
+  agentId: AgentId | null
+  // Running (true) or paused (false).
+  enabled: boolean
+  runCount: number
+  lastRunAt: number | null
+  // Epoch ms of the next scheduled run. The runner fires once now >= this.
+  nextRunAt: number | null
+  createdAt: number
+}
+
+// The fields a caller supplies when creating a loop; the rest are derived.
+export type LoopInput = Pick<SwarmLoop, 'name' | 'description' | 'prompt' | 'intervalSec' | 'paneId' | 'agentId'> & {
+  enabled?: boolean
+}
+
+// A loop SwarmMind *detected* running inside a pane's CLI (e.g. a Claude Code
+// `/loop`), as opposed to one it manages itself. Read-only — SwarmMind can't
+// control the CLI's scheduler, so these are display-only and session-scoped.
+export interface CliLoop {
+  id: string
+  paneId: string
+  // The command being looped (the text after `/loop <interval>`), or the raw line.
+  command: string
+  // Parsed interval token (e.g. "5m"), or null when the loop is self-paced.
+  interval: string | null
+  detectedAt: number
+}
+
 interface WorkspaceState {
   workspace: WorkspaceInfo | null
   rootPane: PaneGroup
@@ -177,6 +222,7 @@ interface WorkspaceState {
   changesOpen: boolean
   checkpointsOpen: boolean
   benchmarksOpen: boolean
+  swarmAgentOpen: boolean
   // Paths currently flagged as contended (≥2 active agents touched them recently),
   // driving the Changes-button warning dot. Cleared when the panel is opened.
   contendedPaths: string[]
@@ -198,6 +244,13 @@ interface WorkspaceState {
   orchestratorProposal: DispatchProposal | null
   // Newest-first activity log shown in the OrchestratorBar (session-only).
   orchestratorLog: OrchestratorLogEntry[]
+  // ── Loops ──────────────────────────────────────────────────────────────────
+  // Recurring prompt schedules for the current workspace, and the Loops overlay.
+  loops: SwarmLoop[]
+  loopsOpen: boolean
+  // Loops detected running inside panes' CLIs (e.g. Claude Code `/loop`).
+  // Session-only and read-only — SwarmMind can only display, not control them.
+  cliLoops: CliLoop[]
 
   setWorkspace: (ws: WorkspaceInfo | null) => void
   setLayout: (root: PaneGroup) => void
@@ -269,6 +322,7 @@ interface WorkspaceState {
   toggleChanges: () => void
   toggleCheckpoints: () => void
   toggleBenchmarks: () => void
+  toggleSwarmAgent: () => void
   addContendedPath: (path: string) => void
   updatePaneCost: (paneId: string, usd: number, tokens: number) => void
   showTerminals: () => void
@@ -284,6 +338,18 @@ interface WorkspaceState {
   clearOrchestratorLog: () => void
   startOrchestration: () => void
   stopOrchestration: () => void
+  // ── Loop actions ───────────────────────────────────────────────────────────
+  toggleLoops: () => void
+  addLoop: (input: LoopInput) => SwarmLoop
+  updateLoop: (id: string, patch: Partial<LoopInput>) => void
+  removeLoop: (id: string) => void
+  setLoopEnabled: (id: string, enabled: boolean) => void
+  markLoopRun: (id: string, at: number) => void
+  deferLoop: (id: string, at: number) => void
+  setLoops: (loops: SwarmLoop[]) => void
+  addCliLoop: (paneId: string, command: string, interval: string | null) => void
+  removeCliLoop: (id: string) => void
+  clearPaneCliLoops: (paneId: string) => void
   loadFromJson: (json: string) => void
   swapPanes: (idA: string, idB: string) => void
   resetLayout: () => void
@@ -415,6 +481,8 @@ const ALL_OVERLAYS_CLOSED = {
   changesOpen: false,
   checkpointsOpen: false,
   benchmarksOpen: false,
+  swarmAgentOpen: false,
+  loopsOpen: false,
 } as const
 
 // The terminal pane grid (CenterArea) is shown only when a workspace is open and
@@ -478,6 +546,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   changesOpen: false,
   checkpointsOpen: false,
   benchmarksOpen: false,
+  swarmAgentOpen: false,
   contendedPaths: [],
   paneCost: {},
   orchestratorBarOpen: false,
@@ -488,6 +557,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   paneTask: {},
   orchestratorProposal: null,
   orchestratorLog: [],
+  loops: [],
+  loopsOpen: false,
+  cliLoops: [],
 
   setWorkspace: (ws) => set(s => {
     // On an actual switch (not a rename of the current workspace), clear the
@@ -496,7 +568,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // summing a different workspace's spend). Guarded on id change so renaming the
     // active workspace (setWorkspace with the same id) doesn't wipe live totals.
     if (ws?.id === s.workspace?.id) return { workspace: ws }
-    return { workspace: ws, paneCost: {}, contendedPaths: [] }
+    return { workspace: ws, paneCost: {}, contendedPaths: [], cliLoops: [] }
   }),
 
   setLayout: (root) => {
@@ -667,6 +739,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         notifications: s.notifications.filter(n => n.paneId !== paneId),
         paneTask,
         paneCost,
+        cliLoops: s.cliLoops.filter(c => c.paneId !== paneId),
         leadPaneId: s.leadPaneId === paneId ? null : s.leadPaneId,
         orchestratorProposal: s.orchestratorProposal?.paneId === paneId ? null : s.orchestratorProposal,
       }
@@ -770,6 +843,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   })),
   toggleCheckpoints: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, checkpointsOpen: !s.checkpointsOpen })),
   toggleBenchmarks: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, benchmarksOpen: !s.benchmarksOpen })),
+  toggleSwarmAgent: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, swarmAgentOpen: !s.swarmAgentOpen })),
   addContendedPath: (path) =>
     set(s => (s.contendedPaths.includes(path) ? s : { contendedPaths: [...s.contendedPaths, path].slice(-50) })),
   updatePaneCost: (paneId, usd, tokens) =>
@@ -816,6 +890,87 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   // Reset a run without changing the mode: drop the phase, any pending proposal,
   // and the per-pane task assignments.
   stopOrchestration: () => set({ orchestratorPhase: 'idle', orchestratorProposal: null, paneTask: {} }),
+
+  // ── Loops ──────────────────────────────────────────────────────────────────
+  toggleLoops: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, loopsOpen: !s.loopsOpen })),
+
+  addLoop: (input) => {
+    const now = Date.now()
+    const loop: SwarmLoop = {
+      id: uuidv4(),
+      name: input.name.trim() || 'Loop',
+      description: input.description.trim(),
+      prompt: input.prompt,
+      // Clamp to a sane floor so a typo can't hammer a pane every tick.
+      intervalSec: Math.max(5, Math.round(input.intervalSec) || 60),
+      paneId: input.paneId,
+      agentId: input.agentId,
+      enabled: input.enabled ?? true,
+      runCount: 0,
+      lastRunAt: null,
+      // Enabled loops fire on the next runner tick for immediate feedback.
+      nextRunAt: (input.enabled ?? true) ? now : null,
+      createdAt: now,
+    }
+    set(s => ({ loops: [loop, ...s.loops] }))
+    return loop
+  },
+
+  updateLoop: (id, patch) =>
+    set(s => ({
+      loops: s.loops.map(l => {
+        if (l.id !== id) return l
+        const next = { ...l, ...patch }
+        if (patch.intervalSec !== undefined) next.intervalSec = Math.max(5, Math.round(patch.intervalSec) || l.intervalSec)
+        if (patch.name !== undefined) next.name = patch.name.trim() || l.name
+        return next
+      }),
+    })),
+
+  removeLoop: (id) => set(s => ({ loops: s.loops.filter(l => l.id !== id) })),
+
+  setLoopEnabled: (id, enabled) =>
+    set(s => ({
+      loops: s.loops.map(l =>
+        l.id === id
+          // Re-enabling schedules the next run for the upcoming tick; pausing
+          // clears the countdown.
+          ? { ...l, enabled, nextRunAt: enabled ? Date.now() : null }
+          : l
+      ),
+    })),
+
+  markLoopRun: (id, at) =>
+    set(s => ({
+      loops: s.loops.map(l =>
+        l.id === id
+          ? { ...l, lastRunAt: at, nextRunAt: at + l.intervalSec * 1000, runCount: l.runCount + 1 }
+          : l
+      ),
+    })),
+
+  // Push the next attempt forward without counting it as a run — used when the
+  // target pane isn't running yet, so the loop quietly retries next interval.
+  deferLoop: (id, at) =>
+    set(s => ({
+      loops: s.loops.map(l => (l.id === id ? { ...l, nextRunAt: at + l.intervalSec * 1000 } : l)),
+    })),
+
+  setLoops: (loops) => set({ loops }),
+
+  // Record a CLI-detected loop for a pane. A pane runs one loop at a time, so a
+  // fresh `/loop` replaces any prior detection for that pane.
+  addCliLoop: (paneId, command, interval) =>
+    set(s => ({
+      cliLoops: [
+        { id: uuidv4(), paneId, command, interval, detectedAt: Date.now() },
+        ...s.cliLoops.filter(c => c.paneId !== paneId),
+      ],
+    })),
+
+  removeCliLoop: (id) => set(s => ({ cliLoops: s.cliLoops.filter(c => c.id !== id) })),
+
+  clearPaneCliLoops: (paneId) => set(s => ({ cliLoops: s.cliLoops.filter(c => c.paneId !== paneId) })),
 
   setDefaultAgentId: (id) => {
     set({ defaultAgentId: id })

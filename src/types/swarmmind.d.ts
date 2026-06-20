@@ -25,7 +25,8 @@ declare global {
       onPtyOutput: (cb: (paneId: string, data: string) => void) => () => void
       onPtyExit: (cb: (paneId: string, code: number) => void) => () => void
       onPtyState: (cb: (paneId: string, state: 'working' | 'waiting') => void) => () => void
-      onPtyAttention: (cb: (paneId: string) => void) => () => void
+      onPtyAttention: (cb: (paneId: string, agentId: string | null) => void) => () => void
+      onPtyLoop: (cb: (paneId: string, info: { command: string; interval: string | null; raw: string }) => void) => () => void
       // Memory
       memoryList: (type?: string, agentId?: string) => Promise<unknown[]>
       memoryRead: (key: string, agentId?: string) => Promise<unknown>
@@ -80,6 +81,23 @@ declare global {
       // App settings
       getAppSetting: (key: string) => Promise<string | null>
       setAppSetting: (key: string, value: string) => Promise<void>
+      // SwarmAgent (in-app assistant; Groq-backed, key held in main process)
+      swarmAgentHasKey: () => Promise<boolean>
+      swarmAgentSetKey: (key: string) => Promise<boolean>
+      swarmAgentChat: (
+        requestId: string,
+        messages: SwarmAgentMessage[],
+        tools: unknown[],
+      ) => Promise<{ message?: SwarmAgentMessage; error?: string }>
+      onSwarmAgentDelta: (cb: (data: { requestId: string; text: string }) => void) => () => void
+      // SwarmAgent desktop widget (separate floating window)
+      widgetShow: () => void
+      widgetHide: () => void
+      widgetRestoreMain: () => void
+      widgetResize: (height: number) => void
+      widgetForwardTool: (name: string, args: string) => Promise<string>
+      onWidgetRunTool: (cb: (req: { id: string; name: string; args: string }) => void) => () => void
+      widgetToolResult: (id: string, result: string) => void
       // Coding-agent benchmarks: best-effort live refresh (falls back to the
       // bundled snapshot on failure).
       fetchBenchmarks: () => Promise<BenchmarkSnapshot | { error: string }>
@@ -125,6 +143,20 @@ declare global {
       updateInstall: () => Promise<void>
       onUpdateStatus: (cb: (status: UpdateStatus) => void) => () => void
     }
+  }
+
+  // One message in a SwarmAgent conversation (OpenAI/Groq chat shape).
+  interface SwarmAgentToolCall {
+    id: string
+    type: 'function'
+    function: { name: string; arguments: string }
+  }
+  interface SwarmAgentMessage {
+    role: 'system' | 'user' | 'assistant' | 'tool'
+    content: string | null
+    tool_calls?: SwarmAgentToolCall[]
+    tool_call_id?: string
+    name?: string
   }
 
   type UpdateStatus =

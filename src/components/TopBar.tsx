@@ -143,6 +143,28 @@ function IconBenchmarks() {
   )
 }
 
+function IconSwarmAgent() {
+  // A speech-bubble with a spark — the conversational assistant.
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8z" />
+      <path d="M12 8v5M9.5 10.5h5" />
+    </svg>
+  )
+}
+
+function IconLoop() {
+  // A repeat/refresh glyph — recurring prompt schedules.
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M17 2.1 21 6l-4 3.9" />
+      <path d="M3 11V9a4 4 0 0 1 4-4h14" />
+      <path d="M7 21.9 3 18l4-3.9" />
+      <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+    </svg>
+  )
+}
+
 function IconConductor() {
   // A hub-and-spoke glyph: a lead node dispatching to workers.
   return (
@@ -300,6 +322,11 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const checkpointsOpen = useWorkspaceStore(s => s.checkpointsOpen)
   const toggleBenchmarks = useWorkspaceStore(s => s.toggleBenchmarks)
   const benchmarksOpen = useWorkspaceStore(s => s.benchmarksOpen)
+  const toggleSwarmAgent = useWorkspaceStore(s => s.toggleSwarmAgent)
+  const swarmAgentOpen = useWorkspaceStore(s => s.swarmAgentOpen)
+  const toggleLoops = useWorkspaceStore(s => s.toggleLoops)
+  const loopsOpen = useWorkspaceStore(s => s.loopsOpen)
+  const runningLoops = useWorkspaceStore(s => s.loops.filter(l => l.enabled).length + s.cliLoops.length)
   const paneCost = useWorkspaceStore(s => s.paneCost)
   const toggleOrchestratorBar = useWorkspaceStore(s => s.toggleOrchestratorBar)
   const orchestratorBarOpen = useWorkspaceStore(s => s.orchestratorBarOpen)
@@ -396,7 +423,7 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
           WebkitAppRegion: 'no-drag',
         }}
       >
-        <IconBtn label={t('topbar.showTerminals')} onClick={showTerminals} active={!boardOpen && !graphOpen && !filePanelOpen && !reviewOpen && !timelineOpen && !changesOpen && !checkpointsOpen && !benchmarksOpen}>
+        <IconBtn label={t('topbar.showTerminals')} onClick={showTerminals} active={!boardOpen && !graphOpen && !filePanelOpen && !reviewOpen && !timelineOpen && !changesOpen && !checkpointsOpen && !benchmarksOpen && !swarmAgentOpen && !loopsOpen}>
           <IconGrid />
         </IconBtn>
 
@@ -426,6 +453,24 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
 
         <IconBtn label={t('topbar.benchmarks')} onClick={toggleBenchmarks} active={benchmarksOpen}>
           <IconBenchmarks />
+        </IconBtn>
+
+        <IconBtn label={t('topbar.swarmAgent')} onClick={toggleSwarmAgent} active={swarmAgentOpen}>
+          <IconSwarmAgent />
+        </IconBtn>
+
+        <IconBtn label={runningLoops ? t('topbar.loopsRunning', { n: runningLoops }) : t('topbar.loops')} onClick={toggleLoops} active={loopsOpen}>
+          <IconLoop />
+          {runningLoops > 0 && (
+            <span style={{
+              position: 'absolute', top: -1, right: -1, minWidth: 13, height: 13, padding: '0 3px',
+              borderRadius: 7, background: 'var(--success)', color: 'var(--bg-base)',
+              fontSize: 9, fontWeight: 700, lineHeight: '13px', textAlign: 'center',
+              boxShadow: '0 0 0 1.5px var(--bg-base)',
+            }}>
+              {runningLoops}
+            </span>
+          )}
         </IconBtn>
 
         <IconBtn label={contendedPaths.length ? t('topbar.changesContended') : t('topbar.changes')} onClick={toggleChanges} active={changesOpen}>

@@ -103,6 +103,47 @@ interface PtyEntry {
   // Last cumulative cost (USD) parsed from this agent's output, so we only emit a
   // `cost` event when the figure actually advances.
   lastCostUsd?: number
+  // The renderer window, so input-side detectors (e.g. `/loop`) can post events.
+  win?: BrowserWindow
+  // Buffer of the current input line (printable keystrokes/paste since the last
+  // Enter), used to detect a `/loop` command typed into the pane.
+  inputLineBuf?: string
+}
+
+// ── CLI loop detection ───────────────────────────────────────────────────────
+// SwarmMind can't introspect a coding CLI's internal loop scheduler (e.g. Claude
+// Code's `/loop`), but it does see the keystrokes/paste sent to the pty. We
+// buffer the current input line and, when Enter is pressed on a `/loop …`
+// command, tell the renderer to surface a read-only "detected" loop so the user
+// can at least *see* it in the Loops panel. Best-effort: arrow-key editing can
+// confuse the buffer, so this is a hint, not authoritative state.
+const LOOP_CMD_RE = /^\/loop\b\s*(.*)$/i
+const LOOP_INTERVAL_RE = /^(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|[smh])\b/i
+
+function detectLoopCommand(paneId: string, entry: PtyEntry, data: string): void {
+  for (const ch of data) {
+    const code = ch.charCodeAt(0)
+    if (ch === '\r' || ch === '\n') {
+      const line = (entry.inputLineBuf ?? '').trim()
+      entry.inputLineBuf = ''
+      const m = LOOP_CMD_RE.exec(line)
+      if (m && entry.win && !entry.win.isDestroyed()) {
+        const rest = m[1].trim()
+        const im = LOOP_INTERVAL_RE.exec(rest)
+        const interval = im ? `${im[1]}${im[2][0].toLowerCase()}` : null
+        const command = (im ? rest.slice(im[0].length).trim() : rest) || line
+        entry.win.webContents.send('pty:loop', paneId, { command, interval, raw: line })
+      }
+    } else if (code === 0x7f || code === 0x08) {
+      entry.inputLineBuf = (entry.inputLineBuf ?? '').slice(0, -1)
+    } else if (code === 0x1b) {
+      // An escape sequence (arrow keys, history, etc.) — stop buffering this chunk
+      // so its bytes don't pollute the captured line.
+      return
+    } else if (code >= 0x20) {
+      entry.inputLineBuf = ((entry.inputLineBuf ?? '') + ch).slice(-200)
+    }
+  }
 }
 
 // ── Cost parsing ─────────────────────────────────────────────────────────────
@@ -284,7 +325,7 @@ function injectMcpConfig(agentId: AgentId, cwd: string, mcpUrl: string, workspac
 // emit `pty:state` ('working'/'waiting'), notifying the OS when an agent goes
 // quiet while the window is unfocused.
 function attachPty(paneId: string, ptyProcess: pty.IPty, win: BrowserWindow, agentId?: AgentId, workspaceId?: string): void {
-  const entry: PtyEntry = { process: ptyProcess, status: 'running', replaced: false, agentId, workspaceId }
+  const entry: PtyEntry = { process: ptyProcess, status: 'running', replaced: false, agentId, workspaceId, win }
 
   const setState = (state: 'working' | 'waiting') => {
     if (entry.activity === state) return
@@ -295,7 +336,12 @@ function attachPty(paneId: string, ptyProcess: pty.IPty, win: BrowserWindow, age
     // blocked on an answer (permission prompt, y/n, selection menu).
     if (state === 'waiting' && entry.hadInput && looksLikeQuestion(entry.recentOutput ?? '')) {
       // Surface it in the in-app notification center (bell) regardless of focus.
-      if (!win.isDestroyed()) win.webContents.send('pty:attention', paneId)
+      // Broadcast to every window so the SwarmAgent desktop widget can raise its
+      // own ambient alert too — that's the whole point of the widget when the
+      // main window is minimized and its notification bell is out of sight.
+      for (const w of BrowserWindow.getAllWindows()) {
+        if (!w.isDestroyed()) w.webContents.send('pty:attention', paneId, entry.agentId ?? null)
+      }
       // Log it to the swarm timeline so "needs you" moments are reviewable later.
       if (entry.workspaceId) {
         runWithWorkspace(entry.workspaceId, () =>
@@ -523,7 +569,11 @@ export function ptyInput(paneId: string, data: string): void {
   if (!entry) return
   // Any non-empty input means the agent now has work to respond to, so a
   // subsequent quiet period is a genuine "waiting for input" worth notifying.
-  if (entry.agentId && data.length > 0) entry.hadInput = true
+  if (entry.agentId && data.length > 0) {
+    entry.hadInput = true
+    // Watch the input line for a `/loop` command so the Loops panel can show it.
+    detectLoopCommand(paneId, entry, data)
+  }
   entry.process.write(data)
 }
 

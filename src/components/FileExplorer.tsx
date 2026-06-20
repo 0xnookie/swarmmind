@@ -146,6 +146,11 @@ export function fileColor(ext: string): string {
 
 const FOLDER_COLOR = '#e8b97e'
 
+// Tighter per-level indent than the usual 16px so deep trees keep more room
+// for the actual file names before needing horizontal scroll.
+const INDENT_STEP = 12
+const BASE_PADDING = 8
+
 // ── Helper ────────────────────────────────────────────────────────────────────
 
 function rootFolderName(path: string): string {
@@ -279,7 +284,8 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
     <div
       style={{
         height: '100%',
-        overflow: 'auto',
+        overflowY: 'auto',
+        overflowX: 'auto',
         background: 'var(--bg-panel)',
         userSelect: 'none',
       }}
@@ -355,7 +361,8 @@ function TreeRow({ node, index, selectedPath, onToggle }: TreeRowProps) {
         height: 28,
         display: 'flex',
         alignItems: 'center',
-        paddingLeft: node.depth * 16,
+        paddingLeft: BASE_PADDING + node.depth * INDENT_STEP,
+        paddingRight: 10,
         gap: 6,
         cursor: 'pointer',
         background: bg,
@@ -363,7 +370,11 @@ function TreeRow({ node, index, selectedPath, onToggle }: TreeRowProps) {
         fontSize: 13,
         flexShrink: 0,
         whiteSpace: 'nowrap',
-        overflow: 'hidden',
+        // Grow to the full name width (enabling horizontal scroll) while still
+        // filling the panel so hover/selection spans the visible width.
+        width: 'max-content',
+        minWidth: '100%',
+        boxSizing: 'border-box',
         transition: 'background 80ms',
       }}
       onClick={() => onToggle(index, node)}
@@ -380,14 +391,7 @@ function TreeRow({ node, index, selectedPath, onToggle }: TreeRowProps) {
       ) : (
         <FileIcon ext={node.entry.ext} />
       )}
-      <span
-        style={{
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}
-      >
-        {node.entry.name}
-      </span>
+      <span>{node.entry.name}</span>
     </div>
   )
 }

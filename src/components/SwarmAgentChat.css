@@ -1,0 +1,327 @@
+/* SwarmAgent — premium chat surface. Built on the warm-brown tokens with a
+   gradient accent identity, soft depth, and motion. Inline styles can't express
+   :hover/:focus/keyframes, so the expressive bits live here. */
+
+.sa-root {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background:
+    radial-gradient(120% 60% at 50% -10%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%),
+    var(--bg-base);
+  overflow: hidden;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.sa-header {
+  flex-shrink: 0;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: linear-gradient(180deg, rgba(37, 34, 32, 0.6), transparent);
+  backdrop-filter: blur(6px);
+}
+.sa-brand { display: flex; align-items: center; gap: 11px; }
+
+.sa-orb {
+  position: relative;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  /* Just the brand mark cropped to a circle — no ring, only a soft glow. */
+  background: transparent;
+  box-shadow: 0 4px 12px var(--accent-glow);
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+/* The SwarmMind logo, cropped to a circle to fill the orb. */
+.sa-orb-img {
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+.sa-orb::after {
+  content: "";
+  position: absolute; inset: -5px;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--accent) 45%, transparent), transparent 70%);
+  opacity: 0.6;
+  animation: sa-orb-pulse 3.2s ease-in-out infinite;
+  z-index: -1;
+}
+.sa-orb.sa-orb-sm { width: 26px; height: 26px; box-shadow: 0 2px 8px var(--accent-glow); }
+.sa-orb.sa-orb-sm::after { animation: none; opacity: 0; }
+
+@keyframes sa-orb-pulse {
+  0%, 100% { transform: scale(1);   opacity: 0.55; }
+  50%      { transform: scale(1.18); opacity: 0.15; }
+}
+
+.sa-title { font-size: 14px; font-weight: 700; letter-spacing: 0.2px; color: var(--text-primary); line-height: 1.1; }
+.sa-status { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.sa-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success, #5cc88f); box-shadow: 0 0 6px var(--success, #5cc88f); }
+.sa-status-dot.sa-busy { background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: sa-blink 1s ease-in-out infinite; }
+
+.sa-actions { display: flex; align-items: center; gap: 6px; }
+.sa-pill, .sa-icon {
+  height: 30px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 120ms, color 120ms, border-color 120ms, transform 120ms;
+}
+.sa-icon { width: 30px; }
+.sa-pill { padding: 0 10px; font-size: 11.5px; font-weight: 600; }
+.sa-pill:hover, .sa-icon:hover { background: var(--bg-elevated); color: var(--text-primary); }
+.sa-pill:active, .sa-icon:active { transform: scale(0.94); }
+.sa-pill[data-on="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.sa-icon:disabled { opacity: 0.35; cursor: default; }
+.sa-icon:disabled:hover { background: transparent; color: var(--text-muted); }
+
+/* ── Scroll / messages ──────────────────────────────────────────────────── */
+.sa-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 18px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.sa-scroll::-webkit-scrollbar { width: 8px; }
+.sa-scroll::-webkit-scrollbar-thumb { background: var(--bg-elevated); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+.sa-scroll::-webkit-scrollbar-thumb:hover { background: var(--border-subtle); background-clip: padding-box; }
+
+.sa-row { display: flex; gap: 10px; align-items: flex-end; animation: sa-rise 280ms cubic-bezier(0.22, 1, 0.36, 1); }
+.sa-row.sa-user { justify-content: flex-end; }
+.sa-row.sa-assistant { justify-content: flex-start; }
+
+@keyframes sa-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.sa-bubble {
+  max-width: 76%;
+  padding: 10px 13px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 16px;
+}
+.sa-bubble.sa-from-user {
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 500;
+  border-bottom-right-radius: 5px;
+  box-shadow: 0 4px 14px var(--accent-glow);
+}
+.sa-bubble.sa-from-assistant {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-bottom-left-radius: 5px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+}
+
+/* Tool activity */
+.sa-tool-chip {
+  align-self: flex-start;
+  margin-left: 36px;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 12px;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+  animation: sa-rise 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sa-tool-chip code { font-family: 'JetBrains Mono', monospace; color: var(--accent); font-size: 11.5px; }
+.sa-tool-chip[data-done="true"] { background: var(--bg-panel); border-color: var(--border-subtle); }
+.sa-tool-chip[data-done="true"] svg { color: var(--success, #5cc88f); flex-shrink: 0; }
+.sa-tool-result {
+  align-self: flex-start;
+  margin-left: 36px;
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--text-muted);
+  animation: sa-rise 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sa-tool-result svg { color: var(--success, #5cc88f); flex-shrink: 0; }
+
+.sa-spinner {
+  width: 12px; height: 12px; flex-shrink: 0;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: sa-spin 0.7s linear infinite;
+}
+@keyframes sa-spin { to { transform: rotate(360deg); } }
+
+/* Thinking indicator — the brand orb breathes while a shimmer sweeps the label. */
+.sa-orb.sa-orb-thinking { animation: sa-orb-breathe 2.4s ease-in-out infinite; }
+.sa-orb.sa-orb-thinking::after {
+  animation: sa-orb-pulse 1.7s ease-in-out infinite;
+  opacity: 0.65;
+}
+@keyframes sa-orb-breathe {
+  0%, 100% { transform: scale(1);    box-shadow: 0 2px 8px var(--accent-glow); }
+  50%      { transform: scale(1.09); box-shadow: 0 4px 16px color-mix(in srgb, var(--accent) 55%, transparent); }
+}
+
+.sa-thinking { display: inline-flex; align-items: center; height: 26px; }
+.sa-thinking-label {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.2px;
+  background: linear-gradient(100deg,
+    var(--text-muted) 0%, var(--text-muted) 38%,
+    color-mix(in srgb, var(--accent) 90%, #fff) 50%,
+    var(--text-muted) 62%, var(--text-muted) 100%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+  animation: sa-shimmer 1.7s ease-in-out infinite;
+}
+@keyframes sa-shimmer {
+  0%   { background-position: 130% 0; }
+  100% { background-position: -130% 0; }
+}
+@keyframes sa-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+.sa-error {
+  align-self: flex-start; max-width: 80%;
+  padding: 9px 12px; border-radius: 11px;
+  background: color-mix(in srgb, var(--danger, #e5484d) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger, #e5484d) 35%, transparent);
+  color: var(--danger, #e5484d); font-size: 12.5px;
+}
+
+/* ── Empty / hero state ─────────────────────────────────────────────────── */
+.sa-hero {
+  margin: auto; max-width: 420px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  animation: sa-rise 400ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sa-hero .sa-orb { width: 56px; height: 56px; margin-bottom: 8px; }
+.sa-hero-title { font-size: 19px; font-weight: 700; color: var(--text-primary); letter-spacing: 0.2px; }
+.sa-hero-sub { font-size: 13px; color: var(--text-muted); line-height: 1.5; max-width: 320px; }
+.sa-suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
+.sa-suggestion {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 13px; border-radius: 11px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary); font-size: 12.5px; cursor: pointer;
+  transition: transform 130ms, border-color 130ms, background 130ms, color 130ms;
+}
+.sa-suggestion:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+.sa-suggestion svg { color: var(--accent); flex-shrink: 0; }
+
+.sa-notice {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--text-secondary); font-size: 12.5px;
+}
+.sa-notice .sa-notice-key { flex-shrink: 0; color: var(--accent); }
+.sa-notice button {
+  margin-left: auto; flex-shrink: 0;
+  padding: 6px 12px; border-radius: 8px; border: none; cursor: pointer;
+  background: var(--accent); color: var(--accent-fg); font-weight: 600; font-size: 12px;
+  transition: filter 120ms;
+}
+.sa-notice button:hover { filter: brightness(1.08); }
+
+/* ── Composer ───────────────────────────────────────────────────────────── */
+.sa-composer { flex-shrink: 0; padding: 12px 14px 14px; }
+.sa-composer-box {
+  display: flex; align-items: flex-end; gap: 8px;
+  padding: 7px 7px 7px 8px;
+  border-radius: 16px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  transition: border-color 160ms, box-shadow 160ms;
+}
+.sa-composer-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.sa-input {
+  flex: 1;
+  resize: none;
+  max-height: 140px;
+  padding: 7px 4px;
+  border: none; outline: none; background: transparent;
+  color: var(--text-primary); font-size: 13.5px; line-height: 1.5;
+  font-family: inherit;
+}
+.sa-input::placeholder { color: var(--text-dim, var(--text-muted)); }
+
+.sa-mic, .sa-send {
+  flex-shrink: 0;
+  height: 38px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 12px; cursor: pointer;
+  transition: transform 120ms, background 120ms, color 120ms, box-shadow 160ms, width 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sa-send { width: 38px; }
+.sa-mic {
+  min-width: 38px; padding: 0 9px; gap: 6px;
+  border: 1px solid var(--border-subtle); background: var(--bg-elevated); color: var(--text-secondary);
+  font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.sa-mic:hover { color: var(--text-primary); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+.sa-mic:active { transform: scale(0.92); }
+.sa-mic[data-active="true"] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Pulsing ring only while actually recording (not loading/transcribing). */
+.sa-mic[data-recording="true"] { animation: sa-mic-ring 1.6s ease-out infinite; }
+@keyframes sa-mic-ring {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  70%  { box-shadow: 0 0 0 9px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.sa-mic-load { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sa-mic-wave { display: inline-flex; align-items: center; gap: 2px; height: 16px; }
+.sa-mic-wave i {
+  display: block; width: 3px; height: 14px;
+  background: currentColor; border-radius: 2px;
+  transform-origin: center;
+}
+
+.sa-send {
+  border: none;
+  background: var(--accent);
+  color: var(--accent-fg);
+  box-shadow: 0 4px 12px var(--accent-glow);
+}
+.sa-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 16px var(--accent-glow); }
+.sa-send:active:not(:disabled) { transform: scale(0.92); }
+.sa-send:disabled { background: var(--bg-elevated); color: var(--text-dim, var(--text-muted)); box-shadow: none; cursor: default; }
+
+/* Stop button shown while a turn is generating — neutral, not a primary action. */
+.sa-send.sa-stop {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  box-shadow: none;
+}
+.sa-send.sa-stop:hover { transform: none; border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); }
+.sa-send.sa-stop:active { transform: scale(0.92); }

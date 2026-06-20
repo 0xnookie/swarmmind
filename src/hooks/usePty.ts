@@ -62,6 +62,17 @@ function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, '')
 }
 
+// Module-level reader for a pane's recent terminal output, ANSI-stripped and
+// tail-trimmed. Backed by the same `rawOutputCache` the per-pane hook uses, so
+// it works for any pane regardless of whether its component is mounted — which
+// lets non-pane callers (e.g. the SwarmAgent tools) "read" what an agent is
+// doing without holding a usePty() instance. Returns '' for an unknown pane.
+export function readPaneOutput(paneId: string, maxChars = 4000): string {
+  const raw = rawOutputCache.get(paneId) ?? ''
+  const text = stripAnsi(raw).replace(/\n{3,}/g, '\n\n').trimEnd()
+  return text.length > maxChars ? text.slice(-maxChars) : text
+}
+
 interface UsePtyOptions {
   // Called when the pane's process exits. When provided, the caller fully owns
   // the exit reaction (e.g. respawning a shell); the default "[process exited]"
@@ -342,11 +353,7 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
   }, [])
 
   // Recent terminal output for this pane, ANSI-stripped, trimmed to maxChars.
-  const getRecentOutput = useCallback((maxChars = 4000) => {
-    const raw = rawOutputCache.get(paneId) ?? ''
-    const text = stripAnsi(raw).replace(/\n{3,}/g, '\n\n').trimEnd()
-    return text.length > maxChars ? text.slice(-maxChars) : text
-  }, [paneId])
+  const getRecentOutput = useCallback((maxChars = 4000) => readPaneOutput(paneId, maxChars), [paneId])
 
   return { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, copySelection, paste, getRecentOutput, findNext, findPrevious, clearSearch }
 }

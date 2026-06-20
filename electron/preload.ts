@@ -33,10 +33,17 @@ contextBridge.exposeInMainWorld('swarmmind', {
   // Fires only when an agent goes quiet *with a pending question* (permission
   // prompt / y-n / selection), as opposed to merely finishing a turn. Drives the
   // notification center so the bell isn't spammed after every turn.
-  onPtyAttention: (cb: (paneId: string) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, paneId: string) => cb(paneId)
+  onPtyAttention: (cb: (paneId: string, agentId: string | null) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, paneId: string, agentId: string | null) => cb(paneId, agentId ?? null)
     ipcRenderer.on('pty:attention', handler)
     return () => ipcRenderer.off('pty:attention', handler)
+  },
+  // Fires when a `/loop` command is detected in a pane's input, so the renderer
+  // can surface the CLI-started loop in the Loops panel.
+  onPtyLoop: (cb: (paneId: string, info: { command: string; interval: string | null; raw: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, paneId: string, info: { command: string; interval: string | null; raw: string }) => cb(paneId, info)
+    ipcRenderer.on('pty:loop', handler)
+    return () => ipcRenderer.off('pty:loop', handler)
   },
 
   memoryList: (type?: string, agentId?: string) =>
@@ -125,6 +132,36 @@ contextBridge.exposeInMainWorld('swarmmind', {
 
   getAppSetting: (key: string) => ipcRenderer.invoke('appsetting:get', key),
   setAppSetting: (key: string, value: string) => ipcRenderer.invoke('appsetting:set', key, value),
+
+  // SwarmAgent — the in-app assistant. Its Groq key stays in the main process;
+  // the renderer drives the agentic loop one turn at a time via swarmAgentChat
+  // and receives streamed text via onSwarmAgentDelta.
+  swarmAgentHasKey: () => ipcRenderer.invoke('swarmAgent:hasKey'),
+  swarmAgentSetKey: (key: string) => ipcRenderer.invoke('swarmAgent:setKey', key),
+  swarmAgentChat: (requestId: string, messages: unknown[], tools: unknown[]) =>
+    ipcRenderer.invoke('swarmAgent:chat', requestId, messages, tools),
+  onSwarmAgentDelta: (cb: (data: { requestId: string; text: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { requestId: string; text: string }) => cb(data)
+    ipcRenderer.on('swarmagent:delta', handler)
+    return () => ipcRenderer.off('swarmagent:delta', handler)
+  },
+
+  // SwarmAgent desktop widget. The widget is a separate frameless window that
+  // hosts just the chat; it controls its own visibility and forwards tool calls
+  // to the main window (which owns the workspace state).
+  widgetShow: () => ipcRenderer.send('widget:show'),
+  widgetHide: () => ipcRenderer.send('widget:hide'),
+  widgetRestoreMain: () => ipcRenderer.send('widget:restoreMain'),
+  widgetResize: (height: number) => ipcRenderer.send('widget:resize', height),
+  widgetForwardTool: (name: string, args: string): Promise<string> =>
+    ipcRenderer.invoke('widget:forwardTool', name, args),
+  // Main window only: run a tool the widget asked for, then reply with the id.
+  onWidgetRunTool: (cb: (req: { id: string; name: string; args: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, req: { id: string; name: string; args: string }) => cb(req)
+    ipcRenderer.on('widget:runTool', handler)
+    return () => ipcRenderer.off('widget:runTool', handler)
+  },
+  widgetToolResult: (id: string, result: string) => ipcRenderer.send('widget:toolResult', id, result),
 
   // Best-effort live refresh of the coding-agent benchmarks leaderboard.
   fetchBenchmarks: () => ipcRenderer.invoke('benchmarks:fetch'),

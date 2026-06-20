@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Tray, nativeImage, shell, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, Tray, nativeImage, shell, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import { initAppDb, closeAll } from '../memory/db'
 import { getAppState } from '../memory/queries'
@@ -15,6 +15,7 @@ import { registerEventHandlers } from './ipc/events'
 import { registerCheckpointHandlers } from './ipc/checkpoints'
 import { registerVoiceCacheHandlers } from './ipc/voice-cache'
 import { registerBenchmarkHandlers } from './ipc/benchmarks'
+import { registerSwarmAgentHandlers } from './ipc/swarmagent'
 import { registerUpdater } from './updater'
 import { killAll } from './pty-manager'
 import { existsSync, mkdirSync } from 'fs'
@@ -43,7 +44,15 @@ function initApp(): void {
 // ── Window ────────────────────────────────────────────────────────────────────
 
 let mainWindow: BrowserWindow | null = null
+let widgetWindow: BrowserWindow | null = null
 let tray: Tray | null = null
+// True once the user explicitly dismisses the widget, so we don't keep
+// re-popping it every time the main window minimizes.
+let widgetDismissed = false
+// In-flight widget→main-window tool calls, keyed by a correlation id, resolved
+// when the main window replies via the widget:toolResult channel.
+const pendingWidgetTools = new Map<string, (result: string) => void>()
+let widgetToolSeq = 0
 
 // Resolve the runtime window icon (taskbar / Alt-Tab). Packaged: shipped via
 // extraResources at process.resourcesPath. Dev: the source under resources/
@@ -79,6 +88,14 @@ function createWindow(): BrowserWindow {
     if (process.env.NODE_ENV === 'development') win.webContents.openDevTools()
   })
 
+  // Float the chat widget in whenever the main window steps aside, and tuck it
+  // away again when the user comes back to the full app.
+  win.on('minimize', onMainWindowAway)
+  win.on('hide', onMainWindowAway)
+  win.on('restore', hideWidget)
+  win.on('show', hideWidget)
+  win.on('focus', hideWidget)
+
   // Allow microphone access for SwarmVoice speech recognition
   win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => {
     callback(true)
@@ -96,6 +113,83 @@ function createWindow(): BrowserWindow {
   }
 
   return win
+}
+
+// ── SwarmAgent desktop widget ─────────────────────────────────────────────────
+// A small frameless, always-on-top floating window that hosts just the
+// SwarmAgent chat. It loads the same renderer bundle with a `#widget` hash so
+// the renderer mounts the compact widget instead of the full app. It auto-shows
+// when the main window minimizes or hides to the tray, so the assistant stays a
+// click away even when SwarmMind is out of the way. Drag it anywhere via its
+// header (CSS -webkit-app-region: drag). Tool calls it makes are forwarded to
+// the main window (which owns the real workspace state) — see widget:forwardTool.
+
+function widgetUrl(): string {
+  const base = process.env['ELECTRON_RENDERER_URL']
+  return base ? `${base}#widget` : ''
+}
+
+function createWidgetWindow(): BrowserWindow {
+  // A slim floating bar near the bottom-right of the primary work area. It
+  // starts collapsed (just the input bar) and grows upward when a conversation
+  // is on screen — the renderer drives height via the widget:resize channel.
+  const wa = screen.getPrimaryDisplay().workArea
+  const W = 420, H = 70, MARGIN = 16
+
+  const win = new BrowserWindow({
+    width: W,
+    height: H,
+    x: wa.x + wa.width - W - MARGIN,
+    y: wa.y + wa.height - H - MARGIN,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#00000000',
+    icon: resolveIconPath(),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  })
+
+  win.setAlwaysOnTop(true, 'floating')
+  // SwarmVoice needs the microphone in the widget window too.
+  win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(true))
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  const url = widgetUrl()
+  if (url) win.loadURL(url)
+  else win.loadFile(join(__dirname, '../renderer/index.html'), { hash: 'widget' })
+
+  win.on('closed', () => { widgetWindow = null })
+  return win
+}
+
+function showWidget(): void {
+  widgetDismissed = false
+  if (!widgetWindow || widgetWindow.isDestroyed()) widgetWindow = createWidgetWindow()
+  widgetWindow.show()
+  widgetWindow.setAlwaysOnTop(true, 'floating')
+}
+
+function hideWidget(): void {
+  if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.hide()
+}
+
+// Auto-show the widget whenever the main window steps out of the way (minimize
+// or hide-to-tray), unless the user has explicitly dismissed it this session.
+function onMainWindowAway(): void {
+  if (!widgetDismissed) showWidget()
 }
 
 // ── System tray ─────────────────────────────────────────────────────────────────
@@ -125,6 +219,7 @@ function createTray(): void {
   tray.setToolTip('SwarmMind')
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show SwarmMind', click: () => showMainWindow() },
+    { label: 'Show Chat Widget', click: () => showWidget() },
     { type: 'separator' },
     { label: 'Quit', click: () => app.quit() }
   ]))
@@ -208,6 +303,7 @@ app.whenReady().then(async () => {
   registerAgentSkillHandlers()
   registerVoiceCacheHandlers()
   registerBenchmarkHandlers()
+  registerSwarmAgentHandlers(() => mainWindow)
 
   ipcMain.handle('app:version', () => app.getVersion())
 
@@ -219,6 +315,39 @@ app.whenReady().then(async () => {
   ipcMain.on('window:close', () => {
     if (closeToTrayEnabled() && tray) mainWindow?.hide()
     else mainWindow?.close()
+  })
+
+  // ── Desktop widget control + tool forwarding ──
+  ipcMain.on('widget:show', () => showWidget())
+  ipcMain.on('widget:hide', () => { widgetDismissed = true; hideWidget() })
+  ipcMain.on('widget:restoreMain', () => { hideWidget(); showMainWindow() })
+  // The widget is a slim bar that grows upward when a conversation is showing.
+  // Resize anchored to its bottom edge so it expands above the bar, not below.
+  ipcMain.on('widget:resize', (_e, height: number) => {
+    if (!widgetWindow || widgetWindow.isDestroyed()) return
+    const b = widgetWindow.getBounds()
+    const h = Math.max(56, Math.round(height))
+    widgetWindow.setBounds({ x: b.x, y: b.y + b.height - h, width: b.width, height: h }, false)
+  })
+
+  // The widget runs its own SwarmAgent loop but has no workspace state of its
+  // own, so it forwards each tool call here; we relay it to the main window
+  // (which owns the Zustand store + PTYs), await the result, and hand it back.
+  ipcMain.handle('widget:forwardTool', (_e, name: string, args: string) => {
+    if (!mainWindow || mainWindow.isDestroyed())
+      return 'SwarmMind\'s main window is closed — open it from the tray to run that action.'
+    const id = `wt-${widgetToolSeq++}`
+    return new Promise<string>((resolve) => {
+      const timer = setTimeout(() => {
+        if (pendingWidgetTools.delete(id)) resolve('That action timed out.')
+      }, 60_000)
+      pendingWidgetTools.set(id, (result) => { clearTimeout(timer); resolve(result) })
+      mainWindow!.webContents.send('widget:runTool', { id, name, args })
+    })
+  })
+  ipcMain.on('widget:toolResult', (_e, id: string, result: string) => {
+    const fn = pendingWidgetTools.get(id)
+    if (fn) { pendingWidgetTools.delete(id); fn(result) }
   })
 
   buildMenu()
@@ -242,6 +371,8 @@ app.on('window-all-closed', async () => {
 })
 
 app.on('before-quit', async () => {
+  if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.destroy()
+  widgetWindow = null
   tray?.destroy()
   tray = null
   killAll()

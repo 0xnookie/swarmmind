@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { FileExplorer, fileColor } from './FileExplorer'
 import { FileEditor } from './FileEditor'
@@ -43,6 +43,16 @@ function relativeTo(root: string, filePath: string): string {
   return f.toLowerCase().startsWith(r.toLowerCase() + '/') ? f.slice(r.length + 1) : f
 }
 
+// File-tree sidebar width is user-resizable and remembered between sessions.
+const TREE_WIDTH_KEY = 'swarmmind.fileTreeWidth'
+const TREE_MIN_WIDTH = 180
+const TREE_MAX_WIDTH = 600
+const TREE_DEFAULT_WIDTH = 240
+
+function clampTreeWidth(w: number): number {
+  return Math.max(TREE_MIN_WIDTH, Math.min(TREE_MAX_WIDTH, w))
+}
+
 export function FilePanel() {
   const t = useT()
   const workspace = useWorkspaceStore((s) => s.workspace)
@@ -50,6 +60,46 @@ export function FilePanel() {
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
   const [activePath, setActivePath] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+
+  // Resizable file-tree width (drag the divider; persisted to localStorage).
+  const [treeWidth, setTreeWidth] = useState(() => {
+    const stored = Number(localStorage.getItem(TREE_WIDTH_KEY))
+    return stored ? clampTreeWidth(stored) : TREE_DEFAULT_WIDTH
+  })
+  const [resizing, setResizing] = useState(false)
+  const resizeStart = useRef<{ x: number; width: number } | null>(null)
+
+  useEffect(() => {
+    if (!resizing) return
+    const onMove = (e: MouseEvent) => {
+      if (!resizeStart.current) return
+      const delta = e.clientX - resizeStart.current.x
+      setTreeWidth(clampTreeWidth(resizeStart.current.width + delta))
+    }
+    const onUp = () => {
+      setResizing(false)
+      resizeStart.current = null
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [resizing])
+
+  useEffect(() => {
+    localStorage.setItem(TREE_WIDTH_KEY, String(treeWidth))
+  }, [treeWidth])
+
+  const startResize = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      resizeStart.current = { x: e.clientX, width: treeWidth }
+      setResizing(true)
+    },
+    [treeWidth]
+  )
 
   const active = openFiles.find((f) => f.path === activePath) ?? null
 
@@ -148,22 +198,44 @@ export function FilePanel() {
         overflow: 'hidden',
       }}
     >
-      {/* Left: file tree */}
+      {/* Left: file tree (resizable) */}
       <div
         style={{
-          width: 240,
+          width: treeWidth,
           flexShrink: 0,
           background: 'var(--bg-panel)',
-          borderRight: '1px solid var(--border-subtle)',
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',
+          position: 'relative',
         }}
       >
         <FileExplorer
           rootPath={workspace.rootPath}
           onFileSelect={handleFileSelect}
           selectedPath={activePath}
+        />
+        {/* Drag handle: widen the tree so deep paths stay readable */}
+        <div
+          onMouseDown={startResize}
+          title="Drag to resize"
+          style={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            width: 6,
+            height: '100%',
+            cursor: 'col-resize',
+            background: resizing ? 'var(--accent)' : 'var(--border-subtle)',
+            transition: resizing ? 'none' : 'background 120ms',
+            zIndex: 2,
+          }}
+          onMouseEnter={(e) => {
+            if (!resizing) e.currentTarget.style.background = 'var(--accent)'
+          }}
+          onMouseLeave={(e) => {
+            if (!resizing) e.currentTarget.style.background = 'var(--border-subtle)'
+          }}
         />
       </div>
 

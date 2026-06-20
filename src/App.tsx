@@ -12,6 +12,8 @@ import { SwarmTimeline } from './components/SwarmTimeline'
 import { ChangesPanel } from './components/ChangesPanel'
 import { CheckpointPanel } from './components/CheckpointPanel'
 import { BenchmarksPanel } from './components/BenchmarksPanel'
+import { SwarmAgentChat } from './components/SwarmAgentChat'
+import { LoopsPanel } from './components/LoopsPanel'
 import { StartScreen } from './components/StartScreen'
 import { SettingsModal } from './components/SettingsModal'
 import { WorkspaceSetupModal } from './components/WorkspaceSetupModal'
@@ -20,6 +22,8 @@ import { LoadingOverlay } from './components/LoadingOverlay'
 import { UpdateBanner } from './components/UpdateBanner'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { useConductor } from './hooks/useConductor'
+import { useLoops } from './hooks/useLoops'
+import { useWidgetBridge } from './hooks/useWidgetBridge'
 import { useWorkspaceStore, buildLayoutForCount, selectTerminalsVisible, type AgentId, type ShellStyle } from './store/workspace'
 import { SHORTCUTS, matchEvent, getEffectiveKeys } from './shortcuts'
 import type { ThemePreset, UiDensity, UiFontId, MonoFontId } from './appearance'
@@ -38,6 +42,8 @@ export default function App() {
   const changesOpen = useWorkspaceStore(s => s.changesOpen)
   const checkpointsOpen = useWorkspaceStore(s => s.checkpointsOpen)
   const benchmarksOpen = useWorkspaceStore(s => s.benchmarksOpen)
+  const swarmAgentOpen = useWorkspaceStore(s => s.swarmAgentOpen)
+  const loopsOpen = useWorkspaceStore(s => s.loopsOpen)
   const toggleMemoryPanel = useWorkspaceStore(s => s.toggleMemoryPanel)
   const setupModalOpen = useWorkspaceStore(s => s.setupModalOpen)
   const openSetupModal = useWorkspaceStore(s => s.openSetupModal)
@@ -50,6 +56,10 @@ export default function App() {
   // The orchestration control loop (Conductor + Lead). Inactive until the user
   // picks a mode in the OrchestratorBar.
   useConductor()
+  // The loop runner — fires recurring prompt schedules into agent panes.
+  useLoops()
+  // Execute tool calls forwarded from the SwarmAgent desktop widget.
+  useWidgetBridge()
 
   useEffect(() => {
     window.swarmmind.workspaceOpenLast().then((ws) => {
@@ -143,7 +153,13 @@ export default function App() {
     // (a question/prompt was detected), so record it for the notification center
     // (deduped per pane while still unread).
     const unsubAttention = window.swarmmind.onPtyAttention((paneId) => addPaneNotification(paneId))
-    const unsubExit = window.swarmmind.onPtyExit((paneId) => setPaneAttention(paneId, null))
+    // A `/loop` typed into a pane's CLI — surface it (read-only) in the Loops panel.
+    const unsubLoop = window.swarmmind.onPtyLoop((paneId, info) =>
+      useWorkspaceStore.getState().addCliLoop(paneId, info.command, info.interval))
+    const unsubExit = window.swarmmind.onPtyExit((paneId) => {
+      setPaneAttention(paneId, null)
+      useWorkspaceStore.getState().clearPaneCliLoops(paneId)
+    })
     // Keep cost + contention state fresh from swarm events even when their
     // overlays aren't open (drives the TopBar cost pill and contention dot).
     const unsubEvent = window.swarmmind.onSwarmEvent((ev) => {
@@ -162,7 +178,7 @@ export default function App() {
         if (path) useWorkspaceStore.getState().addContendedPath(path)
       }
     })
-    return () => { unsubState(); unsubAttention(); unsubExit(); unsubEvent() }
+    return () => { unsubState(); unsubAttention(); unsubLoop(); unsubExit(); unsubEvent() }
   }, [])
 
   // Global shortcuts, dispatched from the central registry so they honour any
@@ -257,6 +273,14 @@ export default function App() {
         ) : benchmarksOpen ? (
           <ErrorBoundary label="BenchmarksPanel">
             <BenchmarksPanel />
+          </ErrorBoundary>
+        ) : swarmAgentOpen ? (
+          <ErrorBoundary label="SwarmAgentChat">
+            <SwarmAgentChat />
+          </ErrorBoundary>
+        ) : loopsOpen ? (
+          <ErrorBoundary label="LoopsPanel">
+            <LoopsPanel />
           </ErrorBoundary>
         ) : filePanelOpen ? (
           <ErrorBoundary label="FilePanel">

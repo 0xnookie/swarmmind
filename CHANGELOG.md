@@ -6,6 +6,33 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.10.0]
+
+### Added
+- **SwarmAgent — an in-app AI assistant (chat + voice)** that can actually drive
+  the app. Ask it to "open a workspace with 4 agents", "tell Claude to run the
+  tests and report back", or "what did the agents change?" and it acts. It can
+  set up/add agent panes, broadcast or target prompts, read a pane's terminal
+  output, wait for an agent to finish, interrupt a runaway agent, manage Kanban
+  tasks, drive shared memory, navigate views, and run the orchestrator — with
+  streaming replies, voice in/out, persisted history, Stop, and Regenerate.
+- **SwarmAgent desktop widget** — a small frameless, always-on-top floating chat
+  bar so the assistant stays reachable when the main window is minimized or
+  hidden to the tray. It matches your chosen appearance, supports voice, grows
+  from a slim bar into a transcript as you chat, and is draggable anywhere on the
+  desktop. When an agent is blocked waiting on your input, the widget shows a
+  pulsing alert (with the agent's name/icon) so you never miss it.
+- **Loops — recurring prompt schedules** — save a prompt and have SwarmMind
+  re-inject it into a chosen agent pane (or all running agents) every N seconds.
+  Manage them from the new Loops panel, with run counts, next-run countdowns, and
+  pause/resume. SwarmAgent can create and control loops for you too. SwarmMind
+  also detects `/loop` commands typed into a terminal and lists them read-only.
+
+### Changed
+- **Bigger surface for the assistant** — new TopBar entry points for SwarmAgent
+  and Loops, plus expanded SwarmAgent tools spanning agents, tasks, memory,
+  views, changes, and orchestration.
+
 ## [0.9.0]
 
 ### Added

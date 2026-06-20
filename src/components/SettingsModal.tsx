@@ -139,6 +139,10 @@ export function SettingsModal() {
   const [closeTray, setCloseTray] = useState(storeCloseToTray)
   const [voiceModelDraft, setVoiceModelDraft] = useState<VoiceModel>(storeVoiceModel)
   const [voicePreloadDraft, setVoicePreloadDraft] = useState(storeVoicePreload)
+  // SwarmAgent (Groq) — key is write-only (never read back); model is plain.
+  const [swarmAgentKeyDraft, setSwarmAgentKeyDraft] = useState('')
+  const [swarmAgentHasKey, setSwarmAgentHasKey] = useState(false)
+  const [swarmAgentModelDraft, setSwarmAgentModelDraft] = useState('')
   // Terminal-section draft
   const [fontSize, setFontSize] = useState(storeFontSize)
   const [cursorBlink, setCursorBlink] = useState(storeCursorBlink)
@@ -184,6 +188,9 @@ export function SettingsModal() {
     setCloseTray(storeCloseToTray)
     setVoiceModelDraft(storeVoiceModel)
     setVoicePreloadDraft(storeVoicePreload)
+    setSwarmAgentKeyDraft('')
+    window.swarmmind.swarmAgentHasKey().then(setSwarmAgentHasKey).catch(() => {})
+    window.swarmmind.getAppSetting('swarmAgentModel').then(val => setSwarmAgentModelDraft(val ?? '')).catch(() => {})
     setRecordingId(null)
     setAccentDraft(useWorkspaceStore.getState().accentColor ?? '')
 
@@ -257,6 +264,12 @@ export function SettingsModal() {
       setCloseToTray(closeTray)
       setVoiceModelStore(voiceModelDraft)
       setVoicePreloadStore(voicePreloadDraft)
+      if (swarmAgentKeyDraft.trim()) {
+        await window.swarmmind.swarmAgentSetKey(swarmAgentKeyDraft.trim())
+        setSwarmAgentHasKey(true)
+        setSwarmAgentKeyDraft('')
+      }
+      await window.swarmmind.setAppSetting('swarmAgentModel', swarmAgentModelDraft.trim())
     }
     if (terminalDirty) {
       setTerminalFontSize(fontSize)
@@ -282,7 +295,7 @@ export function SettingsModal() {
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, agentAccounts, shell, defaultAgent, idleSeconds, closeTray,
-      voiceModelDraft, voicePreloadDraft, setVoiceModelStore, setVoicePreloadStore,
+      voiceModelDraft, voicePreloadDraft, setVoiceModelStore, setVoicePreloadStore, swarmAgentKeyDraft, swarmAgentModelDraft,
       fontSize, cursorBlink, setShellStyle, setDefaultAgentId, setTerminalFontSize, setTerminalCursorBlink, setCloseToTray])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -536,6 +549,35 @@ export function SettingsModal() {
                       </React.Fragment>
                     ))}.
                   </p>
+                </Group>
+
+                <Group title={t('settings.swarmAgent.group')}>
+                  <FieldLabel htmlFor="swarmagent-key">{t('settings.swarmAgent.apiKey')}</FieldLabel>
+                  <input
+                    id="swarmagent-key"
+                    type="password"
+                    style={styles.input}
+                    autoComplete="off"
+                    value={swarmAgentKeyDraft}
+                    placeholder={swarmAgentHasKey ? '••••••••••••' : 'gsk_…'}
+                    onChange={e => { setSwarmAgentKeyDraft(e.target.value); setGeneralDirty(true) }}
+                  />
+                  <p style={styles.desc}>
+                    {swarmAgentHasKey && !swarmAgentKeyDraft
+                      ? t('settings.swarmAgent.apiKeyConfigured')
+                      : t('settings.swarmAgent.apiKeyDesc')}
+                  </p>
+
+                  <FieldLabel htmlFor="swarmagent-model">{t('settings.swarmAgent.model')}</FieldLabel>
+                  <input
+                    id="swarmagent-model"
+                    type="text"
+                    style={styles.input}
+                    value={swarmAgentModelDraft}
+                    placeholder="llama-3.3-70b-versatile"
+                    onChange={e => { setSwarmAgentModelDraft(e.target.value); setGeneralDirty(true) }}
+                  />
+                  <p style={styles.desc}>{t('settings.swarmAgent.modelDesc')}</p>
                 </Group>
 
                 <UpdatesSection t={t} />
