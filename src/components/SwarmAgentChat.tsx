@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { useWorkspaceStore } from '../store/workspace'
+import { useWorkspaceStore, type PaneNode } from '../store/workspace'
 import { useSwarmAgent } from '../hooks/useSwarmAgent'
 import { useVoice } from '../hooks/useVoice'
 import { useT, type TFunction } from '../i18n'
@@ -12,6 +12,15 @@ import './SwarmAgentChat.css'
 export function SwarmAgentChat() {
   const t = useT()
   const openSettings = useWorkspaceStore(s => s.openSettings)
+  const workspace = useWorkspaceStore(s => s.workspace)
+  const rootPane = useWorkspaceStore(s => s.rootPane)
+  // Context-aware empty-state chips: orient a newcomer, then nudge toward setup,
+  // then toward acting on running agents — so the suggestions stay relevant.
+  const suggestions = !workspace
+    ? NEW_USER_SUGGESTIONS
+    : countRunningAgents(rootPane) > 0
+      ? ACTIVE_SUGGESTIONS
+      : WORKSPACE_SUGGESTIONS
   const { messages, streaming, sending, error, ttsEnabled, setTtsEnabled, send, stop, regenerate, canRegenerate, clear } = useSwarmAgent()
   const [input, setInput] = useState('')
   const [hasKey, setHasKey] = useState(true)
@@ -93,7 +102,7 @@ export function SwarmAgentChat() {
             <RegenIcon />
           </button>
           <button className="sa-icon" title={t('swarmAgent.clear')} onClick={clear} disabled={!messages.length}>
-            <BroomIcon />
+            <TrashIcon />
           </button>
         </div>
       </header>
@@ -113,7 +122,7 @@ export function SwarmAgentChat() {
             <div className="sa-hero-title">{t('swarmAgent.heroTitle')}</div>
             <div className="sa-hero-sub">{t('swarmAgent.heroSub')}</div>
             <div className="sa-suggestions">
-              {SUGGESTIONS.map(s => (
+              {suggestions.map(s => (
                 <button key={s.key} className="sa-suggestion" onClick={() => send(t(s.key))}>
                   {s.icon}
                   {t(s.key)}
@@ -242,14 +251,36 @@ function WaveformBars({ levels }: { levels: number[] }) {
   )
 }
 
-// Suggestion chips shown on the empty state — clicking sends the prompt.
-const SUGGESTIONS: { key: TKey; icon: React.ReactNode }[] = [
-  { key: 'swarmAgent.suggest.openWorkspace', icon: <FolderIcon /> },
-  { key: 'swarmAgent.suggest.addAgents', icon: <PlusIcon /> },
-  { key: 'swarmAgent.suggest.listWorkspaces', icon: <ListIcon /> },
-  { key: 'swarmAgent.suggest.broadcast', icon: <BroadcastIcon /> },
-]
+// Suggestion chips shown on the empty state — clicking sends the prompt. Three
+// sets, chosen by workspace state so the assistant proposes a relevant next step.
 type TKey = Parameters<TFunction>[0]
+type Suggestion = { key: TKey; icon: React.ReactNode }
+
+// No workspace open yet — orient a brand-new user.
+const NEW_USER_SUGGESTIONS: Suggestion[] = [
+  { key: 'swarmAgent.suggest.openWorkspace', icon: <FolderIcon /> },
+  { key: 'swarmAgent.suggest.listWorkspaces', icon: <ListIcon /> },
+  { key: 'swarmAgent.suggest.whatCanYouDo', icon: <InfoIcon /> },
+]
+// Workspace open but nothing running — nudge toward putting agents to work.
+const WORKSPACE_SUGGESTIONS: Suggestion[] = [
+  { key: 'swarmAgent.suggest.addAgents', icon: <PlusIcon /> },
+  { key: 'swarmAgent.suggest.status', icon: <ActivityIcon /> },
+  { key: 'swarmAgent.suggest.whatCanYouDo', icon: <InfoIcon /> },
+]
+// Agents are running — suggest acting on them.
+const ACTIVE_SUGGESTIONS: Suggestion[] = [
+  { key: 'swarmAgent.suggest.status', icon: <ActivityIcon /> },
+  { key: 'swarmAgent.suggest.changes', icon: <ListIcon /> },
+  { key: 'swarmAgent.suggest.reviewWork', icon: <BranchIcon /> },
+  { key: 'swarmAgent.suggest.checkpoint', icon: <FlagIcon /> },
+]
+
+// Count running agent panes in the layout tree (drives which chip set shows).
+function countRunningAgents(node: PaneNode): number {
+  if (node.type === 'leaf') return node.agentId && node.ptyStatus === 'running' ? 1 : 0
+  return node.children.reduce((n, c) => n + countRunningAgents(c), 0)
+}
 
 // ── Icons ───────────────────────────────────────────────────────────────────
 const ico = (w: number) => ({ width: w, height: w, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.9, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true })
@@ -261,14 +292,17 @@ function OrbMark() {
 }
 function SpeakerOnIcon() { return <svg {...ico(15)}><path d="M11 5 6 9H2v6h4l5 4z" /><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14" /></svg> }
 function SpeakerOffIcon() { return <svg {...ico(15)}><path d="M11 5 6 9H2v6h4l5 4z" /><path d="m22 9-6 6M16 9l6 6" /></svg> }
-function BroomIcon() { return <svg {...ico(15)}><path d="M19.4 4.6 14 10M9 21l-2.5-2.5M3 21s1-4 3.5-6.5L11 18c-2.5 2.5-6.5 3-8 3M13 9l2 2" /></svg> }
+function TrashIcon() { return <svg {...ico(15)}><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" /></svg> }
 function KeyIcon() { return <svg {...ico(18)}><circle cx="7.5" cy="15.5" r="4.5" /><path d="m10.5 12.5 8-8M16 7l2 2M19 4l2 2" /></svg> }
 function MicIcon() { return <svg {...ico(17)}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg> }
 function SendIcon() { return <svg {...ico(17)}><path d="M12 19V5M5 12l7-7 7 7" /></svg> }
 function StopIcon() { return <svg {...ico(16)} fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg> }
-function RegenIcon() { return <svg {...ico(15)}><path d="M3 2v6h6M21 12a9 9 0 1 1-3-6.7L21 8" /></svg> }
+function RegenIcon() { return <svg {...ico(15)}><path d="M21 5v5h-5M3 19v-5h5" /><path d="M19.4 9A7.5 7.5 0 0 0 6.3 6.3L3 9m18 6-3.3 2.7A7.5 7.5 0 0 1 4.6 15" /></svg> }
 function CheckIcon() { return <svg {...ico(13)}><path d="M20 6 9 17l-5-5" /></svg> }
 function FolderIcon() { return <svg {...ico(14)}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg> }
 function PlusIcon() { return <svg {...ico(14)}><path d="M12 5v14M5 12h14" /></svg> }
 function ListIcon() { return <svg {...ico(14)}><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></svg> }
-function BroadcastIcon() { return <svg {...ico(14)}><circle cx="12" cy="12" r="2" /><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19 5a10 10 0 0 1 0 14M5 19A10 10 0 0 1 5 5" /></svg> }
+function InfoIcon() { return <svg {...ico(14)}><circle cx="12" cy="12" r="9" /><path d="M12 16v-4M12 8h.01" /></svg> }
+function ActivityIcon() { return <svg {...ico(14)}><path d="M22 12h-4l-3 9L9 3l-3 9H2" /></svg> }
+function BranchIcon() { return <svg {...ico(14)}><circle cx="6" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="8" r="3" /><path d="M18 11a6 6 0 0 1-6 6H9M6 9v6" /></svg> }
+function FlagIcon() { return <svg {...ico(14)}><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1zM4 22v-7" /></svg> }

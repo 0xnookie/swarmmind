@@ -199,6 +199,7 @@ export default function App() {
           case 'broadcast': if (selectTerminalsVisible(s)) s.toggleBroadcastBar(); break
           case 'settings': s.openSettings(); break
           case 'new-pane': s.addPane(); break
+          case 'swarm-agent': s.toggleSwarmAgent(); break
         }
         return
       }

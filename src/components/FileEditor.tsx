@@ -17,6 +17,9 @@ export interface FileEditorProps {
   isDirty: boolean
   onChange: (newContent: string) => void
   onSave: () => void
+  /** Total dirty tabs open (drives the "Save all" affordance). */
+  dirtyCount: number
+  onSaveAll: () => void
 }
 
 interface CursorInfo {
@@ -52,6 +55,8 @@ export function FileEditor({
   isDirty,
   onChange,
   onSave,
+  dirtyCount,
+  onSaveAll,
 }: FileEditorProps) {
   const t = useT()
   const [langExt, setLangExt] = useState<Extension | null>(null)
@@ -216,6 +221,26 @@ export function FileEditor({
         )}
 
         <span>{langName ?? t('file.plainText')}</span>
+
+        {dirtyCount > 1 && (
+          <button
+            onClick={onSaveAll}
+            style={{
+              height: 18,
+              padding: '0 8px',
+              fontSize: 10.5,
+              fontWeight: 600,
+              border: '1px solid var(--border)',
+              borderRadius: 3,
+              cursor: 'pointer',
+              background: 'transparent',
+              color: 'var(--text-secondary)',
+            }}
+            title={t('file.saveAll', { n: dirtyCount })}
+          >
+            {t('file.saveAll', { n: dirtyCount })}
+          </button>
+        )}
 
         <button
           onClick={onSave}

@@ -4,13 +4,11 @@
 // window.swarmmind IPC. Keep the set small and high-value; the assistant can
 // always just talk when no tool fits.
 
-import { useWorkspaceStore, buildLayoutForCount, type AgentId, type PaneNode, type PaneLeaf } from '../store/workspace'
+import { useWorkspaceStore, buildLayoutForCount, AGENT_IDS, type AgentId, type PaneNode, type PaneLeaf } from '../store/workspace'
 import { readPaneOutput } from '../hooks/usePty'
 
-const AGENT_IDS: AgentId[] = ['claude', 'codex', 'cursor', 'windsurf', 'kilo', 'opencode', 'cline']
-
 function isAgentId(v: unknown): v is AgentId {
-  return typeof v === 'string' && (AGENT_IDS as string[]).includes(v)
+  return typeof v === 'string' && (AGENT_IDS as readonly string[]).includes(v)
 }
 
 // Cooperative cancellation for long-running tool executors. The conversation
@@ -34,7 +32,41 @@ function formatInterval(sec: number): string {
   return `${Math.round(sec / 3600)}h`
 }
 
+function timeAgo(ts: number): string {
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000))
+  if (sec < 60) return 'just now'
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`
+  if (sec < 86400) return `${Math.round(sec / 3600)}h ago`
+  return `${Math.round(sec / 86400)}d ago`
+}
+
 const paneLabel = (l: PaneLeaf) => l.title?.trim() || l.agentId || 'agent'
+
+// Load the SwarmMind-managed worktrees (under .swarmmind/worktrees/) plus the
+// base branch and a friendly label per branch (the pane's title/agent). Mirrors
+// WorktreeReview.tsx's world model. Shared by review_agent_work / merge_agent_work.
+async function loadManagedWorktrees(): Promise<
+  | { error: string }
+  | { root: string; base: string; rows: { path: string; branch: string; label: string }[] }
+> {
+  const st = useWorkspaceStore.getState()
+  const root = st.workspace?.rootPath
+  if (!root) return { error: 'Open a workspace first.' }
+  if (!(await window.swarmmind.gitIsRepo(root))) {
+    return { error: 'This workspace is not a git repository — there are no agent worktrees.' }
+  }
+  const [list, base] = await Promise.all([
+    window.swarmmind.gitListWorktrees(root),
+    window.swarmmind.gitBaseBranch(root),
+  ])
+  const managed = list.filter(w => w.path.replace(/\\/g, '/').toLowerCase().includes('.swarmmind/worktrees/'))
+  const labelOf = new Map<string, string>()
+  for (const l of collectLeaves(st.rootPane)) {
+    if (l.worktreeBranch) labelOf.set(l.worktreeBranch, l.title?.trim() || l.agentId || l.worktreeBranch)
+  }
+  const rows = managed.map(w => ({ path: w.path, branch: w.branch, label: labelOf.get(w.branch) || w.branch }))
+  return { root, base, rows }
+}
 
 // Resolve a single running agent pane from optional agentId/title filters,
 // preferring whichever is currently `working` so "what's it doing?"-style reads
@@ -113,6 +145,38 @@ export const SWARM_AGENT_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'set_pane_title',
+      description:
+        'Rename an agent pane so its label is clearer in the layout, reviews and orchestration ("call the left one backend", "name Claude\'s pane API"). Identify the pane by which agent runs in it and/or its current title.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'The new title for the pane.' },
+          agentId: { type: 'string', enum: AGENT_IDS, description: "Which agent's pane to rename." },
+          currentTitle: { type: 'string', description: 'Match the pane by its current title when several panes run the same agent.' },
+        },
+        required: ['title'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'close_pane',
+      description:
+        "Close an agent pane and stop its agent (\"close the backend pane\", \"remove Claude's second pane\"). Identify the pane by which agent runs in it and/or its title. This kills the running agent in that pane, so confirm with the user first unless they clearly asked to close it.",
+      parameters: {
+        type: 'object',
+        properties: {
+          agentId: { type: 'string', enum: AGENT_IDS, description: "Which agent's pane to close." },
+          title: { type: 'string', description: 'Match the pane by its title when several panes run the same agent.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'set_default_agent',
       description: 'Set the default agent CLI used when new panes are created.',
       parameters: {
@@ -160,8 +224,8 @@ export const SWARM_AGENT_TOOLS = [
         type: 'object',
         properties: {
           name: { type: 'string', description: 'A short schedule name, e.g. "Run tests".' },
-          description: { type: 'string', description: 'Optional one-line description of what the loop does.' },
-          prompt: { type: 'string', description: 'The prompt/command to send to the agent on each run.' },
+          description: { type: 'string', description: 'A clear one-line summary of what the loop does and why, e.g. "Runs the test suite and reports failures every 5 min". Always provide one.' },
+          prompt: { type: 'string', description: 'The full instruction sent to the agent on each run. It is replayed verbatim with NO conversation context, so write a complete, self-contained prompt — not a terse fragment. Spell out the task, what to do, and what to report back (e.g. "Run the full test suite with `npm test`. If anything fails, summarise which tests failed and the likely cause; otherwise reply that all tests passed."). Do not just echo the user\'s shorthand.' },
           intervalSec: { type: ['integer', 'string'], description: 'How often to run, in seconds (minimum 5).' },
           agentId: { type: 'string', enum: AGENT_IDS, description: 'Target a running pane of this agent. Omit to send to every running agent pane.' },
         },
@@ -218,6 +282,15 @@ export const SWARM_AGENT_TOOLS = [
     function: {
       name: 'get_status',
       description: 'Summarise the current workspace: which agent panes exist and whether they are running, plus task and loop counts. Call this when the user asks "what\'s running?", "what\'s the status?", or before deciding which pane to act on.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'agents_needing_attention',
+      description:
+        'Report which agent panes need the user right now: agents blocked waiting for input (a question or permission prompt was detected) and, secondarily, agents that finished their turn and are idle. Use for "which agents need me?", "is anything waiting on me?", "who is stuck?".',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -391,6 +464,80 @@ export const SWARM_AGENT_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'review_agent_work',
+      description:
+        "Summarise the git changes in each agent's isolated worktree branch versus the main checkout: files changed with +/- line counts, how many commits ahead, and whether there are still uncommitted edits. Use for \"what did the agents build?\", \"is anything ready to merge?\", \"review the agents' work\". Read-only.",
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'merge_agent_work',
+      description:
+        "Merge one agent's worktree branch into the main branch so its work lands (\"merge Claude's branch\", \"land the backend work\"). Identify the worktree by branch name or pane title; if there is only one, the name can be omitted. Any uncommitted changes in the worktree are committed first. On a merge conflict it aborts cleanly and leaves the main checkout untouched. This modifies the main branch — confirm with the user before doing it unless they clearly asked to merge.",
+      parameters: {
+        type: 'object',
+        properties: {
+          branch: { type: 'string', description: 'The worktree branch name or its pane title (a distinctive part is enough). Omit only when there is a single worktree.' },
+          message: { type: 'string', description: 'Optional commit message, used only if there are uncommitted changes to commit before merging.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'discard_agent_work',
+      description:
+        "Discard an agent's worktree branch entirely — removes the worktree and deletes its branch, throwing away that branch's uncommitted and committed work (\"discard Claude's branch\", \"throw away the failed experiment\"). Identify it by branch name or pane title; if there is only one, the name can be omitted. This is destructive and cannot be undone, so confirm with the user first unless they clearly asked to discard it.",
+      parameters: {
+        type: 'object',
+        properties: {
+          branch: { type: 'string', description: 'The worktree branch name or its pane title (a distinctive part is enough). Omit only when there is a single worktree.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'create_checkpoint',
+      description:
+        'Save a checkpoint: a whole-workspace git snapshot the user can roll back to later. Use for "save a checkpoint", "snapshot this before the risky change", "checkpoint before you refactor". Give it a short, descriptive label so it is easy to find when restoring.',
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'A short, descriptive name for the snapshot, e.g. "Before auth refactor". Always provide one.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_checkpoints',
+      description: 'List the saved checkpoints (workspace snapshots) for the current workspace, newest first, with their label and how long ago they were taken. Use before restoring so you (and the user) can pick the right one.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'restore_checkpoint',
+      description:
+        'Roll the whole workspace back to a saved checkpoint ("rewind", "go back to the checkpoint before the refactor", "restore the snapshot"). Identify it by label (a distinctive part is enough); omit the label to restore the most recent checkpoint. This overwrites current files, but a safety checkpoint of the current state is taken first so the rewind itself can be undone. Confirm with the user before restoring unless they clearly asked for it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'The checkpoint label (or a distinctive part of it). Omit to restore the most recent checkpoint.' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'start_orchestration',
       description: 'Kick off the autonomous orchestrator (Conductor). With a goal, the first running pane becomes the lead and decomposes it into tasks for the other panes; without a goal, it dispatches existing pending tasks to free panes. Agent panes must already be running.',
       parameters: {
@@ -457,6 +604,42 @@ export const TOOL_EXECUTORS: Record<string, Executor> = {
     for (let i = 0; i < count; i++) store.addPane(agentId)
     const label = agentId ?? store.defaultAgentId ?? 'default'
     return `Added ${count} ${label} agent pane${count === 1 ? '' : 's'}.`
+  },
+
+  async set_pane_title(args) {
+    const st = useWorkspaceStore.getState()
+    if (!st.workspace) return 'Open a workspace first.'
+    const title = typeof args.title === 'string' ? args.title.trim() : ''
+    if (!title) return 'What should the new title be?'
+    const wantAgent = isAgentId(args.agentId) ? args.agentId : null
+    const wantTitle = typeof args.currentTitle === 'string' ? args.currentTitle.trim().toLowerCase() : ''
+    let panes = collectLeaves(st.rootPane).filter(l => l.agentId)
+    if (wantAgent) panes = panes.filter(l => l.agentId === wantAgent)
+    if (wantTitle) panes = panes.filter(l => (l.title ?? '').toLowerCase().includes(wantTitle))
+    if (!panes.length) return 'No matching agent pane to rename.'
+    if (panes.length > 1) {
+      return `Several panes match (${panes.map(paneLabel).join(', ')}). Say which agent or current title to pick one.`
+    }
+    const prev = paneLabel(panes[0])
+    st.setPaneTitle(panes[0].id, title)
+    return `Renamed ${prev} to "${title}".`
+  },
+
+  async close_pane(args) {
+    const st = useWorkspaceStore.getState()
+    if (!st.workspace) return 'Open a workspace first.'
+    const wantAgent = isAgentId(args.agentId) ? args.agentId : null
+    const wantTitle = typeof args.title === 'string' ? args.title.trim().toLowerCase() : ''
+    let panes = collectLeaves(st.rootPane).filter(l => l.agentId)
+    if (wantAgent) panes = panes.filter(l => l.agentId === wantAgent)
+    if (wantTitle) panes = panes.filter(l => (l.title ?? '').toLowerCase().includes(wantTitle))
+    if (!panes.length) return 'No matching agent pane to close.'
+    if (panes.length > 1) {
+      return `Several panes match (${panes.map(paneLabel).join(', ')}). Say which agent or title to pick one.`
+    }
+    const label = paneLabel(panes[0])
+    st.closePane(panes[0].id)
+    return `Closed the ${label} pane and stopped its agent.`
   },
 
   async set_default_agent(args) {
@@ -571,6 +754,31 @@ export const TOOL_EXECUTORS: Record<string, Executor> = {
     } catch { /* task DB unavailable */ }
     const loopCount = st.loops.filter(l => l.enabled).length + st.cliLoops.length
     return `Workspace "${st.workspace.name}": ${leaves.length} agent pane(s) [${paneDesc}], ${running.length} running.${taskSummary} ${loopCount} loop(s) active.`
+  },
+
+  async agents_needing_attention() {
+    const st = useWorkspaceStore.getState()
+    if (!st.workspace) return 'Open a workspace first.'
+    const leaves = collectLeaves(st.rootPane)
+    const labelById = new Map(leaves.map(l => [l.id, paneLabel(l)]))
+
+    // Precise signal: the question-gated "needs you" notifications (unread).
+    const blocked = st.notifications.filter(n => !n.read)
+    const blockedPaneIds = new Set(blocked.map(n => n.paneId))
+    // Secondary: running panes that finished a turn and went idle ('waiting'),
+    // excluding any already covered by a blocked notification.
+    const idle = leaves.filter(
+      l => l.agentId && l.ptyStatus === 'running' && st.paneAttention[l.id] === 'waiting' && !blockedPaneIds.has(l.id),
+    )
+
+    if (!blocked.length && !idle.length) return 'No agents need your attention right now.'
+    const parts: string[] = []
+    if (blocked.length) {
+      const names = blocked.map(n => n.paneTitle?.trim() || labelById.get(n.paneId) || n.agentId || 'agent')
+      parts.push(`${blocked.length} waiting for input: ${names.join(', ')}.`)
+    }
+    if (idle.length) parts.push(`${idle.length} finished a turn and idle: ${idle.map(paneLabel).join(', ')}.`)
+    return parts.join(' ')
   },
 
   async send_to_agent(args) {
@@ -784,6 +992,113 @@ export const TOOL_EXECUTORS: Record<string, Executor> = {
     const hits = (await window.swarmmind.memorySearch(query, 5)) as { key: string; value: string }[]
     if (!hits?.length) return `Nothing in shared memory about "${query}".`
     return hits.map(h => `${h.key}: ${h.value.slice(0, 160)}`).join(' | ')
+  },
+
+  async review_agent_work() {
+    const r = await loadManagedWorktrees()
+    if ('error' in r) return r.error
+    if (!r.rows.length) return 'No agent worktrees to review (no per-pane git worktrees exist).'
+    const lines: string[] = []
+    for (const w of r.rows) {
+      const stat = await window.swarmmind.gitWorktreeDiffStat(r.root, w.path, r.base)
+      const adds = stat.files.reduce((n, f) => n + f.additions, 0)
+      const dels = stat.files.reduce((n, f) => n + f.deletions, 0)
+      if (!stat.files.length && !stat.ahead) {
+        lines.push(`${w.label}: no changes vs ${r.base}`)
+      } else {
+        const dirty = stat.hasUncommitted ? ', uncommitted edits' : ''
+        lines.push(
+          `${w.label}: ${stat.files.length} file${stat.files.length === 1 ? '' : 's'} (+${adds}/-${dels}), ${stat.ahead} commit${stat.ahead === 1 ? '' : 's'} ahead of ${r.base}${dirty}`,
+        )
+      }
+    }
+    return `Agent worktrees vs ${r.base}:\n${lines.join('\n')}`
+  },
+
+  async merge_agent_work(args) {
+    const r = await loadManagedWorktrees()
+    if ('error' in r) return r.error
+    if (!r.rows.length) return 'No agent worktrees to merge.'
+    const q = typeof args.branch === 'string' ? args.branch.trim().toLowerCase() : ''
+    let row = !q && r.rows.length === 1 ? r.rows[0] : undefined
+    if (!row && q) {
+      row = r.rows.find(w => w.branch.toLowerCase() === q || w.label.toLowerCase() === q)
+        ?? r.rows.find(w => w.branch.toLowerCase().includes(q) || w.label.toLowerCase().includes(q))
+    }
+    if (!row) {
+      const avail = r.rows.map(w => `"${w.label}"`).join(', ')
+      return q ? `No worktree matching "${String(args.branch)}". Available: ${avail}.` : `Which worktree? Available: ${avail}.`
+    }
+    // Nothing to land — avoid a misleading "merged" message for a no-op merge.
+    const stat = await window.swarmmind.gitWorktreeDiffStat(r.root, row.path, r.base)
+    if (!stat.hasUncommitted && stat.ahead === 0) {
+      return `${row.label} has no changes to merge — it's already even with ${r.base}.`
+    }
+    // Commit any uncommitted work first so the merge includes it.
+    if (stat.hasUncommitted) {
+      const msg = typeof args.message === 'string' && args.message.trim() ? args.message.trim() : `Work from ${row.label}`
+      const committed = await window.swarmmind.gitWorktreeCommit(row.path, msg)
+      if ('error' in committed) return `Couldn't commit ${row.label}'s changes before merging: ${committed.error}`
+    }
+    const res = await window.swarmmind.gitMergeBranch(r.root, row.branch)
+    if (!res.ok) {
+      return res.conflict
+        ? `Merging ${row.label} into ${r.base} hit conflicts and was aborted — your ${r.base} checkout is unchanged. Open Worktree Review to resolve it.`
+        : `Couldn't merge ${row.label}: ${res.error}`
+    }
+    return `Merged ${row.label} into ${r.base}. ${res.message}`
+  },
+
+  async discard_agent_work(args) {
+    const r = await loadManagedWorktrees()
+    if ('error' in r) return r.error
+    if (!r.rows.length) return 'No agent worktrees to discard.'
+    const q = typeof args.branch === 'string' ? args.branch.trim().toLowerCase() : ''
+    let row = !q && r.rows.length === 1 ? r.rows[0] : undefined
+    if (!row && q) {
+      row = r.rows.find(w => w.branch.toLowerCase() === q || w.label.toLowerCase() === q)
+        ?? r.rows.find(w => w.branch.toLowerCase().includes(q) || w.label.toLowerCase().includes(q))
+    }
+    if (!row) {
+      const avail = r.rows.map(w => `"${w.label}"`).join(', ')
+      return q ? `No worktree matching "${String(args.branch)}". Available: ${avail}.` : `Which worktree? Available: ${avail}.`
+    }
+    const res = await window.swarmmind.gitRemoveWorktree(r.root, row.path, row.branch, true)
+    if ('error' in res) return `Couldn't discard ${row.label}: ${res.error}`
+    return `Discarded ${row.label} — removed its worktree and deleted the branch.`
+  },
+
+  async create_checkpoint(args) {
+    if (!useWorkspaceStore.getState().workspace) return 'Open a workspace first.'
+    const label = typeof args.label === 'string' ? args.label.trim() : ''
+    const rec = await window.swarmmind.checkpointCreate(label || undefined, 'swarmagent')
+    if ('error' in rec) return `Couldn't create a checkpoint: ${rec.error}`
+    return `Saved checkpoint "${rec.label}" (${rec.trees.length} folder${rec.trees.length === 1 ? '' : 's'}). You can rewind to it later.`
+  },
+
+  async list_checkpoints() {
+    if (!useWorkspaceStore.getState().workspace) return 'Open a workspace first.'
+    const list = await window.swarmmind.checkpointList()
+    if (!list?.length) return 'No checkpoints saved yet.'
+    return list
+      .map(c => `"${c.label}" (${timeAgo(c.ts)})`)
+      .join('; ')
+  },
+
+  async restore_checkpoint(args) {
+    if (!useWorkspaceStore.getState().workspace) return 'Open a workspace first.'
+    const list = await window.swarmmind.checkpointList()
+    if (!list?.length) return 'No checkpoints to restore — none have been saved yet.'
+    const name = typeof args.label === 'string' ? args.label.trim().toLowerCase() : ''
+    // checkpointList is newest-first, so list[0] is the most recent.
+    const rec = name
+      ? (list.find(c => c.label.toLowerCase() === name) ?? list.find(c => c.label.toLowerCase().includes(name)))
+      : list[0]
+    if (!rec) return `No checkpoint matching "${String(args.label)}". Saved: ${list.map(c => `"${c.label}"`).join(', ')}.`
+    const result = await window.swarmmind.checkpointRestore(rec.id)
+    if ('error' in result) return `Couldn't restore "${rec.label}": ${result.error}`
+    const errs = result.errors.length ? ` (${result.errors.length} folder${result.errors.length === 1 ? '' : 's'} had issues)` : ''
+    return `Rewound the workspace to "${rec.label}" — restored ${result.restored} folder${result.restored === 1 ? '' : 's'}${errs}. A safety checkpoint of the previous state was saved first.`
   },
 
   async start_orchestration(args) {

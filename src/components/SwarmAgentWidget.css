@@ -21,8 +21,6 @@ html.widget #root {
   overflow: hidden;
   background: var(--bg-panel);
   border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.09));
-  /* Soft, subtle lift — no heavy drop shadow. */
-  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
   color: var(--text-primary);
   font-size: 12.5px;
 }

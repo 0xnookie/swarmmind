@@ -1,18 +1,13 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { useWorkspaceStore } from '../store/workspace'
+import { useWorkspaceStore, type EditorTab } from '../store/workspace'
 import { FileExplorer, fileColor } from './FileExplorer'
 import { FileEditor } from './FileEditor'
 import { ImageViewer } from './ImageViewer'
 import { useT } from '../i18n'
 
-interface OpenFile {
-  path: string
-  name: string
-  content: string
-  dirty: boolean
-  // Image tabs carry their decoded data instead of editable text.
-  image?: ImageData
-}
+// Open editor tabs live in the store (see EditorTab) so unsaved edits survive
+// toggling the editor away and back; this is just a local alias.
+type OpenFile = EditorTab
 
 function extOf(name: string): string {
   const i = name.lastIndexOf('.')
@@ -57,8 +52,12 @@ export function FilePanel() {
   const t = useT()
   const workspace = useWorkspaceStore((s) => s.workspace)
 
-  const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
-  const [activePath, setActivePath] = useState<string | null>(null)
+  // Editor tabs are held in the store so unsaved edits survive toggling the
+  // editor away (this panel unmounts when another center view opens).
+  const openFiles = useWorkspaceStore((s) => s.editorTabs)
+  const activePath = useWorkspaceStore((s) => s.activeEditorPath)
+  const setOpenFiles = useWorkspaceStore((s) => s.setEditorTabs)
+  const setActivePath = useWorkspaceStore((s) => s.setActiveEditorPath)
   const [loading, setLoading] = useState(false)
 
   // Resizable file-tree width (drag the divider; persisted to localStorage).
@@ -106,19 +105,16 @@ export function FilePanel() {
   const handleFileSelect = useCallback(
     async (filePath: string, fileName: string) => {
       // Already open → just focus its tab (keeps unsaved edits).
-      if (openFiles.some((f) => f.path === filePath)) {
+      if (useWorkspaceStore.getState().editorTabs.some((f) => f.path === filePath)) {
         setActivePath(filePath)
         return
       }
       setLoading(true)
       try {
-        if (isImageName(fileName)) {
-          const image = await window.swarmmind.fsReadImage(filePath)
-          setOpenFiles((prev) => [...prev, { path: filePath, name: fileName, content: '', dirty: false, image }])
-        } else {
-          const text = await window.swarmmind.fsReadFile(filePath)
-          setOpenFiles((prev) => [...prev, { path: filePath, name: fileName, content: text, dirty: false }])
-        }
+        const tab: OpenFile = isImageName(fileName)
+          ? { path: filePath, name: fileName, content: '', dirty: false, image: await window.swarmmind.fsReadImage(filePath) }
+          : { path: filePath, name: fileName, content: await window.swarmmind.fsReadFile(filePath), dirty: false }
+        setOpenFiles([...useWorkspaceStore.getState().editorTabs, tab])
         setActivePath(filePath)
       } catch (err) {
         console.error('Failed to read file:', err)
@@ -126,48 +122,75 @@ export function FilePanel() {
         setLoading(false)
       }
     },
-    [openFiles]
+    [setOpenFiles, setActivePath]
   )
 
   const handleChange = useCallback(
     (newContent: string) => {
-      setOpenFiles((prev) =>
-        prev.map((f) => (f.path === activePath ? { ...f, content: newContent, dirty: true } : f))
+      const path = useWorkspaceStore.getState().activeEditorPath
+      setOpenFiles(
+        useWorkspaceStore.getState().editorTabs.map((f) =>
+          f.path === path ? { ...f, content: newContent, dirty: true } : f
+        )
       )
     },
-    [activePath]
+    [setOpenFiles]
   )
 
   const handleSave = useCallback(async () => {
-    const file = openFiles.find((f) => f.path === activePath)
+    const path = useWorkspaceStore.getState().activeEditorPath
+    const file = useWorkspaceStore.getState().editorTabs.find((f) => f.path === path)
     if (!file || !file.dirty) return
     try {
       await window.swarmmind.fsWriteFile(file.path, file.content)
-      setOpenFiles((prev) => prev.map((f) => (f.path === file.path ? { ...f, dirty: false } : f)))
+      setOpenFiles(
+        useWorkspaceStore.getState().editorTabs.map((f) => (f.path === file.path ? { ...f, dirty: false } : f))
+      )
     } catch (err) {
       console.error('Failed to save file:', err)
     }
-  }, [openFiles, activePath])
+  }, [setOpenFiles])
+
+  const handleSaveAll = useCallback(async () => {
+    // Snapshot the dirty files, write them, then clear `dirty` only for tabs whose
+    // content still matches what we saved (so a concurrent edit during the awaits
+    // isn't marked clean).
+    const dirty = useWorkspaceStore.getState().editorTabs.filter((f) => f.dirty && !f.image)
+    if (!dirty.length) return
+    const saved = new Map<string, string>()
+    for (const f of dirty) {
+      try {
+        await window.swarmmind.fsWriteFile(f.path, f.content)
+        saved.set(f.path, f.content)
+      } catch (err) {
+        console.error('Failed to save file:', err)
+      }
+    }
+    setOpenFiles(
+      useWorkspaceStore.getState().editorTabs.map((f) =>
+        saved.get(f.path) === f.content ? { ...f, dirty: false } : f
+      )
+    )
+  }, [setOpenFiles])
 
   const closeTab = useCallback(
     (path: string) => {
-      const file = openFiles.find((f) => f.path === path)
+      const tabs = useWorkspaceStore.getState().editorTabs
+      const file = tabs.find((f) => f.path === path)
       if (!file) return
       if (file.dirty) {
         const ok = window.confirm(t('file.discardConfirm'))
         if (!ok) return
       }
-      setOpenFiles((prev) => {
-        const idx = prev.findIndex((f) => f.path === path)
-        const next = prev.filter((f) => f.path !== path)
-        if (path === activePath) {
-          const neighbor = next[Math.min(idx, next.length - 1)] ?? null
-          setActivePath(neighbor ? neighbor.path : null)
-        }
-        return next
-      })
+      const idx = tabs.findIndex((f) => f.path === path)
+      const next = tabs.filter((f) => f.path !== path)
+      setOpenFiles(next)
+      if (path === useWorkspaceStore.getState().activeEditorPath) {
+        const neighbor = next[Math.min(idx, next.length - 1)] ?? null
+        setActivePath(neighbor ? neighbor.path : null)
+      }
     },
-    [openFiles, activePath, t]
+    [t, setOpenFiles, setActivePath]
   )
 
   if (!workspace?.rootPath) {
@@ -312,6 +335,8 @@ export function FilePanel() {
             isDirty={active?.dirty ?? false}
             onChange={handleChange}
             onSave={handleSave}
+            dirtyCount={openFiles.filter((f) => f.dirty).length}
+            onSaveAll={handleSaveAll}
           />
         )}
       </div>

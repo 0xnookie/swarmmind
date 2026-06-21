@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useWorkspaceStore, selectTerminalsVisible } from '../store/workspace'
 import { useT } from '../i18n'
 import { SwarmVoice } from './SwarmVoice'
@@ -305,6 +305,9 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const showTerminals = useWorkspaceStore(s => s.showTerminals)
   const filePanelOpen = useWorkspaceStore(s => s.filePanelOpen)
   const toggleFilePanel = useWorkspaceStore(s => s.toggleFilePanel)
+  // Unsaved editor tabs — badge the code button so the user knows they have
+  // unsaved work even while looking at another view (tabs persist across toggles).
+  const unsavedCount = useWorkspaceStore(s => s.editorTabs.filter(tab => tab.dirty).length)
   const toggleBroadcastBar = useWorkspaceStore(s => s.toggleBroadcastBar)
   const broadcastBarOpen = useWorkspaceStore(s => s.broadcastBarOpen)
   const toggleBoard = useWorkspaceStore(s => s.toggleBoard)
@@ -336,6 +339,27 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const terminalsVisible = useWorkspaceStore(selectTerminalsVisible)
 
   const totalCost = Object.values(paneCost).reduce((sum, c) => sum + (c?.usd ?? 0), 0)
+
+  // First-run pointer to the SwarmAgent button — the assistant is invisible until
+  // opened, so new users miss it. Show a one-time coachmark once they're past the
+  // start screen (a workspace is open) and haven't dismissed it before; persisted
+  // via the `swarmAgentHintSeen` app setting so it never nags twice.
+  const [agentHintVisible, setAgentHintVisible] = useState(false)
+  const markAgentHintSeen = () => {
+    setAgentHintVisible(false)
+    window.swarmmind.setAppSetting('swarmAgentHintSeen', '1').catch(() => {})
+  }
+  useEffect(() => {
+    // Opening the assistant by any route (button, command palette, widget) counts
+    // as discovering it — retire the hint for good.
+    if (swarmAgentOpen) { markAgentHintSeen(); return }
+    if (!workspace) return
+    let cancelled = false
+    window.swarmmind.getAppSetting('swarmAgentHintSeen')
+      .then(v => { if (!cancelled && v !== '1') setAgentHintVisible(true) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [workspace, swarmAgentOpen])
 
   return (
     <header
@@ -423,12 +447,25 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
           WebkitAppRegion: 'no-drag',
         }}
       >
-        <IconBtn label={t('topbar.showTerminals')} onClick={showTerminals} active={!boardOpen && !graphOpen && !filePanelOpen && !reviewOpen && !timelineOpen && !changesOpen && !checkpointsOpen && !benchmarksOpen && !swarmAgentOpen && !loopsOpen}>
+        <IconBtn label={t('topbar.showTerminals')} onClick={showTerminals} active={terminalsVisible}>
           <IconGrid />
         </IconBtn>
 
         <IconBtn label={t('topbar.codeView')} onClick={toggleFilePanel} active={filePanelOpen}>
           <IconCode />
+          {unsavedCount > 0 && (
+            <span
+              title={t('topbar.unsavedFiles', { n: unsavedCount })}
+              style={{
+                position: 'absolute', top: -1, right: -1, minWidth: 13, height: 13, padding: '0 3px',
+                borderRadius: 7, background: 'var(--accent)', color: 'var(--bg-base)',
+                fontSize: 9, fontWeight: 700, lineHeight: '13px', textAlign: 'center',
+                boxShadow: '0 0 0 1.5px var(--bg-base)',
+              }}
+            >
+              {unsavedCount}
+            </span>
+          )}
         </IconBtn>
 
         <IconBtn label={t('topbar.kanban')} onClick={toggleBoard} active={boardOpen}>
@@ -455,9 +492,25 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
           <IconBenchmarks />
         </IconBtn>
 
-        <IconBtn label={t('topbar.swarmAgent')} onClick={toggleSwarmAgent} active={swarmAgentOpen}>
-          <IconSwarmAgent />
-        </IconBtn>
+        <div style={{ position: 'relative', display: 'inline-flex', WebkitAppRegion: 'no-drag' }}>
+          <IconBtn
+            label={t('topbar.swarmAgent')}
+            onClick={() => { markAgentHintSeen(); toggleSwarmAgent() }}
+            active={swarmAgentOpen}
+          >
+            <IconSwarmAgent />
+            {agentHintVisible && <span className="tb-hint-ring" />}
+          </IconBtn>
+          {agentHintVisible && (
+            <div className="tb-coachmark" onClick={e => e.stopPropagation()}>
+              <div className="tb-coachmark-title">{t('topbar.agentHint.title')}</div>
+              <div className="tb-coachmark-body">{t('topbar.agentHint.body')}</div>
+              <button className="tb-coachmark-dismiss" onClick={markAgentHintSeen}>
+                {t('topbar.agentHint.dismiss')}
+              </button>
+            </div>
+          )}
+        </div>
 
         <IconBtn label={runningLoops ? t('topbar.loopsRunning', { n: runningLoops }) : t('topbar.loops')} onClick={toggleLoops} active={loopsOpen}>
           <IconLoop />

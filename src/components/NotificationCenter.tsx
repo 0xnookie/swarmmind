@@ -88,11 +88,10 @@ export function NotificationCenter() {
   }, [open])
 
   const jumpToPane = (paneId: string) => {
-    // Make the pane visible: drop any center overlays that would hide it.
-    const st = useWorkspaceStore.getState()
-    if (st.boardOpen) st.toggleBoard()
-    if (st.graphOpen) st.toggleGraph()
-    if (st.filePanelOpen) st.toggleFilePanel()
+    // Make the pane visible: close *every* center overlay (board/graph/timeline/
+    // changes/checkpoints/review/benchmarks/loops/files/chat) — otherwise jumping
+    // from, say, the timeline left the pane hidden behind it.
+    useWorkspaceStore.getState().showTerminals()
     setActivePaneId(paneId)
     markPaneNotificationsRead(paneId)
     setPaneAttention(paneId, null)

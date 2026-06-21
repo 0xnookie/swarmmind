@@ -381,6 +381,28 @@ export function StartScreen({ onOpenWorkspace }: StartScreenProps) {
           </button>
         </div>
 
+        {/* First run — orient a brand-new user (no recent workspaces yet) */}
+        {recent.length === 0 && (
+          <div className="start-fade" style={{ ...styles.firstRunWrap, animationDelay: '180ms' }}>
+            <div style={styles.recentLabel}>{t('start.firstRun.heading')}</div>
+            <div style={styles.steps}>
+              {[
+                { title: t('start.firstRun.step1Title'), body: t('start.firstRun.step1Body') },
+                { title: t('start.firstRun.step2Title'), body: t('start.firstRun.step2Body') },
+                { title: t('start.firstRun.step3Title'), body: t('start.firstRun.step3Body') },
+              ].map((s, i) => (
+                <div key={i} style={styles.step}>
+                  <span style={{ ...styles.stepNum, color: onAccent }}>{i + 1}</span>
+                  <span style={styles.stepText}>
+                    <span style={styles.stepTitle}>{s.title}</span>
+                    <span style={styles.stepBody}>{s.body}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Recent workspaces */}
         {recent.length > 0 && (
           <div className="start-fade" style={{ ...styles.recentWrap, animationDelay: '180ms' }}>
@@ -556,6 +578,55 @@ const styles: Record<string, React.CSSProperties> = {
   recentWrap: {
     marginTop: 44,
     width: '100%',
+  },
+  firstRunWrap: {
+    marginTop: 44,
+    width: '100%',
+  },
+  steps: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  step: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    gap: 12,
+    padding: '12px 14px',
+    borderRadius: 10,
+    border: '1px solid var(--border-subtle)',
+    background: 'var(--bg-panel)',
+    textAlign: 'left',
+  },
+  stepNum: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 22,
+    height: 22,
+    borderRadius: 9999,
+    background: 'var(--accent)',
+    fontSize: 12,
+    fontWeight: 700,
+    flexShrink: 0,
+    fontFamily: 'var(--font-ui)',
+    marginTop: 1,
+  },
+  stepText: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    minWidth: 0,
+  },
+  stepTitle: {
+    fontSize: 13.5,
+    fontWeight: 600,
+    color: 'var(--text-primary)',
+  },
+  stepBody: {
+    fontSize: 12,
+    lineHeight: 1.45,
+    color: 'var(--text-muted)',
   },
   recentLabel: {
     fontSize: 11,

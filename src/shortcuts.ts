@@ -33,6 +33,9 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'broadcast',       label: 'Toggle broadcast bar',  category: 'Global', defaultKeys: 'Mod+B', global: true },
   { id: 'settings',        label: 'Open settings',         category: 'Global', defaultKeys: 'Mod+,', global: true },
   { id: 'new-pane',        label: 'New terminal pane',     category: 'Global', defaultKeys: 'Mod+T', global: true },
+  // Mod+Shift+A ("assistant") — Shift+letter avoids clashing with a terminal
+  // control code (plain Mod+J/L/I map to LF / clear / Tab in the shell).
+  { id: 'swarm-agent',     label: 'Toggle SwarmAgent assistant', category: 'Global', defaultKeys: 'Mod+Shift+A', global: true },
   // Mod+Shift+M ("mic") — deliberately NOT Mod+Shift+V, which is terminal paste.
   { id: 'voice',           label: 'Toggle SwarmVoice',     category: 'Global', defaultKeys: 'Mod+Shift+M', global: false },
   { id: 'pane-search',     label: 'Search in pane',        category: 'Panes',  defaultKeys: 'Mod+F', global: false },

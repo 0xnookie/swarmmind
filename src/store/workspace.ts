@@ -13,8 +13,12 @@ import {
   type AppearanceSettings,
 } from '../appearance'
 
-// Keep this union in sync with the node-side copy in memory/queries.ts.
-export type AgentId = 'claude' | 'codex' | 'cursor' | 'windsurf' | 'kilo' | 'opencode' | 'cline'
+// The single source of truth for agent ids. The AgentId type is *derived* from
+// this array, so the runtime list and the type can't drift; renderer consumers
+// (swarmagent tools, the timeline) import AGENT_IDS instead of re-declaring it.
+// Keep in sync with the node-side copy in memory/queries.ts.
+export const AGENT_IDS = ['claude', 'codex', 'cursor', 'windsurf', 'kilo', 'opencode', 'cline'] as const
+export type AgentId = (typeof AGENT_IDS)[number]
 export type PtyStatus = 'idle' | 'running' | 'exited' | 'error'
 export type ShellStyle = 'powershell' | 'cmd' | 'bash'
 
@@ -89,6 +93,18 @@ export interface WorkspaceInfo {
   id: string
   name: string
   rootPath: string
+}
+
+// An open tab in the code editor (FilePanel). Lifted into the store so unsaved
+// edits survive toggling the editor away and back (the panel unmounts otherwise).
+// Session-only; cleared on a workspace switch since the paths are workspace-local.
+export interface EditorTab {
+  path: string
+  name: string
+  content: string
+  dirty: boolean
+  // Image tabs carry decoded data instead of editable text.
+  image?: ImageData
 }
 
 export type LeftPanelTab = 'tasks' | 'skills'
@@ -251,8 +267,15 @@ interface WorkspaceState {
   // Loops detected running inside panes' CLIs (e.g. Claude Code `/loop`).
   // Session-only and read-only — SwarmMind can only display, not control them.
   cliLoops: CliLoop[]
+  // ── Code editor (FilePanel) ──────────────────────────────────────────────────
+  // Open editor tabs + the active one, lifted out of FilePanel so unsaved edits
+  // survive toggling the editor away (the panel unmounts when another view opens).
+  editorTabs: EditorTab[]
+  activeEditorPath: string | null
 
   setWorkspace: (ws: WorkspaceInfo | null) => void
+  setEditorTabs: (tabs: EditorTab[]) => void
+  setActiveEditorPath: (path: string | null) => void
   setLayout: (root: PaneGroup) => void
   setPtyStatus: (paneId: string, status: PtyStatus) => void
   setAgentId: (paneId: string, agentId: AgentId | null) => void
@@ -560,6 +583,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   loops: [],
   loopsOpen: false,
   cliLoops: [],
+  editorTabs: [],
+  activeEditorPath: null,
 
   setWorkspace: (ws) => set(s => {
     // On an actual switch (not a rename of the current workspace), clear the
@@ -568,8 +593,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // summing a different workspace's spend). Guarded on id change so renaming the
     // active workspace (setWorkspace with the same id) doesn't wipe live totals.
     if (ws?.id === s.workspace?.id) return { workspace: ws }
-    return { workspace: ws, paneCost: {}, contendedPaths: [], cliLoops: [] }
+    // Editor tabs hold paths from the previous workspace — drop them on a switch.
+    return { workspace: ws, paneCost: {}, contendedPaths: [], cliLoops: [], editorTabs: [], activeEditorPath: null }
   }),
+
+  setEditorTabs: (tabs) => set({ editorTabs: tabs }),
+  setActiveEditorPath: (path) => set({ activeEditorPath: path }),
 
   setLayout: (root) => {
     set({ rootPane: root })

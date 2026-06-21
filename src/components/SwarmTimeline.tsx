@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useWorkspaceStore } from '../store/workspace'
+import { useWorkspaceStore, AGENT_IDS } from '../store/workspace'
 import { AgentIcon } from '../data/agents'
 import { useT, type TFunction, type TranslationKey } from '../i18n'
 
@@ -11,10 +11,8 @@ import { useT, type TFunction, type TranslationKey } from '../i18n'
 // (memory/events.ts). Loads the recent log on open and appends new events live
 // via window.swarmmind.onSwarmEvent.
 
-const AGENT_IDS = ['claude', 'codex', 'cursor', 'windsurf', 'kilo', 'opencode', 'cline']
-
 function agentColor(id: string | null): string {
-  return id && AGENT_IDS.includes(id) ? `var(--agent-${id})` : 'var(--text-muted)'
+  return id && (AGENT_IDS as readonly string[]).includes(id) ? `var(--agent-${id})` : 'var(--text-muted)'
 }
 
 // Short, themed label-key + glyph per event type. Glyphs are plain unicode so

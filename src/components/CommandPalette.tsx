@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { useT } from '../i18n'
+import { getEffectiveKeys, formatKeys } from '../shortcuts'
 
 interface Command {
   id: string
@@ -15,6 +16,7 @@ export function CommandPalette() {
   const t = useT()
   const open = useWorkspaceStore(s => s.commandPaletteOpen)
   const setOpen = useWorkspaceStore(s => s.setCommandPaletteOpen)
+  const keybindings = useWorkspaceStore(s => s.keybindings)
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([])
@@ -42,6 +44,16 @@ export function CommandPalette() {
       { id: 'code', title: t('cmd.code'), section: t('cmd.section.view'), run: () => { s.toggleFilePanel(); close() } },
       { id: 'board', title: t('cmd.board'), section: t('cmd.section.view'), run: () => { s.toggleBoard(); close() } },
       { id: 'graph', title: t('cmd.graph'), section: t('cmd.section.view'), run: () => { s.toggleGraph(); close() } },
+      { id: 'swarm-agent', title: t('cmd.swarmAgent'), section: t('cmd.section.view'), run: () => { s.toggleSwarmAgent(); close() } },
+      { id: 'timeline', title: t('cmd.timeline'), section: t('cmd.section.view'), run: () => { s.toggleTimeline(); close() } },
+      { id: 'changes', title: t('cmd.changes'), section: t('cmd.section.view'), run: () => { s.toggleChanges(); close() } },
+      { id: 'checkpoints', title: t('cmd.checkpoints'), section: t('cmd.section.view'), run: () => { s.toggleCheckpoints(); close() } },
+      { id: 'review', title: t('cmd.review'), section: t('cmd.section.view'), run: () => { s.toggleReview(); close() } },
+      { id: 'loops', title: t('cmd.loops'), section: t('cmd.section.view'), run: () => { s.toggleLoops(); close() } },
+      { id: 'benchmarks', title: t('cmd.benchmarks'), section: t('cmd.section.view'), run: () => { s.toggleBenchmarks(); close() } },
+      // The orchestrator bar renders inside the terminal grid (like broadcast),
+      // so surface the panes first, then ensure the bar is open.
+      { id: 'orchestrator', title: t('cmd.orchestrator'), section: t('cmd.section.view'), run: () => { s.showTerminals(); if (!s.orchestratorBarOpen) s.toggleOrchestratorBar(); close() } },
       { id: 'sidebar', title: t('cmd.sidebar'), section: t('cmd.section.view'), run: () => { s.toggleKanban(); close() } },
       { id: 'new-workspace', title: t('cmd.newWorkspace'), section: t('cmd.section.workspace'), run: () => { s.openSetupModal(); close() } },
       { id: 'settings', title: t('cmd.settings'), section: t('cmd.section.workspace'), run: () => { s.openSettings(); close() } },
@@ -101,17 +113,23 @@ export function CommandPalette() {
         />
         <div style={styles.list}>
           {filtered.length === 0 && <div style={styles.empty}>{t('cmd.empty')}</div>}
-          {filtered.map((c, i) => (
-            <button
-              key={c.id}
-              style={{ ...styles.row, ...(i === index ? styles.rowActive : {}) }}
-              onMouseEnter={() => setIndex(i)}
-              onClick={() => c.run()}
-            >
-              <span style={styles.rowTitle}>{c.title}</span>
-              <span style={styles.rowSection}>{c.section}</span>
-            </button>
-          ))}
+          {filtered.map((c, i) => {
+            // A command's id matches its shortcut registry id where one exists,
+            // so surface the (possibly rebound) combo as a hint.
+            const keys = getEffectiveKeys(c.id, keybindings)
+            return (
+              <button
+                key={c.id}
+                style={{ ...styles.row, ...(i === index ? styles.rowActive : {}) }}
+                onMouseEnter={() => setIndex(i)}
+                onClick={() => c.run()}
+              >
+                <span style={styles.rowTitle}>{c.title}</span>
+                {keys && <span style={styles.rowKeys}>{formatKeys(keys)}</span>}
+                <span style={styles.rowSection}>{c.section}</span>
+              </button>
+            )
+          })}
         </div>
       </div>
     </div>
@@ -124,8 +142,9 @@ const styles: Record<string, React.CSSProperties> = {
   input: { border: 'none', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 15, padding: '14px 16px', outline: 'none' },
   list: { maxHeight: '50vh', overflowY: 'auto', padding: 6 },
   empty: { padding: 20, textAlign: 'center', color: 'var(--text-dim)', fontSize: 13 },
-  row: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', background: 'transparent', border: 'none', borderRadius: 8, padding: '9px 12px', cursor: 'pointer', textAlign: 'left' },
+  row: { display: 'flex', alignItems: 'center', gap: 10, width: '100%', background: 'transparent', border: 'none', borderRadius: 8, padding: '9px 12px', cursor: 'pointer', textAlign: 'left' },
   rowActive: { background: 'var(--accent-subtle)' },
-  rowTitle: { fontSize: 13.5, color: 'var(--text-primary)' },
-  rowSection: { fontSize: 10.5, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em' },
+  rowTitle: { flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  rowKeys: { fontSize: 11, color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 5, padding: '1px 6px', whiteSpace: 'nowrap', flexShrink: 0 },
+  rowSection: { fontSize: 10.5, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 },
 }

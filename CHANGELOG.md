@@ -6,6 +6,74 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.11.0]
+
+### Fixed
+- **Notification "jump to pane" now works from every view** — clicking an
+  "agent needs you" notification only revealed the pane if you were on the board,
+  memory graph, or file editor; from the timeline, changes, checkpoints, worktree
+  review, benchmarks, loops, or the assistant chat, the overlay stayed open and
+  kept the pane hidden. It now closes whatever center view is open and scrolls the
+  pane into view. The "show terminals" toolbar button's active state was derived
+  from the same drift-prone overlay list and is now computed from the single
+  source of truth too (it also no longer reads as active on the start screen).
+- **Unsaved edits no longer lost when leaving the editor** — opening the board,
+  switching to the terminals, or any other center view used to unmount the code
+  editor and silently discard its open tabs and unsaved changes. Editor tabs are
+  now held in the workspace store, so toggling away and back preserves your open
+  files and unsaved edits (they still clear when you switch to a different
+  workspace, whose files they don't belong to). The toolbar's code button also
+  shows an unsaved-file count badge, so you know you have pending edits even while
+  looking at another view.
+
+### Added
+- **The assistant can now snapshot, review, and land work** — SwarmAgent gained
+  the full safety-and-integration layer of vibe coding. Ask it to "snapshot this
+  before the refactor" and it saves a checkpoint; "rewind to before the refactor"
+  rolls the whole workspace back (a safety snapshot is taken first, so the rewind
+  itself is undoable). It can review each agent's worktree branch ("what did the
+  agents build?", "anything ready to merge?"), merge one in ("land the backend
+  work" — it commits any loose changes first and aborts cleanly on conflict), or
+  discard a failed experiment. It can also rename a pane ("call the left one
+  backend") and close one. Every destructive action confirms with you first.
+
+- **First-run orientation** — the start screen now greets brand-new users (no
+  recent workspaces yet) with a short three-step "here's the gist": open a
+  project, run agents side by side, or just ask the SwarmAgent assistant. It
+  steps aside automatically once you have recent workspaces. Fully localized
+  (EN/DE).
+- **Context-aware assistant suggestions** — the SwarmAgent's empty-state chips
+  now adapt to what you're doing: orient a newcomer (open a project, what can
+  you do?), nudge toward setup when a workspace is open but idle, and suggest
+  acting on running agents (status, changes, review their work, save a
+  checkpoint) once agents are live. Localized (EN/DE).
+- **SwarmAgent discoverability** — a subtle one-time coachmark now points at the
+  assistant in the toolbar the first time you open a workspace, so the assistant
+  isn't hidden behind an unlabeled icon. It dismisses for good the moment you
+  open the assistant (any way) or click "Got it". Localized (EN/DE).
+
+- **Save all open files** — when more than one editor tab has unsaved changes, a
+  "Save all (N)" button appears in the editor status bar next to the per-file
+  Save, writing every dirty file at once (a concurrent edit during the save stays
+  marked unsaved). Localized (EN/DE).
+- **"Which agents need me?"** — ask the SwarmAgent and it reports which panes are
+  blocked waiting for your input (a question or permission prompt was detected)
+  and which simply finished their turn and went idle — so you can triage a busy
+  swarm at a glance instead of scanning every terminal.
+- **Command palette reaches every view** — `Ctrl/⌘-K` now includes the SwarmAgent
+  assistant, swarm timeline, changes, checkpoints, worktree review, loops,
+  benchmarks, and the orchestrator bar, alongside the existing board/graph/code
+  views — so every surface is keyboard-reachable, not just the toolbar. Commands
+  that have a keyboard shortcut now show it inline (reflecting any rebinding).
+- **Shortcut to toggle the SwarmAgent** — `Ctrl/⌘-Shift-A` opens or closes the
+  assistant from anywhere. Rebindable in Settings → Shortcuts like the rest.
+
+### Changed
+- **Wider SwarmAgent command surface** — new tools for checkpoints
+  (create/list/restore), worktree review/merge/discard, pane rename/close, and a
+  "which agents need me?" triage report, available from both the in-app chat and
+  the desktop widget.
+
 ## [0.10.0]
 
 ### Added
