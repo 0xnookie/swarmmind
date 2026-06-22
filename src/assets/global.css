@@ -591,3 +591,58 @@ input::placeholder { color: var(--text-dim); }
 }
 .preview-port-item:hover { background: var(--overlay-hover); color: var(--text-primary); }
 .preview-port-item .port-host { color: var(--text-dim); }
+
+/* ── SwarmAgent Markdown rendering (src/lib/markdown.tsx) ─────────────────────
+   Shared by the in-app chat and the desktop widget (separate documents), so the
+   styles live here in the global sheet rather than either component's CSS. */
+.md { display: flex; flex-direction: column; gap: 8px; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md-p { margin: 0; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.md-heading { margin: 2px 0 0; font-weight: 600; line-height: 1.3; color: var(--text-primary); }
+h3.md-heading { font-size: 1.08em; }
+h4.md-heading { font-size: 1.02em; }
+h5.md-heading, h6.md-heading { font-size: 0.96em; color: var(--text-secondary); }
+.md-ul, .md-ol { margin: 0; padding-left: 1.25em; display: flex; flex-direction: column; gap: 3px; }
+.md-ul li, .md-ol li { line-height: 1.5; }
+.md-ul { list-style: disc; }
+.md-ol { list-style: decimal; }
+.md-quote {
+  margin: 0; padding: 4px 12px; border-left: 3px solid var(--accent);
+  background: var(--accent-subtle); border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--text-secondary);
+}
+.md-hr { border: none; border-top: 1px solid var(--border-subtle); margin: 4px 0; }
+.md-link { color: var(--accent); text-decoration: none; }
+.md-link:hover { text-decoration: underline; }
+.md-code-inline {
+  font-family: var(--font-mono); font-size: 0.88em;
+  background: var(--bg-base); border: 1px solid var(--border-subtle);
+  border-radius: 4px; padding: 0.5px 5px; color: var(--accent);
+  word-break: break-word;
+}
+.md-codeblock {
+  border: 1px solid var(--border-subtle); border-radius: var(--radius);
+  overflow: hidden; background: var(--bg-base);
+}
+.md-codeblock-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 3px 6px 3px 10px; background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.md-codeblock-lang {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--text-dim);
+}
+.md-codeblock-copy {
+  background: transparent; border: 1px solid var(--border-subtle); border-radius: 5px;
+  color: var(--text-secondary); font-family: var(--font-ui, inherit); font-size: 11px;
+  padding: 1px 8px; cursor: pointer; transition: background 90ms, color 90ms;
+}
+.md-codeblock-copy:hover { background: var(--overlay-hover); color: var(--text-primary); }
+.md-codeblock pre {
+  margin: 0; padding: 10px 12px; overflow-x: auto;
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+  color: var(--text-primary);
+}
+.md-codeblock pre code { font-family: inherit; background: none; border: none; padding: 0; }

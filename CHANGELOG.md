@@ -6,6 +6,46 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.12.0]
+
+### Added
+- **The assistant talks like a coding assistant — Markdown replies.** SwarmAgent's
+  answers now render as proper Markdown in both the in-app chat and the desktop
+  widget: fenced code blocks with a language label and a one-click **Copy**
+  button, headings, lists, blockquotes, and inline bold/italic/`code`/links.
+  Previously these showed as raw text. (Dependency-free and safe — no HTML
+  injection.)
+- **SwarmAgent reads the codebase.** Two new tools let the assistant answer
+  questions about your project directly: `read_file` (returns a workspace file's
+  contents, bounded so it stays cheap) and `list_files` (discovers files,
+  optionally filtered). Ask "what does `src/App.tsx` do?" and it reads the file
+  instead of guessing.
+- **`@`-mention files in prompts.** Type `@` in the broadcast bar or the
+  SwarmAgent composer to fuzzy-search your repo's files and insert a path — the
+  standard vibecoding way to point an agent (or the assistant) at a file. Backed
+  by a fast, bounded recursive file index that skips `node_modules`, `.git`, and
+  build output.
+- **SwarmAgent is grounded in live app state.** Every turn now includes a fresh
+  snapshot of the workspace — which agent panes are running, working, or waiting
+  for input; active loops; orchestration mode — so the assistant answers
+  "what's running?" and picks the right pane without a wasted tool call.
+- **Pick the best SwarmAgent model from a list.** Settings → General now offers a
+  live model picker populated from your Groq key, plus curated quick-picks
+  (Most capable / Balanced / Fastest), instead of a blind text field.
+- **Run skills and recent commands from the command palette.** The palette now
+  fuzzy-ranks with match highlighting, remembers your most-used commands and
+  floats them to the top, and lists your saved skills as runnable actions.
+- **Commit part of an agent's work.** Worktree Review gained per-file checkboxes,
+  so you can stage and commit a subset of an agent branch's changed files and
+  leave the rest, rather than only "commit all".
+
+### Changed
+- **Chat no longer yanks you to the bottom.** Both the assistant chat and the
+  widget now only auto-scroll while you're already near the bottom, so scrolling
+  up to re-read history isn't interrupted mid-stream.
+- The command palette keeps the keyboard-selected row in view when you arrow past
+  the visible area.
+
 ## [0.11.0]
 
 ### Fixed

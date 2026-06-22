@@ -138,8 +138,9 @@ contextBridge.exposeInMainWorld('swarmmind', {
   // and receives streamed text via onSwarmAgentDelta.
   swarmAgentHasKey: () => ipcRenderer.invoke('swarmAgent:hasKey'),
   swarmAgentSetKey: (key: string) => ipcRenderer.invoke('swarmAgent:setKey', key),
-  swarmAgentChat: (requestId: string, messages: unknown[], tools: unknown[]) =>
-    ipcRenderer.invoke('swarmAgent:chat', requestId, messages, tools),
+  swarmAgentListModels: () => ipcRenderer.invoke('swarmAgent:listModels'),
+  swarmAgentChat: (requestId: string, messages: unknown[], tools: unknown[], context?: string) =>
+    ipcRenderer.invoke('swarmAgent:chat', requestId, messages, tools, context),
   onSwarmAgentDelta: (cb: (data: { requestId: string; text: string }) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { requestId: string; text: string }) => cb(data)
     ipcRenderer.on('swarmagent:delta', handler)
@@ -172,6 +173,7 @@ contextBridge.exposeInMainWorld('swarmmind', {
     ipcRenderer.invoke('voiceCache:put', key, data, headers),
 
   fsListDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
+  fsListFiles: (rootPath: string, max?: number) => ipcRenderer.invoke('fs:listFiles', rootPath, max),
   fsReadFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
   fsWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeFile', filePath, content),
   fsReadImage: (filePath: string) => ipcRenderer.invoke('fs:readImage', filePath),
@@ -188,6 +190,7 @@ contextBridge.exposeInMainWorld('swarmmind', {
   gitWorktreeDiffStat: (root: string, worktreePath: string, baseRef?: string) => ipcRenderer.invoke('git:worktreeDiffStat', root, worktreePath, baseRef),
   gitWorktreeDiff: (root: string, worktreePath: string, file?: string, baseRef?: string) => ipcRenderer.invoke('git:worktreeDiff', root, worktreePath, file, baseRef),
   gitWorktreeCommit: (worktreePath: string, message: string) => ipcRenderer.invoke('git:worktreeCommit', worktreePath, message),
+  gitWorktreeCommitFiles: (worktreePath: string, message: string, files: string[]) => ipcRenderer.invoke('git:worktreeCommitFiles', worktreePath, message, files),
   gitMergeBranch: (root: string, branch: string) => ipcRenderer.invoke('git:mergeBranch', root, branch),
 
   // Checkpoints & Rewind

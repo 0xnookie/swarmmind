@@ -84,10 +84,12 @@ declare global {
       // SwarmAgent (in-app assistant; Groq-backed, key held in main process)
       swarmAgentHasKey: () => Promise<boolean>
       swarmAgentSetKey: (key: string) => Promise<boolean>
+      swarmAgentListModels: () => Promise<string[]>
       swarmAgentChat: (
         requestId: string,
         messages: SwarmAgentMessage[],
         tools: unknown[],
+        context?: string,
       ) => Promise<{ message?: SwarmAgentMessage; error?: string }>
       onSwarmAgentDelta: (cb: (data: { requestId: string; text: string }) => void) => () => void
       // SwarmAgent desktop widget (separate floating window)
@@ -116,6 +118,7 @@ declare global {
       onMenuOpenWorkspace: (cb: () => void) => () => void
       // File system
       fsListDir: (dirPath: string) => Promise<FsEntry[]>
+      fsListFiles: (rootPath: string, max?: number) => Promise<string[]>
       fsReadFile: (filePath: string) => Promise<string>
       fsWriteFile: (filePath: string, content: string) => Promise<void>
       fsReadImage: (filePath: string) => Promise<ImageData>
@@ -132,6 +135,7 @@ declare global {
       gitWorktreeDiffStat: (root: string, worktreePath: string, baseRef?: string) => Promise<WorktreeDiffStat>
       gitWorktreeDiff: (root: string, worktreePath: string, file?: string, baseRef?: string) => Promise<string>
       gitWorktreeCommit: (worktreePath: string, message: string) => Promise<{ hash: string | null } | { error: string }>
+      gitWorktreeCommitFiles: (worktreePath: string, message: string, files: string[]) => Promise<{ hash: string | null } | { error: string }>
       gitMergeBranch: (root: string, branch: string) => Promise<{ ok: true; message: string } | { ok: false; conflict: boolean; error: string }>
       // Checkpoints & Rewind
       checkpointCreate: (label?: string, trigger?: string) => Promise<CheckpointRecord | { error: string }>

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { useT } from '../i18n'
 import { getEffectiveKeys, formatKeys } from '../shortcuts'
+import { fuzzyMatch } from '../lib/fuzzy'
 
 interface Command {
   id: string
@@ -12,6 +13,19 @@ interface Command {
 
 interface RemoteWorkspace { id: string; name: string; root_path: string }
 
+// Most-recently-used command ids, persisted so the palette surfaces what you
+// actually reach for. Capped small; survives restarts on the file:// origin.
+const MRU_KEY = 'palette:mru'
+const MRU_MAX = 8
+function loadMru(): string[] {
+  try { const a = JSON.parse(localStorage.getItem(MRU_KEY) || '[]'); return Array.isArray(a) ? a : [] } catch { return [] }
+}
+function bumpMru(id: string): string[] {
+  const next = [id, ...loadMru().filter(x => x !== id)].slice(0, MRU_MAX)
+  try { localStorage.setItem(MRU_KEY, JSON.stringify(next)) } catch { /* best-effort */ }
+  return next
+}
+
 export function CommandPalette() {
   const t = useT()
   const open = useWorkspaceStore(s => s.commandPaletteOpen)
@@ -20,15 +34,22 @@ export function CommandPalette() {
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const [workspaces, setWorkspaces] = useState<RemoteWorkspace[]>([])
+  const [skills, setSkills] = useState<Skill[]>([])
+  const [mru, setMru] = useState<string[]>(loadMru)
   const inputRef = useRef<HTMLInputElement>(null)
+  const activeRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (!open) return
-    setQuery(''); setIndex(0)
+    setQuery(''); setIndex(0); setMru(loadMru())
     window.swarmmind.workspaceList().then(l => { if (Array.isArray(l)) setWorkspaces(l as RemoteWorkspace[]) }).catch(() => {})
+    window.swarmmind.skillList().then(l => { if (Array.isArray(l)) setSkills(l) }).catch(() => {})
     const t = setTimeout(() => inputRef.current?.focus(), 0)
     return () => clearTimeout(t)
   }, [open])
+
+  // Run a command and record it as recently used.
+  const runCommand = (c: Command) => { setMru(bumpMru(c.id)); c.run() }
 
   const commands = useMemo<Command[]>(() => {
     if (!open) return []
@@ -62,6 +83,20 @@ export function CommandPalette() {
     s.getLeafIds().forEach((id, i) => {
       list.push({ id: `focus-${id}`, title: t('cmd.focusPane', { n: i + 1 }), section: t('cmd.section.panes'), run: () => { s.setActivePaneId(id); close() } })
     })
+    // Run a saved skill into the active pane (falling back to the first pane) —
+    // the same `swarmmind:run-skill` event the SkillsLibrary dispatches.
+    for (const sk of skills) {
+      list.push({
+        id: `skill-${sk.id}`,
+        title: t('cmd.runSkill', { name: sk.name }),
+        section: t('cmd.section.skills'),
+        run: () => {
+          const paneId = s.activePaneId ?? s.getLeafIds()[0]
+          if (paneId) window.dispatchEvent(new CustomEvent('swarmmind:run-skill', { detail: { paneId, promptText: sk.prompt_text, submit: true } }))
+          close()
+        },
+      })
+    }
     // Switch workspace
     for (const ws of workspaces) {
       if (ws.id === s.workspace?.id) continue
@@ -81,15 +116,41 @@ export function CommandPalette() {
       })
     }
     return list
-  }, [open, workspaces, setOpen, t])
+  }, [open, workspaces, skills, setOpen, t])
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return commands
-    return commands.filter(c => c.title.toLowerCase().includes(q))
-  }, [commands, query])
+  // Recency rank for a command id (higher = more recent), 0 if never used.
+  const recency = (id: string) => { const i = mru.indexOf(id); return i === -1 ? 0 : MRU_MAX - i }
+
+  // Fuzzy-rank against title (and fall back to section so "view" surfaces the
+  // view commands). Each result carries the matched title indices for highlight.
+  // Empty query: most-recently-used first, then declared order.
+  const filtered = useMemo<(Command & { indices: number[] })[]>(() => {
+    const q = query.trim()
+    if (!q) {
+      const recent = [...commands]
+        .filter(c => mru.includes(c.id))
+        .sort((a, b) => recency(b.id) - recency(a.id))
+      const recentIds = new Set(recent.map(c => c.id))
+      const rest = commands.filter(c => !recentIds.has(c.id))
+      return [...recent, ...rest].map(c => ({ ...c, indices: [] }))
+    }
+    const scored: { cmd: Command; score: number; indices: number[] }[] = []
+    for (const c of commands) {
+      const titleM = fuzzyMatch(q, c.title)
+      const sectionM = fuzzyMatch(q, c.section)
+      // Small recency nudge so frequently-used matches float up among ties.
+      const bonus = recency(c.id) * 0.6
+      if (titleM.matched) scored.push({ cmd: c, score: titleM.score + bonus, indices: titleM.indices })
+      else if (sectionM.matched) scored.push({ cmd: c, score: sectionM.score * 0.4 + bonus, indices: [] })
+    }
+    scored.sort((a, b) => b.score - a.score)
+    return scored.map(s => ({ ...s.cmd, indices: s.indices }))
+  }, [commands, query, mru])
 
   useEffect(() => { setIndex(0) }, [query])
+
+  // Keep the keyboard-selected row visible when arrowing past the fold.
+  useEffect(() => { activeRef.current?.scrollIntoView({ block: 'nearest' }) }, [index])
 
   if (!open) return null
 
@@ -97,7 +158,7 @@ export function CommandPalette() {
     if (e.key === 'Escape') { e.preventDefault(); setOpen(false) }
     else if (e.key === 'ArrowDown') { e.preventDefault(); setIndex(i => Math.min(filtered.length - 1, i + 1)) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setIndex(i => Math.max(0, i - 1)) }
-    else if (e.key === 'Enter') { e.preventDefault(); filtered[index]?.run() }
+    else if (e.key === 'Enter') { e.preventDefault(); const c = filtered[index]; if (c) runCommand(c) }
   }
 
   return (
@@ -120,11 +181,12 @@ export function CommandPalette() {
             return (
               <button
                 key={c.id}
+                ref={i === index ? activeRef : undefined}
                 style={{ ...styles.row, ...(i === index ? styles.rowActive : {}) }}
                 onMouseEnter={() => setIndex(i)}
-                onClick={() => c.run()}
+                onClick={() => runCommand(c)}
               >
-                <span style={styles.rowTitle}>{c.title}</span>
+                <span style={styles.rowTitle}>{highlight(c.title, c.indices)}</span>
                 {keys && <span style={styles.rowKeys}>{formatKeys(keys)}</span>}
                 <span style={styles.rowSection}>{c.section}</span>
               </button>
@@ -136,6 +198,27 @@ export function CommandPalette() {
   )
 }
 
+// Render a title with the fuzzy-matched characters emphasised.
+function highlight(title: string, indices: number[]): React.ReactNode {
+  if (!indices.length) return title
+  const set = new Set(indices)
+  const out: React.ReactNode[] = []
+  let run = ''
+  let runMatch = set.has(0)
+  const flush = (i: number) => {
+    if (!run) return
+    out.push(runMatch ? <mark key={i} style={styles.rowMark}>{run}</mark> : <React.Fragment key={i}>{run}</React.Fragment>)
+    run = ''
+  }
+  for (let i = 0; i < title.length; i++) {
+    const m = set.has(i)
+    if (m !== runMatch) { flush(i); runMatch = m }
+    run += title[i]
+  }
+  flush(title.length)
+  return out
+}
+
 const styles: Record<string, React.CSSProperties> = {
   overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: '12vh', zIndex: 700 },
   card: { width: 540, maxWidth: '90vw', background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 12, boxShadow: 'var(--shadow-lg)', overflow: 'hidden', display: 'flex', flexDirection: 'column' },
@@ -145,6 +228,7 @@ const styles: Record<string, React.CSSProperties> = {
   row: { display: 'flex', alignItems: 'center', gap: 10, width: '100%', background: 'transparent', border: 'none', borderRadius: 8, padding: '9px 12px', cursor: 'pointer', textAlign: 'left' },
   rowActive: { background: 'var(--accent-subtle)' },
   rowTitle: { flex: 1, minWidth: 0, fontSize: 13.5, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  rowMark: { background: 'transparent', color: 'var(--accent)', fontWeight: 600 },
   rowKeys: { fontSize: 11, color: 'var(--text-secondary)', fontFamily: 'var(--font-ui)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 5, padding: '1px 6px', whiteSpace: 'nowrap', flexShrink: 0 },
   rowSection: { fontSize: 10.5, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 },
 }

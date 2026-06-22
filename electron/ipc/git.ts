@@ -7,6 +7,7 @@ import {
   worktreeDiffStat,
   worktreeDiff,
   worktreeCommit,
+  worktreeCommitFiles,
   mergeBranch,
   getBaseBranch,
   type WorktreeInfo,
@@ -54,6 +55,14 @@ export function registerGitHandlers(): void {
   ipcMain.handle('git:worktreeCommit', async (_e, worktreePath: string, message: string): Promise<{ hash: string | null } | { error: string }> => {
     try {
       return { hash: await worktreeCommit(worktreePath, message) }
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  ipcMain.handle('git:worktreeCommitFiles', async (_e, worktreePath: string, message: string, files: string[]): Promise<{ hash: string | null } | { error: string }> => {
+    try {
+      return { hash: await worktreeCommitFiles(worktreePath, message, files) }
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) }
     }

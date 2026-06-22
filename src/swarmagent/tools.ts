@@ -42,6 +42,32 @@ function timeAgo(ts: number): string {
 
 const paneLabel = (l: PaneLeaf) => l.title?.trim() || l.agentId || 'agent'
 
+// A compact, live snapshot of the workspace, injected into the system prompt on
+// every turn so the assistant is grounded in the current state without first
+// having to call get_status. Synchronous and short to stay cheap on tokens —
+// task counts and other DB-backed detail stay behind explicit tools.
+export function buildSwarmAgentContext(): string {
+  const st = useWorkspaceStore.getState()
+  if (!st.workspace) return 'No workspace is currently open.'
+  const leaves = collectLeaves(st.rootPane).filter(l => l.agentId)
+  const panes = leaves.map(l => {
+    const running = l.ptyStatus === 'running'
+    const waiting = running && st.paneAttention[l.id] === 'waiting'
+    const state = !running ? 'idle' : waiting ? 'waiting for input' : 'working'
+    return `"${paneLabel(l)}" [${l.agentId}, ${state}]`
+  })
+  const blocked = st.notifications.filter(n => !n.read).length
+  const loopCount = st.loops.filter(l => l.enabled).length + st.cliLoops.length
+  const lines = [
+    `Current workspace: "${st.workspace.name}".`,
+    panes.length ? `Agent panes (${panes.length}): ${panes.join('; ')}.` : 'No agent panes are open yet.',
+    blocked ? `${blocked} agent(s) are waiting for the user's input right now.` : null,
+    loopCount ? `${loopCount} active loop(s).` : null,
+    st.orchestrationMode !== 'off' ? `Orchestration mode: ${st.orchestrationMode}.` : null,
+  ].filter(Boolean)
+  return lines.join(' ')
+}
+
 // Load the SwarmMind-managed worktrees (under .swarmmind/worktrees/) plus the
 // base branch and a friendly label per branch (the pane's title/agent). Mirrors
 // WorktreeReview.tsx's world model. Shared by review_agent_work / merge_agent_work.
@@ -458,6 +484,34 @@ export const SWARM_AGENT_TOOLS = [
         type: 'object',
         properties: { query: { type: 'string', description: 'What to look for.' } },
         required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: "Read a text file from the open workspace and return its contents (truncated if large). Use to answer questions about the code or config directly — e.g. \"what does src/App.tsx do?\", \"show me package.json\", or to inspect a file the user @-mentioned. The path is relative to the workspace root.",
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Workspace-relative file path, e.g. "src/store/workspace.ts".' },
+          maxChars: { type: 'number', description: 'Optional cap on characters returned (default 6000, max 20000).' },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'list_files',
+      description: "List files in the open workspace (relative paths), optionally filtered by a substring. Use to discover files before reading one — e.g. \"what components are there?\". Skips node_modules, .git and build output.",
+      parameters: {
+        type: 'object',
+        properties: {
+          filter: { type: 'string', description: 'Optional case-insensitive substring to filter paths, e.g. "component" or ".tsx".' },
+        },
       },
     },
   },
@@ -992,6 +1046,35 @@ export const TOOL_EXECUTORS: Record<string, Executor> = {
     const hits = (await window.swarmmind.memorySearch(query, 5)) as { key: string; value: string }[]
     if (!hits?.length) return `Nothing in shared memory about "${query}".`
     return hits.map(h => `${h.key}: ${h.value.slice(0, 160)}`).join(' | ')
+  },
+
+  async read_file(args) {
+    const root = useWorkspaceStore.getState().workspace?.rootPath
+    if (!root) return 'Open a workspace first.'
+    const rel = typeof args.path === 'string' ? args.path.trim().replace(/^[./\\]+/, '') : ''
+    if (!rel) return 'No file path given.'
+    if (rel.includes('..')) return 'Refusing to read outside the workspace.'
+    const max = typeof args.maxChars === 'number' && args.maxChars > 0 ? Math.min(args.maxChars, 20000) : 6000
+    const abs = `${root.replace(/[\\/]+$/, '')}/${rel}`
+    try {
+      const content = await window.swarmmind.fsReadFile(abs)
+      if (content.length <= max) return `${rel}:\n\n${content}`
+      return `${rel} (first ${max} of ${content.length} chars):\n\n${content.slice(0, max)}\n… [truncated]`
+    } catch (err) {
+      return `Could not read ${rel}: ${err instanceof Error ? err.message : String(err)}`
+    }
+  },
+
+  async list_files(args) {
+    const root = useWorkspaceStore.getState().workspace?.rootPath
+    if (!root) return 'Open a workspace first.'
+    const filter = typeof args.filter === 'string' ? args.filter.toLowerCase().trim() : ''
+    let files: string[] = []
+    try { files = await window.swarmmind.fsListFiles(root) } catch { return 'Could not list files.' }
+    if (filter) files = files.filter(f => f.toLowerCase().includes(filter))
+    if (!files.length) return filter ? `No files matching "${filter}".` : 'No files found.'
+    const shown = files.slice(0, 100)
+    return `${files.length} file(s)${filter ? ` matching "${filter}"` : ''}${files.length > shown.length ? ` (showing first ${shown.length})` : ''}:\n${shown.join('\n')}`
   },
 
   async review_agent_work() {

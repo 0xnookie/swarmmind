@@ -220,6 +220,20 @@ export async function worktreeCommit(worktreePath: string, message: string): Pro
   return git(worktreePath, ['rev-parse', '--short', 'HEAD'])
 }
 
+// Commit only the given files (selective staging), so a reviewer can land part of
+// an agent's work and leave the rest. Empty/omitted `files` falls back to a full
+// commit. Stages exactly the listed paths (including deletions, via `add -A --`)
+// then commits only the staged index. Returns the new short hash, or null if
+// nothing of the selection was actually staged.
+export async function worktreeCommitFiles(worktreePath: string, message: string, files: string[]): Promise<string | null> {
+  if (!files || files.length === 0) return worktreeCommit(worktreePath, message)
+  await git(worktreePath, ['add', '-A', '--', ...files])
+  const staged = await git(worktreePath, ['diff', '--cached', '--name-only'])
+  if (!staged.trim()) return null
+  await git(worktreePath, ['commit', '-m', message || 'SwarmMind: commit selected changes'])
+  return git(worktreePath, ['rev-parse', '--short', 'HEAD'])
+}
+
 // Merge a worktree's branch into the main checkout's current branch. Only
 // committed work is merged. On conflict the merge is aborted so the main
 // checkout is left clean, and the conflict is reported for the user to resolve

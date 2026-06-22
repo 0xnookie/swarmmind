@@ -16,6 +16,15 @@ import { LoginTerminal } from './LoginTerminal'
 // electron/agent-accounts.ts. Other agents fall back to manual API-key entry.
 const PROFILE_AGENTS = new Set<AgentId>(['claude', 'codex', 'opencode'])
 
+// Curated SwarmAgent (Groq) model recommendations — quick-pick buttons next to
+// the model field. The live list fetched from the key augments these in the
+// datalist; verify the catalogue per release (Groq's lineup changes often).
+const SWARMAGENT_RECOMMENDED: { id: string; label: string }[] = [
+  { id: 'openai/gpt-oss-120b', label: 'Most capable' },
+  { id: 'llama-3.3-70b-versatile', label: 'Balanced' },
+  { id: 'openai/gpt-oss-20b', label: 'Fastest' },
+]
+
 // Whisper model choices for SwarmVoice (Settings → General).
 const VOICE_MODEL_OPTIONS: { value: VoiceModel; labelKey: 'settings.voice.model.tiny' | 'settings.voice.model.base' | 'settings.voice.model.small' }[] = [
   { value: 'tiny',  labelKey: 'settings.voice.model.tiny' },
@@ -143,6 +152,8 @@ export function SettingsModal() {
   const [swarmAgentKeyDraft, setSwarmAgentKeyDraft] = useState('')
   const [swarmAgentHasKey, setSwarmAgentHasKey] = useState(false)
   const [swarmAgentModelDraft, setSwarmAgentModelDraft] = useState('')
+  // Models fetched live from Groq (empty until the key is set / fetch returns).
+  const [swarmAgentModels, setSwarmAgentModels] = useState<string[]>([])
   // Terminal-section draft
   const [fontSize, setFontSize] = useState(storeFontSize)
   const [cursorBlink, setCursorBlink] = useState(storeCursorBlink)
@@ -191,6 +202,7 @@ export function SettingsModal() {
     setSwarmAgentKeyDraft('')
     window.swarmmind.swarmAgentHasKey().then(setSwarmAgentHasKey).catch(() => {})
     window.swarmmind.getAppSetting('swarmAgentModel').then(val => setSwarmAgentModelDraft(val ?? '')).catch(() => {})
+    window.swarmmind.swarmAgentListModels().then(m => { if (Array.isArray(m)) setSwarmAgentModels(m) }).catch(() => {})
     setRecordingId(null)
     setAccentDraft(useWorkspaceStore.getState().accentColor ?? '')
 
@@ -572,11 +584,30 @@ export function SettingsModal() {
                   <input
                     id="swarmagent-model"
                     type="text"
+                    list="swarmagent-model-options"
                     style={styles.input}
                     value={swarmAgentModelDraft}
                     placeholder="llama-3.3-70b-versatile"
                     onChange={e => { setSwarmAgentModelDraft(e.target.value); setGeneralDirty(true) }}
                   />
+                  <datalist id="swarmagent-model-options">
+                    {Array.from(new Set([...SWARMAGENT_RECOMMENDED.map(r => r.id), ...swarmAgentModels])).map(id => (
+                      <option key={id} value={id} />
+                    ))}
+                  </datalist>
+                  <div style={styles.modelPicks}>
+                    {SWARMAGENT_RECOMMENDED.map(r => (
+                      <button
+                        key={r.id}
+                        type="button"
+                        style={{ ...styles.modelPick, ...(swarmAgentModelDraft === r.id ? styles.modelPickActive : {}) }}
+                        title={r.id}
+                        onClick={() => { setSwarmAgentModelDraft(r.id); setGeneralDirty(true) }}
+                      >
+                        {r.label}
+                      </button>
+                    ))}
+                  </div>
                   <p style={styles.desc}>{t('settings.swarmAgent.modelDesc')}</p>
                 </Group>
 
@@ -1163,6 +1194,13 @@ const styles: Record<string, React.CSSProperties> = {
   label: { fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' },
   optional: { fontWeight: 400, color: 'var(--text-dim)' },
   desc: { fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.55 },
+  modelPicks: { display: 'flex', flexWrap: 'wrap', gap: 6, margin: '6px 0 2px' },
+  modelPick: {
+    fontSize: 11, color: 'var(--text-secondary)', background: 'var(--bg-base)',
+    border: '1px solid var(--border)', borderRadius: 9999, padding: '3px 11px', cursor: 'pointer',
+    transition: 'border-color 120ms, color 120ms, background 120ms',
+  },
+  modelPickActive: { borderColor: 'var(--accent)', color: 'var(--accent)', background: 'var(--accent-subtle)' },
   input: {
     background: 'var(--bg-base)',
     border: '1px solid var(--border)',

@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore, type PaneNode } from '../store/workspace'
 import { useSwarmAgent } from '../hooks/useSwarmAgent'
 import { useVoice } from '../hooks/useVoice'
+import { useFileMentions } from '../hooks/useFileMentions'
 import { useT, type TFunction } from '../i18n'
+import { Markdown } from '../lib/markdown'
 import logoUrl from '../assets/logo.png'
 import './SwarmAgentChat.css'
 
@@ -26,6 +28,7 @@ export function SwarmAgentChat() {
   const [hasKey, setHasKey] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const mentions = useFileMentions({ value: input, setValue: setInput, textareaRef: inputRef })
 
   // Voice input: a transcript is sent straight through for a hands-free flow.
   const voice = useVoice(text => { if (text.trim()) send(text) })
@@ -56,7 +59,16 @@ export function SwarmAgentChat() {
     if (!sending) inputRef.current?.focus()
   }, [sending])
 
+  // Stick to the bottom only when the user is already near it — so scrolling up
+  // to re-read history isn't yanked back down while the agent streams.
+  const stickRef = useRef(true)
+  const onScroll = () => {
+    const el = scrollRef.current
+    if (!el) return
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }
   useEffect(() => {
+    if (!stickRef.current) return
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [messages, streaming, sending])
 
@@ -107,7 +119,7 @@ export function SwarmAgentChat() {
         </div>
       </header>
 
-      <div ref={scrollRef} className="sa-scroll">
+      <div ref={scrollRef} className="sa-scroll" onScroll={onScroll}>
         {!hasKey && (
           <div className="sa-notice">
             <span className="sa-notice-key"><KeyIcon /></span>
@@ -137,7 +149,7 @@ export function SwarmAgentChat() {
         {streaming && (
           <div className="sa-row sa-assistant">
             <div className="sa-orb sa-orb-sm"><OrbMark /></div>
-            <div className="sa-bubble sa-from-assistant">{streaming}</div>
+            <div className="sa-bubble sa-from-assistant"><Markdown text={streaming} /></div>
           </div>
         )}
         {sending && !streaming && (
@@ -152,6 +164,21 @@ export function SwarmAgentChat() {
       </div>
 
       <div className="sa-composer">
+        {mentions.active && (
+          <div className="sa-mention-menu">
+            {mentions.candidates.map((path, i) => (
+              <button
+                key={path}
+                className={`sa-mention-item${i === mentions.index ? ' sa-mention-active' : ''}`}
+                onMouseEnter={() => mentions.setIndex(i)}
+                onMouseDown={e => { e.preventDefault(); mentions.choose(path); grow() }}
+              >
+                <span className="sa-mention-name">{path.split('/').pop()}</span>
+                <span className="sa-mention-dir">{path}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="sa-composer-box">
           <button
             className="sa-mic"
@@ -176,8 +203,11 @@ export function SwarmAgentChat() {
             value={input}
             placeholder={t('swarmAgent.placeholder')}
             rows={1}
-            onChange={e => { setInput(e.target.value); grow() }}
+            onChange={e => { setInput(e.target.value); grow(); requestAnimationFrame(mentions.refresh) }}
+            onKeyUp={mentions.refresh}
+            onClick={mentions.refresh}
             onKeyDown={e => {
+              if (mentions.onKeyDown(e)) return
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
             }}
           />
@@ -218,7 +248,7 @@ function MessageRow({ m, t, live }: { m: SwarmAgentMessage; t: TFunction; live: 
       {m.content && (
         <div className="sa-row sa-assistant">
           <div className="sa-orb sa-orb-sm"><OrbMark /></div>
-          <div className="sa-bubble sa-from-assistant">{m.content}</div>
+          <div className="sa-bubble sa-from-assistant"><Markdown text={m.content} /></div>
         </div>
       )}
       {m.tool_calls?.map(c => (

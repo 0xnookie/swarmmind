@@ -54,6 +54,8 @@ export function WorktreeReview() {
   const [commitOpen, setCommitOpen] = useState(false)
   const [commitMsg, setCommitMsg] = useState('')
   const [busy, setBusy] = useState(false)
+  // Files ticked to commit selectively; empty = commit everything (the default).
+  const [staged, setStaged] = useState<Set<string>>(new Set())
 
   const paneMeta = useMemo(() => {
     const out: Record<string, PaneMeta> = {}
@@ -126,14 +128,24 @@ export function WorktreeReview() {
     if (!selectedRow) return
     setBusy(true)
     setNotice(null)
-    const res = await window.swarmmind.gitWorktreeCommit(selectedRow.path, commitMsg.trim())
+    // Commit only ticked files when any are ticked; otherwise everything.
+    const files = Array.from(staged)
+    const res = files.length
+      ? await window.swarmmind.gitWorktreeCommitFiles(selectedRow.path, commitMsg.trim(), files)
+      : await window.swarmmind.gitWorktreeCommit(selectedRow.path, commitMsg.trim())
     setBusy(false)
     setCommitOpen(false)
     setCommitMsg('')
     if ('error' in res) setNotice({ kind: 'err', text: res.error })
     else if (res.hash === null) setNotice({ kind: 'ok', text: t('worktree.nothingToCommit') })
-    else { setNotice({ kind: 'ok', text: t('worktree.committed', { hash: res.hash }) }); refresh() }
+    else { setNotice({ kind: 'ok', text: t('worktree.committed', { hash: res.hash }) }); setStaged(new Set()); refresh() }
   }
+
+  const toggleStaged = (path: string) => setStaged(prev => {
+    const next = new Set(prev)
+    if (next.has(path)) next.delete(path); else next.add(path)
+    return next
+  })
 
   const doDiscard = async () => {
     if (!root || !selectedRow) return
@@ -174,7 +186,7 @@ export function WorktreeReview() {
               <button
                 key={r.path}
                 style={{ ...styles.branchItem, ...(isSel ? styles.branchItemActive : {}) }}
-                onClick={() => { setSelected(r.path); setSelectedFile(null); setNotice(null) }}
+                onClick={() => { setSelected(r.path); setSelectedFile(null); setNotice(null); setStaged(new Set()) }}
               >
                 <span style={{ ...styles.branchDot, background: meta?.color || 'var(--accent)' }} />
                 <span style={styles.branchName}>{label(r.branch)}</span>
@@ -204,7 +216,9 @@ export function WorktreeReview() {
                   )}
                 </span>
                 <div style={{ flex: 1 }} />
-                <button style={styles.actBtn} disabled={busy} onClick={() => setCommitOpen(o => !o)}>{t('worktree.commitAll')}</button>
+                <button style={styles.actBtn} disabled={busy} onClick={() => setCommitOpen(o => !o)}>
+                  {staged.size > 0 ? t('worktree.commitSelected', { n: staged.size }) : t('worktree.commitAll')}
+                </button>
                 <button style={{ ...styles.actBtn, ...styles.mergeBtn }} disabled={busy} onClick={doMerge}>{t('worktree.mergeInto', { base })}</button>
                 <button style={{ ...styles.actBtn, ...styles.discardBtn }} disabled={busy} onClick={doDiscard}>{t('worktree.discard')}</button>
               </div>
@@ -237,14 +251,22 @@ export function WorktreeReview() {
                     onClick={() => setSelectedFile(null)}
                   >{t('worktree.all')}</button>
                   {selectedStat.files.map(f => (
-                    <button
-                      key={f.path}
-                      style={{ ...styles.chip, ...(selectedFile === f.path ? styles.chipActive : {}) }}
-                      onClick={() => setSelectedFile(f.path)}
-                      title={f.path}
-                    >
-                      {f.path.split('/').pop()} <span style={styles.add}>+{f.additions}</span>/<span style={styles.del}>−{f.deletions}</span>
-                    </button>
+                    <span key={f.path} style={{ ...styles.fileChipWrap, ...(staged.has(f.path) ? styles.fileChipWrapStaged : {}) }}>
+                      <input
+                        type="checkbox"
+                        style={styles.fileCheck}
+                        checked={staged.has(f.path)}
+                        onChange={() => toggleStaged(f.path)}
+                        title={t('worktree.stageForCommit')}
+                      />
+                      <button
+                        style={{ ...styles.chip, ...styles.chipInWrap, ...(selectedFile === f.path ? styles.chipActive : {}) }}
+                        onClick={() => setSelectedFile(f.path)}
+                        title={f.path}
+                      >
+                        {f.path.split('/').pop()} <span style={styles.add}>+{f.additions}</span>/<span style={styles.del}>−{f.deletions}</span>
+                      </button>
+                    </span>
                   ))}
                 </div>
               )}
@@ -332,6 +354,10 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)', padding: '2px 8px', cursor: 'pointer', fontSize: 10, fontFamily: 'var(--font-mono, monospace)',
   },
   chipActive: { borderColor: 'var(--accent)', color: 'var(--text-primary)' },
+  fileChipWrap: { display: 'inline-flex', alignItems: 'center', gap: 4, border: '1px solid transparent', borderRadius: 'var(--radius)', paddingLeft: 4 },
+  fileChipWrapStaged: { borderColor: 'var(--accent)', background: 'var(--accent-subtle)' },
+  fileCheck: { cursor: 'pointer', accentColor: 'var(--accent)', width: 12, height: 12 },
+  chipInWrap: { border: '1px solid transparent', background: 'transparent' },
   diffWrap: { flex: 1, minHeight: 0, overflow: 'auto', background: 'var(--bg-base)' },
   diff: { margin: 0, padding: '8px 12px', fontSize: 11.5, lineHeight: 1.5, fontFamily: 'var(--font-mono, monospace)' },
   empty: { padding: 24, color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' },

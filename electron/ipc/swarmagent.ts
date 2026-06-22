@@ -45,11 +45,12 @@ You have more tools for working inside the open workspace:
 - Checkpoints (whole-workspace git snapshots for rollback): create_checkpoint saves one (give it a descriptive label) — use it for "snapshot before this risky change". list_checkpoints shows what's saved. restore_checkpoint rewinds the workspace to one by label (omit the label for the most recent). Restoring overwrites current files, so confirm with the user first unless they clearly asked to roll back; a safety snapshot is taken automatically before any rewind.
 - Reviewing & landing agent work (each agent pane can run on its own git worktree branch): review_agent_work summarises every agent branch's changes vs the main branch (files, +/- lines, commits ahead, uncommitted edits) — use for "what did the agents build?" or "is anything ready to merge?". merge_agent_work merges one agent's branch into the main branch (identify it by branch name or pane title; it commits any uncommitted work first and aborts cleanly on conflict). discard_agent_work throws a branch away (removes its worktree + deletes the branch) for a failed experiment. Merging changes the main branch and discarding is irreversible, so confirm with the user before either unless they clearly asked.
 - set_pane_title renames an agent pane for clearer labels ("call the left one backend") — identify the pane by its agent and/or current title. close_pane closes one agent pane and stops its agent; confirm before closing unless the user clearly asked.
+- Reading the codebase: read_file returns a workspace file's contents (path relative to the workspace root) so you can answer questions about the code directly; list_files discovers files (optionally filtered). Use them for "what does X do?", "show me file Y", or to inspect a file the user @-mentioned. Prefer reading the specific file over guessing.
 - Tasks: create_task, list_tasks, update_task manage the shared Kanban task queue.
 - Shared memory: remember (save a note) and recall (search notes) the workspace's shared memory.
 - Orchestration: start_orchestration kicks off the autonomous Conductor (optionally with a goal for the lead pane to decompose); stop_orchestration turns it off. Agent panes must be running first.
 
-Prefer get_status when you're unsure of the current state. Keep using a tool only when the user actually wants that action; otherwise just talk.
+A "LIVE APP STATE (right now)" section is appended below on every turn with the open workspace, the agent panes and whether each is idle / working / waiting for input, active loops, and orchestration mode. Trust it for basic awareness — you usually do NOT need get_status to answer "what's running?" or to pick a pane. Still call get_status for task counts, or the read_agent / list_* tools when you need detail it doesn't include. Keep using a tool only when the user actually wants that action; otherwise just talk.
 
 Reply in the user's language (the app supports English and German). Be concise and friendly.`
 
@@ -84,12 +85,40 @@ export function registerSwarmAgentHandlers(_getWindow: () => BrowserWindow | nul
     return true
   })
 
+  // List the models available to this Groq key, so Settings can offer a live
+  // picker instead of a free-text guess (Groq's catalogue changes often). Newest
+  // first when a created timestamp is present; empty array on no-key/error so the
+  // UI just falls back to free text + the curated recommendations.
+  ipcMain.handle('swarmAgent:listModels', async (): Promise<string[]> => {
+    const apiKey = getKey()
+    if (!apiKey) return []
+    try {
+      const client = new Groq({ apiKey })
+      const res = await client.models.list()
+      const data = (res.data ?? []) as { id: string; created?: number }[]
+      return data
+        .filter(m => m.id && !/whisper|tts|guard|embed/i.test(m.id)) // chat models only
+        .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))
+        .map(m => m.id)
+    } catch {
+      return []
+    }
+  })
+
   // Run one model turn. Streams assistant text deltas to the renderer via
   // `swarmagent:delta` (keyed by requestId) and resolves with the assembled
   // assistant message so the renderer can execute any tool calls and loop.
-  ipcMain.handle('swarmAgent:chat', async (_e, requestId: string, messages: ChatMessage[], tools: ToolDef[]) => {
+  ipcMain.handle('swarmAgent:chat', async (_e, requestId: string, messages: ChatMessage[], tools: ToolDef[], context?: string) => {
     const apiKey = getKey()
     if (!apiKey) return { error: 'no-key' }
+
+    // Ground the model in the live app state (panes, what's running/waiting,
+    // loops, orchestration) built fresh by the renderer each turn, so it can
+    // answer "what's running?" or pick the right pane without first calling a
+    // tool. Appended to the static system prompt as a clearly-labelled section.
+    const systemPrompt = context && context.trim()
+      ? `${SYSTEM_PROMPT}\n\n--- LIVE APP STATE (right now) ---\n${context.trim()}`
+      : SYSTEM_PROMPT
 
     // Stream deltas back to the window that asked — the main window OR the
     // desktop widget, whichever invoked this turn. (getWindow stays available
@@ -100,7 +129,7 @@ export function registerSwarmAgentHandlers(_getWindow: () => BrowserWindow | nul
     try {
       const stream = await client.chat.completions.create({
         model: getModel(),
-        messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as never,
+        messages: [{ role: 'system', content: systemPrompt }, ...messages] as never,
         tools: tools && tools.length ? tools : undefined,
         tool_choice: tools && tools.length ? 'auto' : undefined,
         stream: true,

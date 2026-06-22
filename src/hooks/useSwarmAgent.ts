@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
-import { SWARM_AGENT_TOOLS, runTool, cancelTools, resetToolCancellation } from '../swarmagent/tools'
+import { SWARM_AGENT_TOOLS, runTool, cancelTools, resetToolCancellation, buildSwarmAgentContext } from '../swarmagent/tools'
 
 // Drives the SwarmAgent conversation. The agentic loop lives here in the
 // renderer because tool calls are app actions: each turn is one
@@ -72,8 +72,12 @@ export interface UseSwarmAgent {
 // the call to the main window instead, since the widget has no workspace state.
 type ToolRunner = (name: string, rawArgs: string) => Promise<string>
 
-export function useSwarmAgent(options?: { runTool?: ToolRunner }): UseSwarmAgent {
+export function useSwarmAgent(options?: { runTool?: ToolRunner; getContext?: () => string }): UseSwarmAgent {
   const runToolFn = options?.runTool ?? runTool
+  // Live workspace snapshot injected into the system prompt each turn. Defaults
+  // to reading this renderer's store; the widget (no store of its own) overrides
+  // it so it never reports a misleading "no workspace open".
+  const getContextFn = options?.getContext ?? buildSwarmAgentContext
   const language = useWorkspaceStore(s => s.language)
   const [messages, setMessages] = useState<SwarmAgentMessage[]>(loadHistory)
   const [streaming, setStreaming] = useState('')
@@ -139,7 +143,9 @@ export function useSwarmAgent(options?: { runTool?: ToolRunner }): UseSwarmAgent
           streamBufRef.current = ''
           setStreaming('')
 
-          const res = await window.swarmmind.swarmAgentChat(reqId, working, SWARM_AGENT_TOOLS as unknown as unknown[])
+          // Rebuilt each step so multi-step runs see state changed by prior tools.
+          const context = getContextFn()
+          const res = await window.swarmmind.swarmAgentChat(reqId, working, SWARM_AGENT_TOOLS as unknown as unknown[], context)
           activeReqRef.current = null
           setStreaming('')
           if (cancelRef.current) return
@@ -178,7 +184,7 @@ export function useSwarmAgent(options?: { runTool?: ToolRunner }): UseSwarmAgent
         activeReqRef.current = null
       }
     })()
-  }, [speak, runToolFn])
+  }, [speak, runToolFn, getContextFn])
 
   const send = useCallback((text: string) => {
     const trimmed = text.trim()

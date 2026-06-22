@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore, type PaneNode, type PaneLeaf, type AgentId } from '../store/workspace'
 import { AgentIcon } from '../data/agents'
+import { useFileMentions } from '../hooks/useFileMentions'
 import { useT } from '../i18n'
 
 const AGENT_LABEL: Record<AgentId, string> = {
@@ -25,6 +26,8 @@ export function BroadcastBar() {
 
   const [text, setText] = useState('')
   const [submit, setSubmit] = useState(true)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const mentions = useFileMentions({ value: text, setValue: setText, textareaRef: inputRef })
 
   // Mixed-workspace panes belong to another workspace's swarm — exclude them
   // from broadcast targeting (and the chip list) so a host broadcast never
@@ -50,6 +53,8 @@ export function BroadcastBar() {
   }
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Let the @-mention menu claim navigation/selection keys first.
+    if (mentions.onKeyDown(e)) return
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); send() }
     else if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
     else if (e.key === 'Escape') toggle()
@@ -102,16 +107,36 @@ export function BroadcastBar() {
 
       {/* Composer */}
       <div style={styles.inputRow}>
-        <textarea
-          style={styles.input}
-          value={text}
-          onChange={e => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={t('broadcast.placeholder')}
-          rows={2}
-          spellCheck={false}
-          autoFocus
-        />
+        <div style={{ flex: 1, position: 'relative' }}>
+          {mentions.active && (
+            <div style={styles.mentionMenu}>
+              {mentions.candidates.map((path, i) => (
+                <button
+                  key={path}
+                  style={{ ...styles.mentionItem, ...(i === mentions.index ? styles.mentionItemActive : {}) }}
+                  onMouseEnter={() => mentions.setIndex(i)}
+                  onMouseDown={e => { e.preventDefault(); mentions.choose(path) }}
+                >
+                  <span style={styles.mentionName}>{path.split('/').pop()}</span>
+                  <span style={styles.mentionDir}>{path}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          <textarea
+            ref={inputRef}
+            style={{ ...styles.input, width: '100%', boxSizing: 'border-box' }}
+            value={text}
+            onChange={e => { setText(e.target.value); requestAnimationFrame(mentions.refresh) }}
+            onKeyUp={mentions.refresh}
+            onClick={mentions.refresh}
+            onKeyDown={onKeyDown}
+            placeholder={t('broadcast.placeholder')}
+            rows={2}
+            spellCheck={false}
+            autoFocus
+          />
+        </div>
         <div style={styles.controls}>
           <label style={styles.submitToggle} title={t('broadcast.submitTitle')}>
             <input type="checkbox" checked={submit} onChange={e => setSubmit(e.target.checked)} />
@@ -156,6 +181,19 @@ const styles: Record<string, React.CSSProperties> = {
   },
   chipLabel: { fontSize: 11.5, color: 'var(--text-secondary)', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   inputRow: { display: 'flex', gap: 8, alignItems: 'stretch' },
+  mentionMenu: {
+    position: 'absolute', bottom: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 50,
+    maxHeight: 220, overflowY: 'auto', background: 'var(--bg-panel)',
+    border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+    boxShadow: 'var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.4))', padding: 4,
+  },
+  mentionItem: {
+    display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', textAlign: 'left',
+    background: 'transparent', border: 'none', borderRadius: 5, padding: '5px 9px', cursor: 'pointer',
+  },
+  mentionItemActive: { background: 'var(--accent-subtle)' },
+  mentionName: { fontSize: 12.5, color: 'var(--text-primary)', fontFamily: "'JetBrains Mono', ui-monospace, monospace", flexShrink: 0 },
+  mentionDir: { fontSize: 10.5, color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   input: {
     flex: 1, resize: 'none', background: 'var(--bg-elevated)', color: 'var(--text-primary)',
     border: '1px solid var(--border)', borderRadius: 'var(--radius)', padding: '8px 11px',

@@ -10,6 +10,14 @@ export interface FsEntry {
   ext: string  // lowercase extension without dot, e.g. 'ts', '' for dirs
 }
 
+// Directories never worth indexing for @-mentions — vendored deps, VCS, build
+// output, caches. Keeps the index relevant and the walk fast.
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '.svn', '.hg', 'dist', 'out', 'build', 'target',
+  '.next', '.nuxt', '.cache', '.turbo', 'coverage', '.venv', 'venv',
+  '__pycache__', '.idea', '.vscode', 'vendor', '.swarmmind',
+])
+
 export function registerFsHandlers(): void {
   // List directory contents — dirs first, then files, both alphabetical
   // Hidden entries (starting with '.') are included but flagged
@@ -33,6 +41,32 @@ export function registerFsHandlers(): void {
     } catch {
       return []
     }
+  })
+
+  // Bounded recursive file index for @-mention pickers (broadcast bar, prompts).
+  // Returns workspace-relative file paths (POSIX slashes), skipping heavy/noise
+  // dirs and capping the count so a huge repo can't stall the UI. Best-effort:
+  // unreadable dirs are silently skipped.
+  ipcMain.handle('fs:listFiles', async (_e, rootPath: string, max = 4000): Promise<string[]> => {
+    if (!existsSync(rootPath)) return []
+    const out: string[] = []
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (out.length >= max || depth > 12) return
+      let entries: import('fs').Dirent[]
+      try { entries = await readdir(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        if (out.length >= max) return
+        if (e.name.startsWith('.') && e.name !== '.env') continue
+        if (e.isDirectory()) {
+          if (SKIP_DIRS.has(e.name)) continue
+          await walk(join(dir, e.name), depth + 1)
+        } else if (e.isFile()) {
+          out.push(join(dir, e.name).slice(rootPath.length + 1).replace(/\\/g, '/'))
+        }
+      }
+    }
+    await walk(rootPath, 0)
+    return out
   })
 
   // Read a text file (max 5MB)

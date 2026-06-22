@@ -4,6 +4,7 @@ import { useVoice } from '../hooks/useVoice'
 import { useAppearanceSync } from '../hooks/useAppearanceSync'
 import { useT } from '../i18n'
 import { AGENTS, AgentIcon } from '../data/agents'
+import { Markdown } from '../lib/markdown'
 import logoUrl from '../assets/logo.png'
 import './SwarmAgentWidget.css'
 
@@ -26,7 +27,10 @@ const ALERT_H = 42
 export function SwarmAgentWidget() {
   useAppearanceSync()
   const t = useT()
-  const { messages, streaming, sending, error, send, stop, clear } = useSwarmAgent({ runTool: forwardTool })
+  // The widget has no store of its own (it forwards tools to the main window),
+  // so it can't build live context locally — omit it rather than report a
+  // misleading empty state; the assistant can still call get_status if needed.
+  const { messages, streaming, sending, error, send, stop, clear } = useSwarmAgent({ runTool: forwardTool, getContext: () => '' })
   const [input, setInput] = useState('')
   const [hasKey, setHasKey] = useState(true)
   // Panes that have pinged "needs your input" since the user last acted, mapped
@@ -78,8 +82,16 @@ export function SwarmAgentWidget() {
     inputRef.current?.focus()
   }, [])
 
+  // Stick to the bottom only when already near it (don't yank the user back down
+  // while they scroll up to re-read), but always snap down when first expanding.
+  const stickRef = useRef(true)
+  const onScroll = () => {
+    const el = scrollRef.current
+    if (!el) return
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+  }
   useEffect(() => {
-    if (expanded) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+    if (expanded && stickRef.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
   }, [messages, streaming, sending, expanded])
 
   const grow = () => {
@@ -127,7 +139,7 @@ export function SwarmAgentWidget() {
             </div>
           </header>
 
-          <div ref={scrollRef} className="wg-scroll">
+          <div ref={scrollRef} className="wg-scroll" onScroll={onScroll}>
             {!hasKey && (
               <div className="wg-notice">
                 {t('swarmAgent.noKey')}
@@ -136,7 +148,7 @@ export function SwarmAgentWidget() {
             )}
             {messages.map((m, i) => <WidgetRow key={i} m={m} />)}
             {streaming && (
-              <div className="wg-row wg-assistant"><div className="wg-bubble wg-from-assistant">{streaming}</div></div>
+              <div className="wg-row wg-assistant"><div className="wg-bubble wg-from-assistant"><Markdown text={streaming} /></div></div>
             )}
             {sending && !streaming && (
               <div className="wg-row wg-assistant"><div className="wg-bubble wg-from-assistant wg-typing"><span /><span /><span /></div></div>
@@ -197,7 +209,7 @@ function WidgetRow({ m }: { m: SwarmAgentMessage }) {
   }
   return (
     <>
-      {m.content && <div className="wg-row wg-assistant"><div className="wg-bubble wg-from-assistant">{m.content}</div></div>}
+      {m.content && <div className="wg-row wg-assistant"><div className="wg-bubble wg-from-assistant"><Markdown text={m.content} /></div></div>}
       {m.tool_calls?.map(c => (
         <div key={c.id} className="wg-tool"><CheckIcon /><code>{c.function.name}</code></div>
       ))}

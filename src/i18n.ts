@@ -327,6 +327,9 @@ const en = {
   'cmd.settings': 'Open settings',
   'cmd.focusPane': 'Focus pane {n}',
   'cmd.switchTo': 'Switch to: {name}',
+  'cmd.section.skills': 'Skills',
+  'cmd.section.recent': 'Recent',
+  'cmd.runSkill': 'Run skill: {name}',
 
   // ── Broadcast bar ──────────────────────────────────────────────────────────
   'broadcast.badge': 'BROADCAST',
@@ -342,7 +345,7 @@ const en = {
   'broadcast.submit': 'submit',
   'broadcast.submitTitle': 'Press Enter in each pane after sending the text',
   'broadcast.sendTo': 'Send to {n}',
-  'broadcast.hint': 'Enter to send · Shift+Enter for a newline · click chips to pick targets',
+  'broadcast.hint': 'Enter to send · Shift+Enter for a newline · @ to mention a file · click chips to pick targets',
 
   // ── Common (extended) ──────────────────────────────────────────────────────
   'common.create': 'Create',
@@ -580,6 +583,8 @@ const en = {
   'worktree.meta': '{n} file(s) · ahead {ahead} · behind {behind}',
   'worktree.uncommitted': ' · uncommitted',
   'worktree.commitAll': 'Commit all…',
+  'worktree.commitSelected': 'Commit {n} file(s)…',
+  'worktree.stageForCommit': 'Include this file in the commit',
   'worktree.mergeInto': 'Merge into {base}',
   'worktree.discard': 'Discard',
   'worktree.commitPlaceholder': 'Commit message',
@@ -1169,6 +1174,9 @@ const de: Record<TranslationKey, string> = {
   'cmd.settings': 'Einstellungen öffnen',
   'cmd.focusPane': 'Pane {n} fokussieren',
   'cmd.switchTo': 'Wechseln zu: {name}',
+  'cmd.section.skills': 'Skills',
+  'cmd.section.recent': 'Zuletzt',
+  'cmd.runSkill': 'Skill ausführen: {name}',
 
   // ── Broadcast bar ──────────────────────────────────────────────────────────
   'broadcast.badge': 'BROADCAST',
@@ -1184,7 +1192,7 @@ const de: Record<TranslationKey, string> = {
   'broadcast.submit': 'abschicken',
   'broadcast.submitTitle': 'Nach dem Senden des Textes in jedem Pane Enter drücken',
   'broadcast.sendTo': 'An {n} senden',
-  'broadcast.hint': 'Enter zum Senden · Shift+Enter für eine neue Zeile · Chips anklicken, um Ziele zu wählen',
+  'broadcast.hint': 'Enter zum Senden · Shift+Enter für eine neue Zeile · @ für Datei-Erwähnung · Chips anklicken, um Ziele zu wählen',
 
   // ── Common (extended) ──────────────────────────────────────────────────────
   'common.create': 'Erstellen',
@@ -1422,6 +1430,8 @@ const de: Record<TranslationKey, string> = {
   'worktree.meta': '{n} Datei(en) · voraus {ahead} · zurück {behind}',
   'worktree.uncommitted': ' · ungespeichert',
   'worktree.commitAll': 'Alles committen…',
+  'worktree.commitSelected': '{n} Datei(en) committen…',
+  'worktree.stageForCommit': 'Diese Datei in den Commit aufnehmen',
   'worktree.mergeInto': 'In {base} mergen',
   'worktree.discard': 'Verwerfen',
   'worktree.commitPlaceholder': 'Commit-Nachricht',
