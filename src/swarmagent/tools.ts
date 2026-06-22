@@ -505,6 +505,21 @@ export const SWARM_AGENT_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'search_code',
+      description: "Search the workspace's file contents for a string (like grep) and return matching file:line locations with the line text. Use for \"where is X handled?\", \"find usages of Y\", \"which file defines Z\". Then read_file the most relevant hit. Case-insensitive substring match.",
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The text to search for, e.g. "setActiveWorkspace" or "TODO".' },
+          glob: { type: 'string', description: 'Optional path-substring filter, e.g. ".tsx", "src/components", "electron".' },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'list_files',
       description: "List files in the open workspace (relative paths), optionally filtered by a substring. Use to discover files before reading one — e.g. \"what components are there?\". Skips node_modules, .git and build output.",
       parameters: {
@@ -1063,6 +1078,20 @@ export const TOOL_EXECUTORS: Record<string, Executor> = {
     } catch (err) {
       return `Could not read ${rel}: ${err instanceof Error ? err.message : String(err)}`
     }
+  },
+
+  async search_code(args) {
+    const root = useWorkspaceStore.getState().workspace?.rootPath
+    if (!root) return 'Open a workspace first.'
+    const query = typeof args.query === 'string' ? args.query.trim() : ''
+    if (!query) return 'What should I search for?'
+    const glob = typeof args.glob === 'string' ? args.glob.trim() : ''
+    let hits: { path: string; line: number; text: string }[] = []
+    try { hits = await window.swarmmind.fsSearchFiles(root, query, glob, 60) } catch { return 'Search failed.' }
+    if (!hits.length) return `No matches for "${query}"${glob ? ` in paths matching "${glob}"` : ''}.`
+    const shown = hits.slice(0, 40)
+    const body = shown.map(h => `${h.path}:${h.line}: ${h.text}`).join('\n')
+    return `${hits.length} match(es) for "${query}"${hits.length > shown.length ? ` (showing ${shown.length})` : ''}:\n${body}`
   },
 
   async list_files(args) {

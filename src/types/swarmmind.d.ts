@@ -119,6 +119,7 @@ declare global {
       // File system
       fsListDir: (dirPath: string) => Promise<FsEntry[]>
       fsListFiles: (rootPath: string, max?: number) => Promise<string[]>
+      fsSearchFiles: (rootPath: string, query: string, glob?: string, maxMatches?: number) => Promise<{ path: string; line: number; text: string }[]>
       fsReadFile: (filePath: string) => Promise<string>
       fsWriteFile: (filePath: string, content: string) => Promise<void>
       fsReadImage: (filePath: string) => Promise<ImageData>

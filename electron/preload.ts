@@ -174,6 +174,7 @@ contextBridge.exposeInMainWorld('swarmmind', {
 
   fsListDir: (dirPath: string) => ipcRenderer.invoke('fs:listDir', dirPath),
   fsListFiles: (rootPath: string, max?: number) => ipcRenderer.invoke('fs:listFiles', rootPath, max),
+  fsSearchFiles: (rootPath: string, query: string, glob?: string, maxMatches?: number) => ipcRenderer.invoke('fs:searchFiles', rootPath, query, glob, maxMatches),
   fsReadFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
   fsWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeFile', filePath, content),
   fsReadImage: (filePath: string) => ipcRenderer.invoke('fs:readImage', filePath),
