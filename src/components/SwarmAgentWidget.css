@@ -4,23 +4,47 @@
    widget matches whatever appearance the user picked in the main app. */
 
 /* In widget mode the page must be transparent so the rounded corners show
-   through (main.tsx adds `widget` to <html>). */
+   through (main.tsx adds `widget` to <html>). The host fills the viewport and
+   bottom-anchors the card, leaving a transparent gutter (padding) around it for
+   the drop shadow. The gutter MUST equal WIDGET_SHADOW_PAD in electron/main.ts,
+   which sizes the window with this much room on every side. Using padding here
+   (rather than a margin that subtracts from the window height) means the card's
+   own height is never derived from the window size, so it can never collapse to
+   a sliver if the window is momentarily smaller than expected. */
 html.widget,
 html.widget body,
 html.widget #root {
   background: transparent !important;
 }
+html.widget #root {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 32px;
+  box-sizing: border-box;
+}
 
 .wg-root {
-  position: absolute;
-  inset: 0;
-  margin: 5px;
+  position: relative;
+  width: 100%;
+  flex-shrink: 0;
+  max-height: 100%;
   display: flex;
   flex-direction: column;
-  border-radius: 13px;
+  border-radius: 15px;
   overflow: hidden;
-  background: var(--bg-panel);
+  background:
+    radial-gradient(120% 80% at 50% -20%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 60%),
+    var(--bg-panel);
   border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.09));
+  /* A floating card on a transparent window — real depth + a top sheen. The
+     shadow's reach stays within the 32px gutter so it never clips. */
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.5),
+    0 2px 6px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 color-mix(in srgb, var(--text-primary) 7%, transparent);
   color: var(--text-primary);
   font-size: 12.5px;
 }
@@ -72,21 +96,37 @@ html.widget #root {
 
 .wg-orb {
   -webkit-app-region: drag;
-  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0; overflow: hidden;
+  position: relative;
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent),
-              0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow: 0 2px 8px var(--accent-glow);
 }
-.wg-orb img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+/* Rotating conic ring — same premium accent as the in-app orb, masked to a hairline. */
+.wg-orb::before {
+  content: "";
+  position: absolute; inset: -2px; border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    var(--accent), color-mix(in srgb, var(--accent) 12%, transparent),
+    var(--accent-hover), color-mix(in srgb, var(--accent) 12%, transparent), var(--accent));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1.5px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1.5px));
+  animation: wg-orb-spin 6s linear infinite;
+}
+@keyframes wg-orb-spin { to { transform: rotate(360deg); } }
+.wg-orb img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; pointer-events: none; }
 
 .wg-input {
   -webkit-app-region: no-drag;
   flex: 1; min-width: 0; resize: none; max-height: 80px;
   background: var(--bg-elevated); color: var(--text-primary);
-  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.08)); border-radius: 10px;
+  border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.08)); border-radius: 11px;
   padding: 7px 10px; font-size: 12.5px; font-family: inherit; line-height: 1.4; outline: none;
+  transition: border-color 140ms, box-shadow 140ms;
 }
-.wg-input:focus { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.wg-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--accent) 15%, transparent);
+}
 .wg-input::placeholder { color: var(--text-dim); }
 
 .wg-mic, .wg-send {
@@ -98,10 +138,24 @@ html.widget #root {
 .wg-mic:hover { color: var(--text-primary); }
 .wg-mic[data-active="true"] { color: var(--accent); }
 .wg-mic[data-recording="true"] { background: color-mix(in srgb, var(--accent) 18%, var(--bg-elevated)); }
-.wg-send { background: var(--accent); color: var(--accent-fg); }
-.wg-send:hover:not(:disabled) { transform: translateY(-1px); }
-.wg-send:disabled { opacity: 0.4; cursor: default; }
+.wg-send {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
+  color: var(--accent-fg);
+  box-shadow: 0 3px 10px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+.wg-send svg { position: relative; z-index: 1; }
+.wg-send::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.4) 50%, transparent 65%);
+  transform: translateX(-130%);
+}
+.wg-send:hover:not(:disabled)::after { transform: translateX(130%); transition: transform 620ms ease; }
+.wg-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.22); }
+.wg-send:disabled { background: var(--bg-elevated); color: var(--text-dim); opacity: 1; box-shadow: none; cursor: default; }
 .wg-stop { background: var(--danger, #e5484d); color: #fff; }
+.wg-stop::after { display: none; }
 
 .wg-mic-load { display: inline-flex; align-items: center; gap: 3px; font-size: 9px; font-weight: 600; }
 .wg-spinner {
@@ -154,8 +208,16 @@ html.widget #root {
   max-width: 86%; padding: 7px 10px; border-radius: 12px; font-size: 12px; line-height: 1.45;
   white-space: pre-wrap; word-break: break-word;
 }
-.wg-from-user { background: var(--accent); color: var(--accent-fg); border-bottom-right-radius: 4px; }
-.wg-from-assistant { background: var(--bg-elevated); color: var(--text-primary); border-bottom-left-radius: 4px; }
+.wg-from-user {
+  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
+  color: var(--accent-fg); border-bottom-right-radius: 4px;
+  box-shadow: 0 4px 12px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.wg-from-assistant {
+  background: linear-gradient(180deg, var(--bg-elevated), color-mix(in srgb, var(--bg-elevated) 82%, var(--bg-panel)));
+  color: var(--text-primary); border-bottom-left-radius: 4px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.05));
+}
 
 .wg-tool {
   display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;

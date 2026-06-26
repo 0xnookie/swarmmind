@@ -130,18 +130,29 @@ function widgetUrl(): string {
   return base ? `${base}#widget` : ''
 }
 
+// Transparent gutter (px) around the widget card so its drop shadow renders
+// inside the window. Must match the `#root` padding in SwarmAgentWidget.css.
+const WIDGET_SHADOW_PAD = 32
+
 function createWidgetWindow(): BrowserWindow {
   // A slim floating bar near the bottom-right of the primary work area. It
   // starts collapsed (just the input bar) and grows upward when a conversation
   // is on screen — the renderer drives height via the widget:resize channel.
   const wa = screen.getPrimaryDisplay().workArea
-  const W = 420, H = 70, MARGIN = 16
+  // The transparent window is larger than the visible card by WIDGET_SHADOW_PAD
+  // on every side, so the card's CSS drop shadow has room to render inside the
+  // window instead of being clipped at its edge. The renderer sends the visible
+  // card height; widget:resize adds the padding back. The `#root` padding in
+  // SwarmAgentWidget.css must equal WIDGET_SHADOW_PAD. GAP offsets from the
+  // screen edge. CARD_H matches the renderer's collapsed height (COLLAPSED_H).
+  const CARD_W = 420, CARD_H = 58, GAP = 10
+  const W = CARD_W + WIDGET_SHADOW_PAD * 2, H = CARD_H + WIDGET_SHADOW_PAD * 2
 
   const win = new BrowserWindow({
     width: W,
     height: H,
-    x: wa.x + wa.width - W - MARGIN,
-    y: wa.y + wa.height - H - MARGIN,
+    x: wa.x + wa.width - W - GAP,
+    y: wa.y + wa.height - H - GAP,
     frame: false,
     transparent: true,
     resizable: false,
@@ -328,7 +339,9 @@ app.whenReady().then(async () => {
   ipcMain.on('widget:resize', (_e, height: number) => {
     if (!widgetWindow || widgetWindow.isDestroyed()) return
     const b = widgetWindow.getBounds()
-    const h = Math.max(56, Math.round(height))
+    // `height` is the visible card height; add the shadow gutter for both edges
+    // so the window leaves room for the drop shadow. Anchored to the bottom edge.
+    const h = Math.max(56, Math.round(height)) + WIDGET_SHADOW_PAD * 2
     widgetWindow.setBounds({ x: b.x, y: b.y + b.height - h, width: b.width, height: h }, false)
   })
 

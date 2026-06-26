@@ -6,6 +6,28 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.0]
+
+### Changed
+- **SwarmAgent got a visual glow-up.** The in-app assistant chat now has a more
+  premium identity: a slowly rotating accent ring around the brand orb, gradient
+  message bubbles (with a soft inner highlight), a glassy blurred composer with a
+  stronger focus glow, a gradient send button with a subtle shine sweep on hover,
+  a gradient hero title, and richer hover/lift on the suggestion chips. The
+  header is now theme-aware (it previously used a hardcoded tint) with a soft
+  accent divider line. Every colour is derived from the active theme, so it looks
+  right under all of them.
+- **The desktop widget matches.** The floating chat widget gets the same rotating
+  orb ring, gradient send and user bubble, and a glassier input — plus real
+  floating depth from a proper drop shadow.
+
+### Fixed
+- **Desktop widget drop shadow no longer clips.** The widget's transparent window
+  is now sized with a gutter around the card so its shadow renders in full
+  instead of being cut off at the window edge. The card's height is also now
+  independent of the window size, fixing a case where it could collapse into a
+  thin sliver.
+
 ## [0.13.0]
 
 ### Added

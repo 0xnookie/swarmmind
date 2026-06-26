@@ -9,13 +9,15 @@
   flex-direction: column;
   position: relative;
   background:
-    radial-gradient(120% 60% at 50% -10%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 60%),
+    radial-gradient(110% 50% at 50% -8%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 58%),
+    radial-gradient(90% 55% at 105% 102%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 60%),
     var(--bg-base);
   overflow: hidden;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
 .sa-header {
+  position: relative;
   flex-shrink: 0;
   height: 52px;
   display: flex;
@@ -23,8 +25,14 @@
   justify-content: space-between;
   padding: 0 16px;
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, rgba(37, 34, 32, 0.6), transparent);
-  backdrop-filter: blur(6px);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 55%, transparent), transparent);
+  backdrop-filter: blur(8px);
+}
+/* A soft accent glow line under the header — fades out toward the edges. */
+.sa-header::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: -1px; height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 45%, transparent), transparent);
 }
 .sa-brand { display: flex; align-items: center; gap: 11px; }
 
@@ -45,6 +53,22 @@
   object-fit: cover;
   display: block;
 }
+/* A thin, slowly rotating conic-gradient ring around the brand orb — premium
+   "live" feel. Masked to a hairline so the logo stays crisp. Only on the large
+   orbs (header + hero); the small in-message orbs stay plain. */
+.sa-orb:not(.sa-orb-sm)::before {
+  content: "";
+  position: absolute; inset: -2.5px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    var(--accent), color-mix(in srgb, var(--accent) 12%, transparent),
+    var(--accent-hover), color-mix(in srgb, var(--accent) 12%, transparent), var(--accent));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+  animation: sa-orb-spin 6s linear infinite;
+  z-index: -1;
+}
+@keyframes sa-orb-spin { to { transform: rotate(360deg); } }
 .sa-orb::after {
   content: "";
   position: absolute; inset: -5px;
@@ -119,18 +143,18 @@
   border-radius: 16px;
 }
 .sa-bubble.sa-from-user {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
   color: var(--accent-fg);
   font-weight: 500;
   border-bottom-right-radius: 5px;
-  box-shadow: 0 4px 14px var(--accent-glow);
+  box-shadow: 0 6px 18px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 .sa-bubble.sa-from-assistant {
-  background: var(--bg-elevated);
+  background: linear-gradient(180deg, var(--bg-elevated), color-mix(in srgb, var(--bg-elevated) 82%, var(--bg-panel)));
   color: var(--text-primary);
   border: 1px solid var(--border-subtle);
   border-bottom-left-radius: 5px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18), inset 0 1px 0 color-mix(in srgb, var(--text-primary) 5%, transparent);
 }
 
 /* Tool activity */
@@ -225,7 +249,12 @@
   animation: sa-rise 400ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .sa-hero .sa-orb { width: 56px; height: 56px; margin-bottom: 8px; }
-.sa-hero-title { font-size: 19px; font-weight: 700; color: var(--text-primary); letter-spacing: 0.2px; }
+.sa-hero-title {
+  font-size: 20px; font-weight: 700; letter-spacing: 0.2px;
+  background: linear-gradient(180deg, var(--text-primary), color-mix(in srgb, var(--text-primary) 62%, var(--accent)));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
 .sa-hero-sub { font-size: 13px; color: var(--text-muted); line-height: 1.5; max-width: 320px; }
 .sa-suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
 .sa-suggestion {
@@ -238,9 +267,10 @@
 }
 .sa-suggestion:hover {
   transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   background: var(--bg-elevated);
   color: var(--text-primary);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28), 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent);
 }
 .sa-suggestion svg { color: var(--accent); flex-shrink: 0; }
 
@@ -281,13 +311,15 @@
   display: flex; align-items: flex-end; gap: 8px;
   padding: 7px 7px 7px 8px;
   border-radius: 16px;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-panel) 80%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28), inset 0 1px 0 color-mix(in srgb, var(--text-primary) 4%, transparent);
   transition: border-color 160ms, box-shadow 160ms;
 }
 .sa-composer-box:focus-within {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent), 0 6px 22px rgba(0, 0, 0, 0.32);
 }
 .sa-input {
   flex: 1;
@@ -337,11 +369,21 @@
 
 .sa-send {
   border: none;
-  background: var(--accent);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
   color: var(--accent-fg);
-  box-shadow: 0 4px 12px var(--accent-glow);
+  box-shadow: 0 4px 12px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
-.sa-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 6px 16px var(--accent-glow); }
+.sa-send:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 20px var(--accent-glow), inset 0 1px 0 rgba(255, 255, 255, 0.22); }
+/* A glossy highlight sweeps across the button on hover — the "sick" micro-detail. */
+.sa-send svg { position: relative; z-index: 1; }
+.sa-send::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.4) 50%, transparent 65%);
+  transform: translateX(-130%);
+}
+.sa-send:hover:not(:disabled)::after { transform: translateX(130%); transition: transform 620ms ease; }
 .sa-send:active:not(:disabled) { transform: scale(0.92); }
 .sa-send:disabled { background: var(--bg-elevated); color: var(--text-dim, var(--text-muted)); box-shadow: none; cursor: default; }
 
@@ -352,5 +394,6 @@
   border: 1px solid var(--border-strong);
   box-shadow: none;
 }
+.sa-send.sa-stop::after { display: none; }
 .sa-send.sa-stop:hover { transform: none; border-color: color-mix(in srgb, var(--accent) 45%, transparent); color: var(--accent); }
 .sa-send.sa-stop:active { transform: scale(0.92); }

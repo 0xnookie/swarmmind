@@ -1,6 +1,6 @@
 # SwarmMind
 
-[![Version](https://img.shields.io/badge/Version-0.13.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
+[![Version](https://img.shields.io/badge/Version-0.14.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
 [![License](https://img.shields.io/badge/License-MIT-3fb950)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-32-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)

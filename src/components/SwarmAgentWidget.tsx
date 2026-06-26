@@ -20,8 +20,11 @@ import './SwarmAgentWidget.css'
 const forwardTool = (name: string, rawArgs: string): Promise<string> =>
   window.swarmmind.widgetForwardTool(name, rawArgs)
 
-const COLLAPSED_H = 70
-const EXPANDED_H = 460
+// Visible card heights (px). The main process adds a transparent shadow gutter
+// around these when sizing the window (see WIDGET_SHADOW_PAD in electron/main.ts),
+// so these are the card sizes only — keep them snug to the content.
+const COLLAPSED_H = 58
+const EXPANDED_H = 448
 const ALERT_H = 42
 
 export function SwarmAgentWidget() {
@@ -70,12 +73,17 @@ export function SwarmAgentWidget() {
   const expanded = messages.length > 0 || sending || !!streaming || (!!error)
   const showAlert = attentionCount > 0
 
+  // The visible card height. When expanded we pin it so the transcript area
+  // (.wg-scroll flex:1) has a bounded height to scroll within; collapsed, it's
+  // left to the bar's natural height. The window is sized to this + the shadow
+  // gutter by the main process (see widget:resize / WIDGET_SHADOW_PAD).
+  const cardH = (expanded ? EXPANDED_H : COLLAPSED_H) + (showAlert ? ALERT_H : 0)
+
   // Grow the window upward when a conversation is showing (and to fit the alert
   // banner), shrink back to a bar when both are gone.
   useEffect(() => {
-    const base = expanded ? EXPANDED_H : COLLAPSED_H
-    window.swarmmind.widgetResize(base + (showAlert ? ALERT_H : 0))
-  }, [expanded, showAlert])
+    window.swarmmind.widgetResize(cardH)
+  }, [cardH])
 
   useEffect(() => {
     window.swarmmind.swarmAgentHasKey().then(setHasKey).catch(() => setHasKey(false))
@@ -109,7 +117,7 @@ export function SwarmAgentWidget() {
   }
 
   return (
-    <div className={`wg-root${expanded ? ' wg-expanded' : ''}`}>
+    <div className={`wg-root${expanded ? ' wg-expanded' : ''}`} style={expanded ? { height: cardH } : undefined}>
       {showAlert && (
         <div className="wg-alert">
           {soloAgentId
