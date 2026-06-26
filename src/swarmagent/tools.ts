@@ -408,8 +408,8 @@ export const SWARM_AGENT_TOOLS = [
         properties: {
           view: {
             type: 'string',
-            enum: ['terminals', 'board', 'memory', 'timeline', 'loops', 'changes', 'checkpoints', 'files', 'review', 'benchmarks', 'settings'],
-            description: 'terminals = the agent panes; board = Kanban tasks; memory = memory graph; timeline = swarm activity; loops = recurring prompts; changes = file activity; checkpoints = snapshots; files = code editor; review = worktree review; benchmarks; settings.',
+            enum: ['terminals', 'board', 'composer', 'memory', 'timeline', 'loops', 'changes', 'checkpoints', 'files', 'review', 'benchmarks', 'settings'],
+            description: 'terminals = the agent panes; board = Kanban tasks; composer = AI multi-file edit Composer; memory = memory graph; timeline = swarm activity; loops = recurring prompts; changes = file activity; checkpoints = snapshots; files = code editor; review = worktree review; benchmarks; settings.',
           },
         },
         required: ['view'],
@@ -1004,6 +1004,7 @@ export const TOOL_EXECUTORS: Record<string, Executor> = {
     switch (view) {
       case 'terminals': st.showTerminals(); return 'Showing the terminal panes.'
       case 'board': return ensure(st.boardOpen, st.toggleBoard, 'Kanban board')
+      case 'composer': return ensure(st.composerOpen, st.toggleComposer, 'Composer')
       case 'memory': return ensure(st.graphOpen, st.toggleGraph, 'memory graph')
       case 'timeline': return ensure(st.timelineOpen, st.toggleTimeline, 'swarm timeline')
       case 'loops': return ensure(st.loopsOpen, st.toggleLoops, 'Loops panel')

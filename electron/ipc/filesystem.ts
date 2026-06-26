@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
-import { readdir, readFile, writeFile } from 'fs/promises'
+import { readdir, readFile, writeFile, mkdir } from 'fs/promises'
 import { existsSync, statSync } from 'fs'
-import { join, extname } from 'path'
+import { join, extname, dirname } from 'path'
 
 export interface FsEntry {
   name: string
@@ -120,8 +120,10 @@ export function registerFsHandlers(): void {
     return buf.toString('utf-8')
   })
 
-  // Write a text file
+  // Write a text file, creating parent directories as needed (so the Composer
+  // can create new files in not-yet-existing folders).
   ipcMain.handle('fs:writeFile', async (_e, filePath: string, content: string): Promise<void> => {
+    await mkdir(dirname(filePath), { recursive: true })
     await writeFile(filePath, content, 'utf-8')
   })
 

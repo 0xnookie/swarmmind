@@ -35,6 +35,18 @@ function IconCode() {
   )
 }
 
+// Composer (multi-file AI edits) — stacked layers (multi-file) with a sparkle (AI).
+function IconComposer() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m12 2 8 4.5-8 4.5-8-4.5L12 2Z" />
+      <path d="m4 12 8 4.5 8-4.5" />
+      <path d="m4 17 8 4.5 8-4.5" />
+      <path d="M19 2.5v2M20 3.5h-2" />
+    </svg>
+  )
+}
+
 function IconSettings() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -316,6 +328,8 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const graphOpen = useWorkspaceStore(s => s.graphOpen)
   const toggleReview = useWorkspaceStore(s => s.toggleReview)
   const reviewOpen = useWorkspaceStore(s => s.reviewOpen)
+  const toggleComposer = useWorkspaceStore(s => s.toggleComposer)
+  const composerOpen = useWorkspaceStore(s => s.composerOpen)
   const toggleTimeline = useWorkspaceStore(s => s.toggleTimeline)
   const timelineOpen = useWorkspaceStore(s => s.timelineOpen)
   const toggleChanges = useWorkspaceStore(s => s.toggleChanges)
@@ -466,6 +480,10 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
               {unsavedCount}
             </span>
           )}
+        </IconBtn>
+
+        <IconBtn label={t('topbar.composer')} onClick={toggleComposer} active={composerOpen}>
+          <IconComposer />
         </IconBtn>
 
         <IconBtn label={t('topbar.kanban')} onClick={toggleBoard} active={boardOpen}>

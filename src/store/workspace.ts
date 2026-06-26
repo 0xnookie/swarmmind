@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { v4 as uuidv4 } from 'uuid'
 import type { Language } from '../i18n'
 import type { VoiceModel } from '../hooks/useVoice'
+import { addSnippet as addSnippetTo, removeSnippet as removeSnippetFrom, type Snippet } from '../lib/snippets'
 import {
   applyAppearance,
   clampEditorFontSize,
@@ -212,6 +213,12 @@ interface WorkspaceState {
   uiFont: UiFontId
   monoFont: MonoFontId
   editorFontSize: number
+  // AI ghost-text autocomplete in the file editor (Copilot-style). Off by
+  // default since it spends model tokens on every pause in typing.
+  ghostTextEnabled: boolean
+  // Reusable code snippets saved from the editor (persisted globally as the
+  // `editorSnippets` JSON app-setting).
+  snippets: Snippet[]
   // Bumped on any appearance change so the terminal can re-read CSS colours.
   appearanceVersion: number
   // ── Keyboard shortcuts: actionId → canonical combo overrides ──────────────
@@ -234,6 +241,17 @@ interface WorkspaceState {
   boardOpen: boolean
   graphOpen: boolean
   reviewOpen: boolean
+  composerOpen: boolean
+  // One-shot prefill for the Composer (e.g. from the editor's "Rename across
+  // files"): an instruction + context file paths the panel consumes on open.
+  // An optional pre-built `plan` lets a caller (e.g. one-click apply from a chat
+  // reply) hand the Composer the exact changes so it shows the diff/apply UI
+  // directly, skipping the model round-trip.
+  composerSeed: {
+    instruction: string
+    contextPaths: string[]
+    plan?: { summary?: string; changes: { path: string; action: string; content: string }[] }
+  } | null
   timelineOpen: boolean
   changesOpen: boolean
   checkpointsOpen: boolean
@@ -319,6 +337,9 @@ interface WorkspaceState {
   setUiFont: (f: UiFontId) => void
   setMonoFont: (f: MonoFontId) => void
   setEditorFontSize: (n: number) => void
+  setGhostTextEnabled: (b: boolean) => void
+  addSnippet: (name: string, body: string, lang?: string) => void
+  removeSnippet: (id: string) => void
   hydrateAppearance: (a: Partial<AppearanceSettings>) => void
   // Keybindings — persisted as a JSON override map.
   setKeybinding: (id: string, keys: string) => void
@@ -339,6 +360,13 @@ interface WorkspaceState {
   toggleCommandPalette: () => void
   setCommandPaletteOpen: (open: boolean) => void
   toggleBoard: () => void
+  toggleComposer: () => void
+  openComposerWith: (seed: {
+    instruction: string
+    contextPaths: string[]
+    plan?: { summary?: string; changes: { path: string; action: string; content: string }[] }
+  }) => void
+  clearComposerSeed: () => void
   toggleGraph: () => void
   toggleReview: () => void
   toggleTimeline: () => void
@@ -500,6 +528,7 @@ const ALL_OVERLAYS_CLOSED = {
   graphOpen: false,
   filePanelOpen: false,
   reviewOpen: false,
+  composerOpen: false,
   timelineOpen: false,
   changesOpen: false,
   checkpointsOpen: false,
@@ -554,6 +583,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   uiFont: DEFAULT_APPEARANCE.uiFont,
   monoFont: DEFAULT_APPEARANCE.monoFont,
   editorFontSize: DEFAULT_APPEARANCE.editorFontSize,
+  ghostTextEnabled: false,
+  snippets: [],
   appearanceVersion: 0,
   keybindings: {},
   activePaneId: null,
@@ -565,6 +596,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   boardOpen: false,
   graphOpen: false,
   reviewOpen: false,
+  composerOpen: false,
+  composerSeed: null,
   timelineOpen: false,
   changesOpen: false,
   checkpointsOpen: false,
@@ -861,6 +894,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   toggleCommandPalette: () => set(s => ({ commandPaletteOpen: !s.commandPaletteOpen })),
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
   toggleBoard: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, boardOpen: !s.boardOpen })),
+  toggleComposer: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, composerOpen: !s.composerOpen })),
+  openComposerWith: (seed) => set({ ...ALL_OVERLAYS_CLOSED, composerOpen: true, composerSeed: seed }),
+  clearComposerSeed: () => set({ composerSeed: null }),
   toggleGraph: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, graphOpen: !s.graphOpen })),
   toggleReview: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, reviewOpen: !s.reviewOpen })),
   toggleTimeline: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, timelineOpen: !s.timelineOpen })),
@@ -1070,6 +1106,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({ editorFontSize: size })
     window.swarmmind.setAppSetting('editorFontSize', String(size)).catch(() => {})
     reapplyAppearance(get, set)
+  },
+
+  setGhostTextEnabled: (b) => {
+    set({ ghostTextEnabled: b })
+    window.swarmmind.setAppSetting('editorGhostText', b ? '1' : '0').catch(() => {})
+  },
+
+  addSnippet: (name, body, lang) => {
+    const snippet: Snippet = { id: uuidv4(), name: name.trim() || 'Snippet', body, ...(lang ? { lang } : {}) }
+    const next = addSnippetTo(get().snippets, snippet)
+    set({ snippets: next })
+    window.swarmmind.setAppSetting('editorSnippets', JSON.stringify(next)).catch(() => {})
+  },
+  removeSnippet: (id) => {
+    const next = removeSnippetFrom(get().snippets, id)
+    set({ snippets: next })
+    window.swarmmind.setAppSetting('editorSnippets', JSON.stringify(next)).catch(() => {})
   },
 
   // Set values from persisted settings at startup without re-persisting them,

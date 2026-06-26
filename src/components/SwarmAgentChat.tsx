@@ -5,6 +5,7 @@ import { useVoice } from '../hooks/useVoice'
 import { useFileMentions } from '../hooks/useFileMentions'
 import { useT, type TFunction } from '../i18n'
 import { Markdown } from '../lib/markdown'
+import { extractFileBlocks } from '../lib/codeBlocks'
 import logoUrl from '../assets/logo.png'
 import './SwarmAgentChat.css'
 
@@ -248,7 +249,10 @@ function MessageRow({ m, t, live }: { m: SwarmAgentMessage; t: TFunction; live: 
       {m.content && (
         <div className="sa-row sa-assistant">
           <div className="sa-orb sa-orb-sm"><OrbMark /></div>
-          <div className="sa-bubble sa-from-assistant"><Markdown text={m.content} /></div>
+          <div className="sa-bubble sa-from-assistant">
+            <Markdown text={m.content} />
+            {!live && <ApplyFromChat content={m.content} t={t} />}
+          </div>
         </div>
       )}
       {m.tool_calls?.map(c => (
@@ -258,6 +262,33 @@ function MessageRow({ m, t, live }: { m: SwarmAgentMessage; t: TFunction; live: 
         </div>
       ))}
     </>
+  )
+}
+
+// One-click apply from chat: if a completed assistant reply contains
+// file-targeted code blocks, offer a button that routes the exact blocks into
+// the Composer's preview/checkpoint/apply pipeline (no model re-prompt). Hidden
+// when there's no workspace or no file-targeted block to apply.
+function ApplyFromChat({ content, t }: { content: string; t: TFunction }) {
+  const rootPath = useWorkspaceStore(s => s.workspace?.rootPath ?? null)
+  const openComposerWith = useWorkspaceStore(s => s.openComposerWith)
+  const blocks = React.useMemo(() => extractFileBlocks(content), [content])
+  if (!rootPath || blocks.length === 0) return null
+  const apply = () => {
+    openComposerWith({
+      instruction: 'Applied from SwarmAgent chat',
+      contextPaths: [],
+      plan: {
+        summary: `Applying ${blocks.length} file change(s) from a chat reply.`,
+        changes: blocks.map(b => ({ path: b.path, action: 'edit', content: b.content })),
+      },
+    })
+  }
+  return (
+    <button className="sa-apply" onClick={apply} title={blocks.map(b => b.path).join(', ')}>
+      <ApplyIcon />
+      {t('swarmAgent.applyChanges', { n: blocks.length })}
+    </button>
   )
 }
 
@@ -329,6 +360,7 @@ function SendIcon() { return <svg {...ico(17)}><path d="M12 19V5M5 12l7-7 7 7" /
 function StopIcon() { return <svg {...ico(16)} fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5" /></svg> }
 function RegenIcon() { return <svg {...ico(15)}><path d="M21 5v5h-5M3 19v-5h5" /><path d="M19.4 9A7.5 7.5 0 0 0 6.3 6.3L3 9m18 6-3.3 2.7A7.5 7.5 0 0 1 4.6 15" /></svg> }
 function CheckIcon() { return <svg {...ico(13)}><path d="M20 6 9 17l-5-5" /></svg> }
+function ApplyIcon() { return <svg {...ico(13)}><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2M2 12h11M9 8l4 4-4 4" /></svg> }
 function FolderIcon() { return <svg {...ico(14)}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg> }
 function PlusIcon() { return <svg {...ico(14)}><path d="M12 5v14M5 12h14" /></svg> }
 function ListIcon() { return <svg {...ico(14)}><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></svg> }

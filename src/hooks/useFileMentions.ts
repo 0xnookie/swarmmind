@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
-import { fuzzyMatch } from '../lib/fuzzy'
+import { fuzzyRank } from '../lib/fuzzy'
 
 // @-mention file autocomplete for prompt composers (broadcast bar, SwarmAgent).
 // Typing "@" followed by a fragment opens a fuzzy-ranked list of the workspace's
@@ -59,14 +59,7 @@ export function useFileMentions(opts: {
 
   const candidates = useMemo<string[]>(() => {
     if (query === null) return []
-    if (!query) return files.slice(0, MAX_RESULTS)
-    const scored: { f: string; s: number }[] = []
-    for (const f of files) {
-      const r = fuzzyMatch(query, f)
-      if (r.matched) scored.push({ f, s: r.score })
-    }
-    scored.sort((a, b) => b.s - a.s)
-    return scored.slice(0, MAX_RESULTS).map(x => x.f)
+    return fuzzyRank(files, query, (f) => f, MAX_RESULTS)
   }, [query, files])
 
   const choose = useCallback((path: string) => {

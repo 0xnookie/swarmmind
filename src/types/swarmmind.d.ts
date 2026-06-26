@@ -92,6 +92,33 @@ declare global {
         context?: string,
       ) => Promise<{ message?: SwarmAgentMessage; error?: string }>
       onSwarmAgentDelta: (cb: (data: { requestId: string; text: string }) => void) => () => void
+      // Inline editor edit (Cmd/Ctrl+K): streams the rewritten snippet, resolves with final code
+      swarmAgentEditCode: (
+        requestId: string,
+        payload: { instruction: string; selection: string; before: string; after: string; language: string; fileName: string; mentions?: { path: string; content: string }[] },
+      ) => Promise<{ code?: string; error?: string }>
+      onSwarmAgentEditDelta: (cb: (data: { requestId: string; text: string }) => void) => () => void
+      // Ghost-text autocomplete (Copilot-style): predicts the insertion at the cursor
+      swarmAgentComplete: (payload: { prefix: string; suffix: string; language: string }) => Promise<{ text: string }>
+      // Multi-file Composer: proposes coordinated edits across files as a change plan
+      swarmAgentCompose: (payload: { instruction: string; files: { path: string; content: string }[] }) => Promise<{
+        summary?: string
+        changes?: { path: string; action: string; content: string }[]
+        error?: string
+      }>
+      // AI diagnostics: reviews a file and returns structured problems for the lint gutter
+      swarmAgentDiagnose: (payload: { content: string; language: string; fileName: string }) => Promise<{
+        diagnostics?: { line: number; severity: string; message: string; fix?: string }[]
+        error?: string
+      }>
+      // Next-edit prediction ("Tab to jump"): the next related edit after one is made
+      swarmAgentNextEdit: (payload: {
+        content: string
+        language: string
+        fileName: string
+        editedFromLine: number
+        editedToLine: number
+      }) => Promise<{ prediction?: { line?: number; instruction?: string; none?: boolean }; error?: string }>
       // SwarmAgent desktop widget (separate floating window)
       widgetShow: () => void
       widgetHide: () => void
@@ -123,6 +150,8 @@ declare global {
       fsReadFile: (filePath: string) => Promise<string>
       fsWriteFile: (filePath: string, content: string) => Promise<void>
       fsReadImage: (filePath: string) => Promise<ImageData>
+      verifyScripts: (rootPath: string) => Promise<string[]>
+      verifyRun: (rootPath: string, script: string) => Promise<{ code: number; stdout: string; stderr: string; error?: string }>
       // Sessions & scrollback
       sessionList: (rootPath: string) => Promise<SessionInfo[]>
       scrollbackLoad: (paneId: string) => Promise<string>

@@ -146,6 +146,34 @@ contextBridge.exposeInMainWorld('swarmmind', {
     ipcRenderer.on('swarmagent:delta', handler)
     return () => ipcRenderer.off('swarmagent:delta', handler)
   },
+  // Inline editor edit (Cmd/Ctrl+K). Streams the rewritten snippet via
+  // onSwarmAgentEditDelta and resolves with the final code.
+  swarmAgentEditCode: (
+    requestId: string,
+    payload: { instruction: string; selection: string; before: string; after: string; language: string; fileName: string; mentions?: { path: string; content: string }[] },
+  ) => ipcRenderer.invoke('swarmAgent:editCode', requestId, payload),
+  onSwarmAgentEditDelta: (cb: (data: { requestId: string; text: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { requestId: string; text: string }) => cb(data)
+    ipcRenderer.on('swarmagent:editDelta', handler)
+    return () => ipcRenderer.off('swarmagent:editDelta', handler)
+  },
+  // Ghost-text autocomplete (Copilot-style): predicts the insertion at the cursor.
+  swarmAgentComplete: (payload: { prefix: string; suffix: string; language: string }): Promise<{ text: string }> =>
+    ipcRenderer.invoke('swarmAgent:complete', payload),
+  // Multi-file Composer: proposes coordinated edits across files as a change plan.
+  swarmAgentCompose: (payload: { instruction: string; files: { path: string; content: string }[] }) =>
+    ipcRenderer.invoke('swarmAgent:compose', payload),
+  // AI diagnostics: reviews a file and returns structured problems for the lint gutter.
+  swarmAgentDiagnose: (payload: { content: string; language: string; fileName: string }) =>
+    ipcRenderer.invoke('swarmAgent:diagnose', payload),
+  // Next-edit prediction ("Tab to jump"): points at the next related edit after one is made.
+  swarmAgentNextEdit: (payload: {
+    content: string
+    language: string
+    fileName: string
+    editedFromLine: number
+    editedToLine: number
+  }) => ipcRenderer.invoke('swarmAgent:nextEdit', payload),
 
   // SwarmAgent desktop widget. The widget is a separate frameless window that
   // hosts just the chat; it controls its own visibility and forwards tool calls
@@ -178,6 +206,10 @@ contextBridge.exposeInMainWorld('swarmmind', {
   fsReadFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
   fsWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeFile', filePath, content),
   fsReadImage: (filePath: string) => ipcRenderer.invoke('fs:readImage', filePath),
+  // Constrained verify runner (Composer verify→fix loop): list/run the
+  // workspace's own npm scripts only.
+  verifyScripts: (rootPath: string) => ipcRenderer.invoke('verify:scripts', rootPath),
+  verifyRun: (rootPath: string, script: string) => ipcRenderer.invoke('verify:run', rootPath, script),
 
   sessionList: (rootPath: string) => ipcRenderer.invoke('session:list', rootPath),
   scrollbackLoad: (paneId: string) => ipcRenderer.invoke('scrollback:load', paneId),

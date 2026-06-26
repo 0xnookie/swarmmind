@@ -6,6 +6,61 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.13.0]
+
+### Added
+- **Multi-file Composer.** Describe a change in plain language and the AI proposes
+  coordinated edits across several files at once. Context files are seeded from
+  your open editor tabs (add more via a fuzzy file picker), the model returns a
+  plan you preview as per-file diffs with a checkbox each, and **Apply** writes
+  the selected files — optionally taking a one-click **safety checkpoint first**
+  so the whole multi-file change is reversible from the Checkpoints panel. Open
+  it from the new layers icon in the top bar, the command palette, or by asking
+  SwarmAgent to `open_view('composer')`.
+- **Inline AI edit — Ctrl/⌘-K in the editor.** Cursor-style "vibe coding": select
+  code (or just place the cursor) and press Ctrl/⌘-K to describe a change. The
+  result streams in as an accept / reject / regenerate preview with the changed
+  range highlighted. Supports **@-mention file context** — type `@` to pull in
+  another file so the edit can match its style or reuse a helper.
+- **Tab-to-jump (next-edit prediction).** After you accept an inline edit, the
+  editor predicts the likely follow-up edit and shows a **Tab** chip describing
+  it; pressing Tab jumps there and pre-fills the next instruction, so related
+  edits chain together.
+- **Ghost-text autocomplete — Tab.** Copilot/Cursor-style inline AI completions
+  appear as dimmed text as you pause typing; Tab accepts, Escape dismisses. Off
+  by default (it spends tokens on every typing pause) — toggle it from the editor
+  status bar.
+- **AI diagnostics & "Fix with AI".** A **Diagnose** button sends the open file to
+  the model, which flags problems as editor underlines and gutter markers; each
+  carries a **Fix with AI** action that opens the inline-edit widget pre-filled
+  with the suggested fix.
+- **Rename symbol across files — F2.** Press F2 on an identifier, type the new
+  name, and the workspace is searched for usages and renamed through the Composer
+  pipeline (preview + checkpoint + apply), skipping strings, comments, and
+  substring matches.
+- **One-click apply from chat.** When a SwarmAgent reply contains file-targeted
+  code blocks (path on the fence or the line above it), a **Review & apply**
+  button opens the Composer directly on those exact blocks — diff, checkpoint,
+  apply — with no extra model round-trip.
+- **Smarter context selection — "Suggest relevant".** Instead of hand-picking
+  Composer context files, this finds the right ones for you: it ranks the
+  workspace against your instruction with hybrid lexical (BM25) + on-device
+  **semantic embeddings**, key-free and offline-capable. A **Build index** action
+  embeds the whole repo once (persisted under `.swarmmind/`) so ranking can reach
+  files that don't literally contain your keywords.
+- **Editor snippets.** Save a selection as a reusable snippet and insert it at the
+  cursor from the editor status bar — fast, local, no AI.
+- **Verify → fix loop.** After applying a Composer plan, optionally run one of
+  your repo's own npm scripts (typecheck/test/lint/build); on failure, **Fix
+  errors with AI** condenses the output into a follow-up instruction and re-runs
+  the plan so the model fixes its own change. The runner only ever executes a
+  script already declared in your `package.json` (allowlisted, no shell
+  metacharacters), so a cloned repo can't turn it into arbitrary commands.
+
+### Changed
+- The Composer top-bar button now uses a distinct stacked-layers icon (multi-file)
+  with a sparkle, instead of the previous generic wand.
+
 ## [0.12.0]
 
 ### Added

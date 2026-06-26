@@ -1,20 +1,26 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, lazy, Suspense } from 'react'
 import { TopBar } from './components/TopBar'
 import { CenterArea } from './components/CenterArea'
-import { FilePanel } from './components/FilePanel'
 import { SkillsLibrary } from './components/SkillsLibrary'
 import { PreviewPanel } from './components/PreviewPanel'
 import WorkspaceSidebar from './components/WorkspaceSidebar'
-import { KanbanBoard } from './components/KanbanBoard'
-import { MemoryView } from './components/MemoryView'
-import { WorktreeReview } from './components/WorktreeReview'
-import { SwarmTimeline } from './components/SwarmTimeline'
-import { ChangesPanel } from './components/ChangesPanel'
-import { CheckpointPanel } from './components/CheckpointPanel'
-import { BenchmarksPanel } from './components/BenchmarksPanel'
-import { SwarmAgentChat } from './components/SwarmAgentChat'
-import { LoopsPanel } from './components/LoopsPanel'
 import { StartScreen } from './components/StartScreen'
+
+// On-demand center overlays + the CodeMirror editor are lazy-loaded: they're
+// only shown when their overlay is opened, so keeping them out of the initial
+// bundle speeds first paint (the default view is the terminal grid / start
+// screen, neither of which needs any of these). Named exports → default-wrapped.
+const FilePanel = lazy(() => import('./components/FilePanel').then((m) => ({ default: m.FilePanel })))
+const KanbanBoard = lazy(() => import('./components/KanbanBoard').then((m) => ({ default: m.KanbanBoard })))
+const MemoryView = lazy(() => import('./components/MemoryView').then((m) => ({ default: m.MemoryView })))
+const WorktreeReview = lazy(() => import('./components/WorktreeReview').then((m) => ({ default: m.WorktreeReview })))
+const ComposerPanel = lazy(() => import('./components/ComposerPanel').then((m) => ({ default: m.ComposerPanel })))
+const SwarmTimeline = lazy(() => import('./components/SwarmTimeline').then((m) => ({ default: m.SwarmTimeline })))
+const ChangesPanel = lazy(() => import('./components/ChangesPanel').then((m) => ({ default: m.ChangesPanel })))
+const CheckpointPanel = lazy(() => import('./components/CheckpointPanel').then((m) => ({ default: m.CheckpointPanel })))
+const BenchmarksPanel = lazy(() => import('./components/BenchmarksPanel').then((m) => ({ default: m.BenchmarksPanel })))
+const SwarmAgentChat = lazy(() => import('./components/SwarmAgentChat').then((m) => ({ default: m.SwarmAgentChat })))
+const LoopsPanel = lazy(() => import('./components/LoopsPanel').then((m) => ({ default: m.LoopsPanel })))
 import { SettingsModal } from './components/SettingsModal'
 import { WorkspaceSetupModal } from './components/WorkspaceSetupModal'
 import { CommandPalette } from './components/CommandPalette'
@@ -25,6 +31,7 @@ import { useConductor } from './hooks/useConductor'
 import { useLoops } from './hooks/useLoops'
 import { useWidgetBridge } from './hooks/useWidgetBridge'
 import { useWorkspaceStore, buildLayoutForCount, selectTerminalsVisible, type AgentId, type ShellStyle } from './store/workspace'
+import { parseSnippets } from './lib/snippets'
 import { SHORTCUTS, matchEvent, getEffectiveKeys } from './shortcuts'
 import type { ThemePreset, UiDensity, UiFontId, MonoFontId } from './appearance'
 import { THEMES, UI_FONTS, MONO_FONTS } from './appearance'
@@ -38,6 +45,7 @@ export default function App() {
   const boardOpen = useWorkspaceStore(s => s.boardOpen)
   const graphOpen = useWorkspaceStore(s => s.graphOpen)
   const reviewOpen = useWorkspaceStore(s => s.reviewOpen)
+  const composerOpen = useWorkspaceStore(s => s.composerOpen)
   const timelineOpen = useWorkspaceStore(s => s.timelineOpen)
   const changesOpen = useWorkspaceStore(s => s.changesOpen)
   const checkpointsOpen = useWorkspaceStore(s => s.checkpointsOpen)
@@ -97,6 +105,12 @@ export default function App() {
     }).catch(() => {})
     window.swarmmind.getAppSetting('voicePreload').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ voicePreload: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('editorGhostText').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ ghostTextEnabled: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('editorSnippets').then(val => {
+      useWorkspaceStore.setState({ snippets: parseSnippets(val) })
     }).catch(() => {})
 
     // Appearance — load all keys, then hydrate + apply once (validating each so
@@ -191,6 +205,11 @@ export default function App() {
       for (const def of SHORTCUTS) {
         if (!def.global) continue
         if (!matchEvent(e, getEffectiveKeys(def.id, s.keybindings))) continue
+        // Ctrl/Cmd+K inside the code editor is inline AI edit (Cursor-style), not
+        // the command palette — the editor's own keymap already handled it.
+        if (def.id === 'command-palette' && (e.target as HTMLElement)?.closest?.('.cm-editor')) {
+          return
+        }
         e.preventDefault()
         switch (def.id) {
           case 'command-palette': s.toggleCommandPalette(); break
@@ -238,7 +257,9 @@ export default function App() {
         )}
 
         {/* Center — start screen when no workspace is open, otherwise the
-            board / graph overlays take precedence over the pane grid */}
+            board / graph overlays take precedence over the pane grid. Wrapped in
+            Suspense because the overlays + editor are lazy-loaded (see imports). */}
+        <Suspense fallback={<div style={styles.lazyFallback} />}>
         {!workspace ? (
           <ErrorBoundary label="StartScreen">
             <StartScreen onOpenWorkspace={handleOpenWorkspace} />
@@ -258,6 +279,10 @@ export default function App() {
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
               <WorktreeReview />
             </div>
+          </ErrorBoundary>
+        ) : composerOpen ? (
+          <ErrorBoundary label="ComposerPanel">
+            <ComposerPanel />
           </ErrorBoundary>
         ) : timelineOpen ? (
           <ErrorBoundary label="SwarmTimeline">
@@ -292,6 +317,7 @@ export default function App() {
             <CenterArea />
           </ErrorBoundary>
         )}
+        </Suspense>
 
         {/* Right — skills panel */}
         {memoryPanelOpen && (
@@ -338,5 +364,11 @@ const styles: Record<string, React.CSSProperties> = {
     width: 380,
     flexShrink: 0,
     overflow: 'hidden',
+  },
+  // Neutral placeholder shown for the brief moment a lazy overlay chunk loads.
+  lazyFallback: {
+    flex: 1,
+    minWidth: 0,
+    background: 'var(--bg-base)',
   },
 }

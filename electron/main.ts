@@ -7,6 +7,7 @@ import { registerPtyHandlers } from './ipc/pty'
 import { registerWorkspaceHandlers, getCurrentWorkspaceId, getCurrentRootPath } from './ipc/workspace'
 import { registerMemoryHandlers } from './ipc/memory'
 import { registerFsHandlers } from './ipc/filesystem'
+import { registerVerifyHandlers } from './ipc/verify'
 import { registerAppSettingsHandlers, loadPersistedSettings } from './ipc/appsettings'
 import { registerSessionHandlers } from './ipc/sessions'
 import { registerGitHandlers } from './ipc/git'
@@ -296,6 +297,7 @@ app.whenReady().then(async () => {
   registerEventHandlers(() => mainWindow, () => getCurrentWorkspaceId())
   registerCheckpointHandlers(() => getCurrentWorkspaceId(), () => getCurrentRootPath())
   registerFsHandlers()
+  registerVerifyHandlers()
   registerAppSettingsHandlers()
   loadPersistedSettings()
   registerSessionHandlers()

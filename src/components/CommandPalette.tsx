@@ -63,6 +63,7 @@ export function CommandPalette() {
       { id: 'preview', title: t('cmd.preview'), section: t('cmd.section.view'), run: () => { s.togglePreviewPanel(); close() } },
       { id: 'memory', title: t('cmd.memory'), section: t('cmd.section.view'), run: () => { s.toggleMemoryPanel(); close() } },
       { id: 'code', title: t('cmd.code'), section: t('cmd.section.view'), run: () => { s.toggleFilePanel(); close() } },
+      { id: 'composer', title: t('cmd.composer'), section: t('cmd.section.view'), run: () => { s.toggleComposer(); close() } },
       { id: 'board', title: t('cmd.board'), section: t('cmd.section.view'), run: () => { s.toggleBoard(); close() } },
       { id: 'graph', title: t('cmd.graph'), section: t('cmd.section.view'), run: () => { s.toggleGraph(); close() } },
       { id: 'swarm-agent', title: t('cmd.swarmAgent'), section: t('cmd.section.view'), run: () => { s.toggleSwarmAgent(); close() } },

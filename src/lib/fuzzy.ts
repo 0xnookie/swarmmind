@@ -45,3 +45,21 @@ export function fuzzyMatch(query: string, target: string): FuzzyResult {
   if (t.startsWith(q)) score += 10
   return { matched: true, score, indices }
 }
+
+/**
+ * Filter + rank `items` by how well `query` fuzzy-matches `key(item)`. Empty
+ * query returns the head of the list unchanged. Ties keep input order (stable),
+ * so equally-scored candidates stay predictable. Shared by the file-path
+ * pickers (Cmd-K @-mentions, the inline-edit @-menu, the Composer context
+ * search) so they all rank identically.
+ */
+export function fuzzyRank<T>(items: T[], query: string, key: (x: T) => string, limit = 8): T[] {
+  if (!query.trim()) return items.slice(0, limit)
+  const scored: { item: T; score: number; i: number }[] = []
+  items.forEach((item, i) => {
+    const r = fuzzyMatch(query, key(item))
+    if (r.matched) scored.push({ item, score: r.score, i })
+  })
+  scored.sort((a, b) => b.score - a.score || a.i - b.i)
+  return scored.slice(0, limit).map((x) => x.item)
+}
