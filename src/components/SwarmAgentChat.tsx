@@ -24,7 +24,7 @@ export function SwarmAgentChat() {
     : countRunningAgents(rootPane) > 0
       ? ACTIVE_SUGGESTIONS
       : WORKSPACE_SUGGESTIONS
-  const { messages, streaming, sending, error, ttsEnabled, setTtsEnabled, send, stop, regenerate, canRegenerate, clear } = useSwarmAgent()
+  const { messages, streaming, sending, error, ttsEnabled, setTtsEnabled, voices, voiceURI, setVoiceURI, previewVoice, send, stop, regenerate, canRegenerate, clear } = useSwarmAgent()
   const [input, setInput] = useState('')
   const [hasKey, setHasKey] = useState(true)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -109,8 +109,21 @@ export function SwarmAgentChat() {
             onClick={() => setTtsEnabled(!ttsEnabled)}
           >
             {ttsEnabled ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
-            {ttsEnabled ? t('swarmAgent.voice') : t('swarmAgent.voice')}
+            {t('swarmAgent.voice')}
           </button>
+          {ttsEnabled && voices.length > 0 && (
+            <select
+              className="sa-voice-select"
+              title={t('swarmAgent.voicePick')}
+              value={voiceURI ?? ''}
+              onChange={e => { const v = e.target.value || null; setVoiceURI(v); previewVoice(v) }}
+            >
+              <option value="">{t('swarmAgent.voiceAuto')}</option>
+              {voices.map(v => (
+                <option key={v.voiceURI} value={v.voiceURI}>{v.name}</option>
+              ))}
+            </select>
+          )}
           <button className="sa-icon" title={t('swarmAgent.regenerate')} onClick={regenerate} disabled={!canRegenerate}>
             <RegenIcon />
           </button>

@@ -23,6 +23,7 @@ import { tokenize, rankDocs, cosineSim, rankByEmbedding, fuseRankings, dedupeByP
 import { chunkText } from '../src/lib/chunk.ts'
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
 import { stripCodeFences, extractJsonObject } from '../electron/lib/aiParse.ts'
+import { scoreVoice, rankVoices, pickVoice, cleanForSpeech, chunkForSpeech, type VoiceLike } from '../src/lib/voices.ts'
 
 let pass = 0
 let fail = 0
@@ -520,6 +521,79 @@ t('verify: buildFixInstruction embeds script + summary', () => {
   assert.ok(instr.includes('add a button'))
   assert.ok(instr.includes('npm run typecheck'))
   assert.ok(instr.includes('error TS1'))
+})
+
+// ---------- voices (SwarmAgent spoken-reply voice selection + cleanup) ----------
+const mkVoice = (p: Partial<VoiceLike> & { name: string; lang: string }): VoiceLike => ({
+  voiceURI: p.name, localService: true, default: false, ...p,
+})
+t('voices: same-language voice beats a wrong-language one', () => {
+  const en = mkVoice({ name: 'Plain EN', lang: 'en-US' })
+  const de = mkVoice({ name: 'Natural DE', lang: 'de-DE' })
+  assert.ok(scoreVoice(en, 'en-US') > scoreVoice(de, 'en-US'))
+})
+t('voices: natural/neural voice outranks a legacy one in same language', () => {
+  const natural = mkVoice({ name: 'Microsoft Aria Online (Natural)', lang: 'en-US', localService: false })
+  const legacy = mkVoice({ name: 'Microsoft David Desktop', lang: 'en-US' })
+  assert.ok(scoreVoice(natural, 'en') > scoreVoice(legacy, 'en'))
+})
+t('voices: espeak is heavily penalised', () => {
+  const espeak = mkVoice({ name: 'eSpeak english', lang: 'en' })
+  const plain = mkVoice({ name: 'Samantha', lang: 'en' })
+  assert.ok(scoreVoice(plain, 'en') > scoreVoice(espeak, 'en'))
+})
+t('voices: rankVoices returns the natural voice first', () => {
+  const voices = [
+    mkVoice({ name: 'eSpeak', lang: 'en' }),
+    mkVoice({ name: 'Microsoft David', lang: 'en-US' }),
+    mkVoice({ name: 'Google US English Natural', lang: 'en-US', localService: false }),
+  ]
+  assert.equal(rankVoices(voices, 'en-US')[0].name, 'Google US English Natural')
+})
+t('voices: pickVoice honours a valid preferred URI', () => {
+  const voices = [
+    mkVoice({ name: 'A', lang: 'en', voiceURI: 'uri-a' }),
+    mkVoice({ name: 'Natural B', lang: 'en', voiceURI: 'uri-b' }),
+  ]
+  assert.equal(pickVoice(voices, 'en', 'uri-a')?.voiceURI, 'uri-a')
+})
+t('voices: pickVoice falls back to best when preferred URI is gone', () => {
+  const voices = [
+    mkVoice({ name: 'Plain', lang: 'en', voiceURI: 'uri-a' }),
+    mkVoice({ name: 'Neural B', lang: 'en', voiceURI: 'uri-b' }),
+  ]
+  assert.equal(pickVoice(voices, 'en', 'missing')?.voiceURI, 'uri-b')
+})
+t('voices: pickVoice on empty list is null', () => {
+  assert.equal(pickVoice([], 'en', null), null)
+})
+t('voices: cleanForSpeech strips markdown markers', () => {
+  assert.equal(cleanForSpeech('**bold** and `code` and _italic_'), 'bold and code and italic')
+})
+t('voices: cleanForSpeech replaces fenced code blocks', () => {
+  const r = cleanForSpeech('Run this:\n```bash\nnpm test\n```\nDone.')
+  assert.ok(!r.includes('npm test'))
+  assert.ok(r.includes('code block'))
+})
+t('voices: cleanForSpeech keeps link text, drops url', () => {
+  assert.equal(cleanForSpeech('see [the docs](https://x.com/y)'), 'see the docs')
+})
+t('voices: cleanForSpeech strips headings and bullets', () => {
+  // Heading hashes and list bullets are removed; single newlines survive (and
+  // chunkForSpeech later treats them as sentence breaks → natural pauses).
+  assert.equal(cleanForSpeech('## Title\n- one\n- two'), 'Title\none\ntwo')
+})
+t('voices: chunkForSpeech splits on sentence boundaries', () => {
+  const r = chunkForSpeech('First sentence. Second sentence! Third?', 20)
+  assert.ok(r.length >= 2)
+  assert.ok(r.every((c) => c.length <= 20))
+})
+t('voices: chunkForSpeech packs short sentences together', () => {
+  assert.deepEqual(chunkForSpeech('Hi. There.', 200), ['Hi. There.'])
+})
+t('voices: chunkForSpeech on empty/blank → []', () => {
+  assert.deepEqual(chunkForSpeech(''), [])
+  assert.deepEqual(chunkForSpeech('   \n  '), [])
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

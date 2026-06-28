@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { SWARM_AGENT_TOOLS, runTool, cancelTools, resetToolCancellation, buildSwarmAgentContext } from '../swarmagent/tools'
+import { pickVoice, rankVoices, chunkForSpeech, type VoiceLike } from '../lib/voices'
 
 // Drives the SwarmAgent conversation. The agentic loop lives here in the
 // renderer because tool calls are app actions: each turn is one
@@ -53,6 +54,18 @@ function loadTts(): boolean {
   try { return localStorage.getItem(TTS_KEY) === '1' } catch { return false }
 }
 
+// Persist the chosen voice (by voiceURI) so the user's pick survives restarts.
+// Empty/missing → "Auto" (best natural voice for the language).
+const VOICE_KEY = 'swarmagent:voiceURI'
+function loadVoiceURI(): string | null {
+  try { return localStorage.getItem(VOICE_KEY) || null } catch { return null }
+}
+
+// A slightly slower rate + neutral pitch reads more naturally than the platform
+// defaults; the natural/neural voices selected by pickVoice do the rest.
+const SPEAK_RATE = 0.98
+const SPEAK_PITCH = 1.0
+
 export interface UseSwarmAgent {
   messages: SwarmAgentMessage[]
   streaming: string
@@ -60,6 +73,12 @@ export interface UseSwarmAgent {
   error: string | null
   ttsEnabled: boolean
   setTtsEnabled: (v: boolean) => void
+  // Voice selection for spoken replies. `voices` is ranked best-first for the
+  // active language; `voiceURI` is the user's pick (null = Auto / best).
+  voices: VoiceLike[]
+  voiceURI: string | null
+  setVoiceURI: (uri: string | null) => void
+  previewVoice: (uri?: string | null) => void
   send: (text: string) => void
   stop: () => void
   regenerate: () => void
@@ -84,6 +103,8 @@ export function useSwarmAgent(options?: { runTool?: ToolRunner; getContext?: () 
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [ttsEnabled, setTtsEnabledState] = useState(loadTts)
+  const [voiceURI, setVoiceURIState] = useState<string | null>(loadVoiceURI)
+  const [voices, setVoices] = useState<VoiceLike[]>([])
 
   // Persisted TTS setter; turning it off also cuts any in-progress speech.
   const setTtsEnabled = useCallback((v: boolean) => {
@@ -91,6 +112,26 @@ export function useSwarmAgent(options?: { runTool?: ToolRunner; getContext?: () 
     try { localStorage.setItem(TTS_KEY, v ? '1' : '0') } catch { /* best-effort */ }
     if (!v && typeof window.speechSynthesis !== 'undefined') window.speechSynthesis.cancel()
   }, [])
+
+  const setVoiceURI = useCallback((uri: string | null) => {
+    setVoiceURIState(uri)
+    try {
+      if (uri) localStorage.setItem(VOICE_KEY, uri)
+      else localStorage.removeItem(VOICE_KEY)
+    } catch { /* best-effort */ }
+  }, [])
+
+  // The browser populates getVoices() asynchronously (and refires on change), so
+  // subscribe and keep a language-ranked list for the picker. Refreshes when the
+  // language changes so the ranking follows the active locale.
+  useEffect(() => {
+    if (typeof window.speechSynthesis === 'undefined') return
+    const lang = language === 'de' ? 'de-DE' : 'en-US'
+    const refresh = () => setVoices(rankVoices(window.speechSynthesis.getVoices(), lang))
+    refresh()
+    window.speechSynthesis.addEventListener('voiceschanged', refresh)
+    return () => window.speechSynthesis.removeEventListener('voiceschanged', refresh)
+  }, [language])
 
   // Streaming deltas land here keyed by the active request id; we mirror the
   // accumulated text into `streaming` for the in-progress assistant bubble.
@@ -111,17 +152,40 @@ export function useSwarmAgent(options?: { runTool?: ToolRunner; getContext?: () 
   // Persist the transcript so it survives the overlay unmounting / app restart.
   useEffect(() => { saveHistory(messages) }, [messages])
 
-  const speak = useCallback((text: string) => {
-    if (!ttsEnabled || !text.trim() || typeof window.speechSynthesis === 'undefined') return
+  // Speak `text` aloud using the chosen (or best natural) voice. Markdown is
+  // stripped and the speech is queued per-sentence — both for a more human
+  // cadence and to dodge Chrome's ~15s long-utterance cutoff. `forceURI`/`force`
+  // let previewVoice speak a sample regardless of the toggle.
+  const utter = useCallback((text: string, opts?: { force?: boolean; voiceURI?: string | null }) => {
+    if ((!opts?.force && !ttsEnabled) || typeof window.speechSynthesis === 'undefined') return
+    const lang = language === 'de' ? 'de-DE' : 'en-US'
+    const all = window.speechSynthesis.getVoices()
+    const wantURI = opts && 'voiceURI' in opts ? opts.voiceURI : voiceURI
+    const voice = pickVoice(all, lang, wantURI)
+    const chunks = chunkForSpeech(text)
+    if (!chunks.length) return
     try {
-      const utter = new SpeechSynthesisUtterance(text)
-      utter.lang = language === 'de' ? 'de-DE' : 'en-US'
-      const voice = window.speechSynthesis.getVoices().find(v => v.lang.startsWith(utter.lang.slice(0, 2)))
-      if (voice) utter.voice = voice
       window.speechSynthesis.cancel()
-      window.speechSynthesis.speak(utter)
+      for (const chunk of chunks) {
+        const u = new SpeechSynthesisUtterance(chunk)
+        u.lang = voice?.lang ?? lang
+        if (voice) u.voice = voice as unknown as SpeechSynthesisVoice
+        u.rate = SPEAK_RATE
+        u.pitch = SPEAK_PITCH
+        window.speechSynthesis.speak(u)
+      }
     } catch { /* TTS is best-effort */ }
-  }, [ttsEnabled, language])
+  }, [ttsEnabled, language, voiceURI])
+
+  const speak = useCallback((text: string) => { if (text.trim()) utter(text) }, [utter])
+
+  // Speak a short sample so users can audition a voice before committing to it.
+  const previewVoice = useCallback((uri?: string | null) => {
+    const sample = language === 'de'
+      ? 'Hallo, ich bin SwarmAgent. So klinge ich.'
+      : "Hi, I'm SwarmAgent. This is how I sound."
+    utter(sample, { force: true, voiceURI: uri === undefined ? voiceURI : uri })
+  }, [utter, language, voiceURI])
 
   // The agentic loop. Runs `conversation` (which already ends on a user turn) to
   // completion: each step is one model round-trip; tool calls are executed
@@ -226,5 +290,5 @@ export function useSwarmAgent(options?: { runTool?: ToolRunner; getContext?: () 
 
   const canRegenerate = !sending && messages.some(m => m.role === 'user')
 
-  return { messages, streaming, sending, error, ttsEnabled, setTtsEnabled, send, stop, regenerate, canRegenerate, clear }
+  return { messages, streaming, sending, error, ttsEnabled, setTtsEnabled, voices, voiceURI, setVoiceURI, previewVoice, send, stop, regenerate, canRegenerate, clear }
 }
