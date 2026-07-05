@@ -190,10 +190,12 @@ own `.claude/CLAUDE.md` rule: never self-approve).
    theme" class of bug and makes every panel above fast to build consistently.
 2. **Event-driven conductor** — once Phase 1's bus exists, the conductor subscribes to
    `onSwarmEvent` instead of re-polling `taskList` every tick: lower latency, scales.
-3. **Orchestration unit tests** — the dependency-resolution / retry / stall logic in
-   `useConductor.ts` is pure-ish and is exactly where a silent autonomy regression would
-   hide. A dozen tests over "given tasks + states, what dispatches next" de-risks every
-   future change (typecheck is currently the only gate).
+3. **Orchestration unit tests** ✅ IMPLEMENTED — the conductor's per-tick decisions
+   (completion sweep, retry/stall/give-up, decompose watchdog, dispatch matching,
+   review routing, synthesis gate, message delivery) are extracted into the pure,
+   dependency-free `src/lib/conductor.ts` and asserted in `tests/lib-units.mts`
+   ("given tasks + states, what happens this tick"). `useConductor.ts` is now only
+   the impure shell (store/IPC/PTY/timers) around those functions.
 4. **Session export** — because the timeline is event-sourced, a shareable/replayable
    "here's what the swarm did" artifact falls out of `eventList` almost for free.
 

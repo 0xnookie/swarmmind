@@ -7,6 +7,26 @@ import {
   type DispatchProposal,
   type OrchestratorLogEntry,
 } from '../store/workspace'
+import {
+  type ConductorTask,
+  parseDeps,
+  shortId,
+  truncate,
+  oneLine,
+  canReview,
+  buildDispatchPrompt,
+  buildReviewPrompt,
+  buildDecomposePrompt,
+  buildSynthesisPrompt,
+  buildNudgePrompt,
+  sweepAction,
+  decomposeAction,
+  reviewSweepAction,
+  planDispatches,
+  planReviews,
+  readyForSynthesis,
+  planMessageDelivery,
+} from '../lib/conductor'
 
 // ── The Conductor ───────────────────────────────────────────────────────────
 //
@@ -27,17 +47,11 @@ import {
 //
 // The conductor itself spends zero model tokens: code does the wiring, the LLM
 // panes do the thinking.
-
-// Shape of a task as returned by window.swarmmind.taskList().
-interface ConductorTask {
-  id: string
-  title: string
-  description: string | null
-  notes: string | null
-  status: 'pending' | 'in_progress' | 'needs_review' | 'done' | 'failed'
-  assigned_agent: string | null
-  depends_on: string | null
-}
+//
+// Every per-tick decision (sweep, watchdog, dispatch/review matching, synthesis
+// gate, message routing) is a pure function in src/lib/conductor.ts, unit-tested
+// in tests/lib-units.mts. This hook is only the impure shell: store access, IPC,
+// PTY injection, timers.
 
 interface WorkerPane {
   id: string
@@ -55,54 +69,6 @@ const TICK_MS = 1500
 
 function collectLeaves(node: PaneNode): PaneLeaf[] {
   return node.type === 'leaf' ? [node] : node.children.flatMap(collectLeaves)
-}
-
-function parseDeps(depends_on: string | null): string[] {
-  return depends_on ? depends_on.split(',').map(s => s.trim()).filter(Boolean) : []
-}
-
-function shortId(id: string): string {
-  return id.slice(0, 8)
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + '…' : s
-}
-
-// Build the single-line prompt injected into a worker's PTY. Kept to one line on
-// purpose: embedded newlines would submit prematurely in most CLI agents.
-// When `reviewable` is true (a distinct second agent is available to review), the
-// worker is told to report `needs_review` instead of `done` so the review gate
-// engages; otherwise it reports `done` directly.
-function buildDispatchPrompt(task: ConductorTask, reviewable: boolean): string {
-  const deps = parseDeps(task.depends_on)
-  const depHint = deps.length
-    ? ` Prerequisite results are in shared memory under keys ${deps.map(d => `result:${d}`).join(', ')} — read them with memory_read first.`
-    : ''
-  const desc = task.description ? ` ${task.description}` : ''
-  const finish = reviewable
-    ? `When finished, call MCP memory_write with key "result:${task.id}", type "context", and a concise summary of what you did, then call task_update with id "${task.id}" and status "needs_review" (another agent will review it).`
-    : `When finished, call MCP task_update with id "${task.id}" and status "done", and memory_write with key "result:${task.id}", type "context", and a concise summary of what you did.`
-  return (
-    `[SwarmMind orchestrator] Please work on task ${shortId(task.id)} "${task.title}".${desc}${depHint} ` +
-    `${finish} If you cannot finish it, call task_update with status "failed".`
-  )
-}
-
-// Prompt for a reviewer pane: inspect another agent's submitted work and record
-// an approve/reject verdict via the task_review MCP tool.
-function buildReviewPrompt(task: ConductorTask): string {
-  return (
-    `[SwarmMind orchestrator] Please REVIEW task ${shortId(task.id)} "${task.title}", which another agent completed and submitted for review. ` +
-    `Read its summary with memory_read key "result:${task.id}" and inspect the actual changed files. ` +
-    `If it is correct and complete, call MCP task_review with id "${task.id}" and verdict "approve". ` +
-    `Otherwise call task_review with verdict "reject" and a comment describing what needs to change.`
-  )
-}
-
-function oneLine(s: string, n: number): string {
-  const flat = s.replace(/\s+/g, ' ').trim()
-  return flat.length > n ? flat.slice(0, n) + '…' : flat
 }
 
 // The context compiler: assemble a compact, single-line context block to append
@@ -127,25 +93,6 @@ async function composeContext(task: ConductorTask): Promise<string> {
   return parts.length ? ` Relevant context from shared memory — ${parts.join(' ; ')}.` : ''
 }
 
-function buildDecomposePrompt(goal: string, workers: AgentId[]): string {
-  const agents = workers.length ? workers.join(', ') : 'the worker panes'
-  return (
-    `[SwarmMind orchestrator] You are the LEAD agent. Break the following goal into small, parallelizable subtasks and create each one with the ` +
-    `task_create MCP tool. Set assigned_agent for each subtask and use depends_on (passing the ids task_create returns) wherever ordering matters. ` +
-    `Do NOT implement the subtasks yourself — only create them. Available worker agents: ${agents}. GOAL: ${goal}`
-  )
-}
-
-function buildSynthesisPrompt(goal: string, results: { title: string; value: string }[]): string {
-  const joined = results.length
-    ? results.map(r => `${r.title}: ${truncate(r.value, 400)}`).join(' | ')
-    : '(no result summaries were written to shared memory)'
-  return (
-    `[SwarmMind orchestrator] All subtasks are complete. Results — ${joined}. ` +
-    `Please synthesise the final outcome for the goal "${goal}" and note any follow-ups.`
-  )
-}
-
 function inject(paneId: string, text: string): void {
   window.swarmmind.ptyInput(paneId, text)
   window.swarmmind.ptyInput(paneId, '\r')
@@ -162,9 +109,7 @@ async function readResult(taskId: string): Promise<string | null> {
 
 // Deliver queued agent-to-agent messages by injecting them into a free running
 // pane of the recipient agent. Runs every tick regardless of orchestration mode,
-// so agents can hand off even during purely manual coordination. At most one
-// message per pane per tick, and only to panes that aren't mid-output, so we
-// don't interrupt an agent that's actively working.
+// so agents can hand off even during purely manual coordination.
 async function deliverMessages(): Promise<void> {
   let pending: AgentMessage[]
   try {
@@ -177,22 +122,19 @@ async function deliverMessages(): Promise<void> {
   const st = useWorkspaceStore.getState()
   // Mixed-workspace panes belong to another workspace's swarm; this workspace's
   // directed messages must not be delivered into them.
-  const leaves = collectLeaves(st.rootPane).filter(l => !l.workspaceId)
-  const usedPanes = new Set<string>()
+  const panes = collectLeaves(st.rootPane)
+    .filter(l => !l.workspaceId)
+    .map(l => ({
+      id: l.id,
+      agentId: l.agentId,
+      running: l.ptyStatus === 'running',
+      working: st.paneAttention[l.id] === 'working',
+    }))
 
-  for (const msg of pending) {
-    const pane = leaves.find(
-      l =>
-        l.agentId === msg.to_agent &&
-        l.ptyStatus === 'running' &&
-        !usedPanes.has(l.id) &&
-        st.paneAttention[l.id] !== 'working'
-    )
-    if (!pane) continue // no free recipient pane right now — retry next tick
-    inject(pane.id, `[SwarmMind message from ${msg.from_agent}] ${msg.body}`)
-    usedPanes.add(pane.id)
-    await window.swarmmind.messageMarkDelivered(msg.id).catch(() => {})
-    st.pushOrchestratorLog(`✉ ${msg.from_agent} → ${msg.to_agent}: ${truncate(msg.body, 60)}`)
+  for (const { message, pane } of planMessageDelivery(pending, panes)) {
+    inject(pane.id, `[SwarmMind message from ${message.from_agent}] ${message.body}`)
+    await window.swarmmind.messageMarkDelivered(message.id).catch(() => {})
+    st.pushOrchestratorLog(`✉ ${message.from_agent} → ${message.to_agent}: ${truncate(message.body, 60)}`)
   }
 }
 
@@ -299,7 +241,6 @@ export function useConductor(): void {
 
         const tasks = (await window.swarmmind.taskList()) as ConductorTask[]
         const byId = new Map(tasks.map(t => [t.id, t]))
-        const doneIds = new Set(tasks.filter(t => t.status === 'done').map(t => t.id))
         if (tasks.length > 0) hadTasksRef.current = true
 
         // Re-read state — taskList awaited above may have raced a UI change.
@@ -310,63 +251,60 @@ export function useConductor(): void {
         const runningPaneIds = new Set(
           leaves.filter(l => l.ptyStatus === 'running').map(l => l.id)
         )
+        const workingPaneIds = new Set(
+          leaves.filter(l => cur.paneAttention[l.id] === 'working').map(l => l.id)
+        )
 
         // ── 1. Completion sweep ─────────────────────────────────────────────
         for (const [paneId, taskId] of Object.entries(cur.paneTask)) {
           const task = byId.get(taskId)
-          if (!task) {
-            // Task vanished (deleted) — free the pane.
-            cur.setPaneTask(paneId, null)
-            dispatchedAtRef.current.delete(taskId)
+          const action = sweepAction({
+            task,
+            retries: retryCountRef.current.get(taskId) ?? 0,
+            maxRetries: MAX_RETRIES,
+            paneRunning: runningPaneIds.has(paneId),
+            paneWaiting: cur.paneAttention[paneId] === 'waiting',
+            alreadyNudged: nudgedRef.current.has(taskId),
+            dispatchedAt: dispatchedAtRef.current.get(taskId),
+            now: Date.now(),
+            stallMs: STALL_MS,
+          })
+          if (action === 'none') continue
+
+          if (action === 'nudge') {
+            nudgedRef.current.add(taskId)
+            inject(paneId, buildNudgePrompt(taskId))
+            cur.pushOrchestratorLog(`… nudged "${task!.title}" (idle, still in progress)`)
             continue
           }
-          if (task.status === 'done') {
+
+          // Every remaining action frees the pane.
+          if (action === 'free_done') {
             const result = await readResult(taskId)
             cur.pushOrchestratorLog(
-              `✓ "${task.title}" done${result ? ` — ${truncate(result, 80)}` : ''}`
+              `✓ "${task!.title}" done${result ? ` — ${truncate(result, 80)}` : ''}`
             )
-            cur.setPaneTask(paneId, null)
-            dispatchedAtRef.current.delete(taskId)
-          } else if (task.status === 'failed') {
+          } else if (action === 'retry') {
             // Retry transient failures by resetting the task to pending so it can
             // be re-dispatched (to any matching free worker) on a later tick.
             const attempts = retryCountRef.current.get(taskId) ?? 0
-            if (attempts < MAX_RETRIES) {
-              retryCountRef.current.set(taskId, attempts + 1)
-              window.swarmmind.taskUpdate(taskId, 'pending').catch(() => {})
-              cur.pushOrchestratorLog(`↻ retrying "${task.title}" (attempt ${attempts + 2})`)
-            } else {
-              cur.pushOrchestratorLog(`✗ "${task.title}" failed after ${attempts + 1} attempt(s) — needs attention`)
-            }
-            cur.setPaneTask(paneId, null)
-            dispatchedAtRef.current.delete(taskId)
-          } else if (task.status === 'needs_review') {
+            retryCountRef.current.set(taskId, attempts + 1)
+            window.swarmmind.taskUpdate(taskId, 'pending').catch(() => {})
+            cur.pushOrchestratorLog(`↻ retrying "${task!.title}" (attempt ${attempts + 2})`)
+          } else if (action === 'give_up') {
+            const attempts = retryCountRef.current.get(taskId) ?? 0
+            cur.pushOrchestratorLog(`✗ "${task!.title}" failed after ${attempts + 1} attempt(s) — needs attention`)
+          } else if (action === 'free_for_review') {
             // Author delivered the work and submitted it for review — free their
             // pane; the review-routing pass below assigns a different agent to it.
-            cur.pushOrchestratorLog(`⚖ "${task.title}" submitted for review`)
-            cur.setPaneTask(paneId, null)
-            dispatchedAtRef.current.delete(taskId)
-          } else if (!runningPaneIds.has(paneId)) {
+            cur.pushOrchestratorLog(`⚖ "${task!.title}" submitted for review`)
+          } else if (action === 'free_pane_exited') {
             // The agent process died mid-task — free the pane so work can be
             // re-dispatched (the task stays in_progress for the user to review).
-            cur.pushOrchestratorLog(`⚠ pane for "${task.title}" exited`)
-            cur.setPaneTask(paneId, null)
-            dispatchedAtRef.current.delete(taskId)
-          } else if (
-            // Stall guard: the worker has gone idle but never reported the task
-            // done/failed. Most likely it finished and forgot the MCP call. Nudge
-            // it once rather than leaving the pane occupied indefinitely.
-            cur.paneAttention[paneId] === 'waiting' &&
-            !nudgedRef.current.has(taskId) &&
-            Date.now() - (dispatchedAtRef.current.get(taskId) ?? Date.now()) > STALL_MS
-          ) {
-            nudgedRef.current.add(taskId)
-            inject(
-              paneId,
-              `[SwarmMind orchestrator] If task ${shortId(taskId)} is finished, call MCP task_update with status "done" and memory_write key "result:${taskId}". If you are blocked, call task_update with status "failed".`
-            )
-            cur.pushOrchestratorLog(`… nudged "${task.title}" (idle, still in progress)`)
+            cur.pushOrchestratorLog(`⚠ pane for "${task!.title}" exited`)
           }
+          cur.setPaneTask(paneId, null)
+          dispatchedAtRef.current.delete(taskId)
         }
 
         // Worker panes = running agent panes that aren't the lead.
@@ -394,28 +332,28 @@ export function useConductor(): void {
 
         // Decomposition watchdog: the lead was asked but no tasks have appeared.
         // Re-prompt once, then give up so a goal-driven run can't hang silently.
-        if (
-          orchestratorPhase === 'running' &&
-          leadPaneId &&
-          goal &&
-          decomposedGoalRef.current === goal &&
-          tasks.length === 0 &&
-          decomposeAttemptsRef.current >= 1 &&
-          decomposeAttemptsRef.current < 3 &&
-          decomposeAtRef.current !== null &&
-          Date.now() - decomposeAtRef.current > DECOMPOSE_TIMEOUT_MS
-        ) {
-          if (decomposeAttemptsRef.current === 1 && runningPaneIds.has(leadPaneId)) {
+        if (orchestratorPhase === 'running' && leadPaneId && goal && decomposedGoalRef.current === goal) {
+          const watchdog = decomposeAction({
+            attempts: decomposeAttemptsRef.current,
+            askedAt: decomposeAtRef.current,
+            now: Date.now(),
+            timeoutMs: DECOMPOSE_TIMEOUT_MS,
+            taskCount: tasks.length,
+            leadRunning: runningPaneIds.has(leadPaneId),
+          })
+          if (watchdog === 'reprompt') {
             const workerAgents = Array.from(new Set(workers.map(w => w.agentId)))
             inject(leadPaneId, buildDecomposePrompt(goal, workerAgents))
             decomposeAttemptsRef.current = 2
             decomposeAtRef.current = Date.now()
             cur.pushOrchestratorLog('lead produced no tasks — re-prompting…')
-          } else {
+            return
+          }
+          if (watchdog === 'give_up') {
             decomposeAttemptsRef.current = 3
             cur.pushOrchestratorLog('lead produced no tasks — giving up; create tasks manually')
+            return
           }
-          return
         }
 
         // ── 2b. Review-completion sweep ─────────────────────────────────────
@@ -423,16 +361,11 @@ export function useConductor(): void {
         // task to done=approved or pending=changes-requested), or whose pane died.
         for (const [paneId, taskId] of Array.from(reviewBindingRef.current)) {
           const task = byId.get(taskId)
-          if (!task) { reviewBindingRef.current.delete(paneId); continue }
-          if (task.status === 'done') {
-            cur.pushOrchestratorLog(`✓ review approved "${task.title}"`)
-            reviewBindingRef.current.delete(paneId)
-          } else if (task.status === 'pending') {
-            cur.pushOrchestratorLog(`✎ changes requested on "${task.title}" — re-queued`)
-            reviewBindingRef.current.delete(paneId)
-          } else if (!runningPaneIds.has(paneId)) {
-            reviewBindingRef.current.delete(paneId)
-          }
+          const verdict = reviewSweepAction(task, runningPaneIds.has(paneId))
+          if (verdict === 'none') continue
+          if (verdict === 'approved') cur.pushOrchestratorLog(`✓ review approved "${task!.title}"`)
+          if (verdict === 'rejected') cur.pushOrchestratorLog(`✎ changes requested on "${task!.title}" — re-queued`)
+          reviewBindingRef.current.delete(paneId)
         }
 
         // ── 3. Dispatch ─────────────────────────────────────────────────────
@@ -445,43 +378,34 @@ export function useConductor(): void {
         const activeTaskIds = new Set(Object.values(livePaneTask))
         const proposalPending = !!useWorkspaceStore.getState().orchestratorProposal
 
-        const isFree = (w: WorkerPane) =>
-          !occupied.has(w.id) && cur.paneAttention[w.id] !== 'working'
-
-        const depsMet = (t: ConductorTask) => parseDeps(t.depends_on).every(d => doneIds.has(d))
-
         // The review gate engages only when a *distinct* second agent exists to
         // review (no self-review); otherwise workers report done directly.
-        const canReview = new Set(workers.map(w => w.agentId)).size >= 2
-
-        const pending = tasks
-          .filter(t => t.status === 'pending' && !skippedRef.current.has(t.id) && !activeTaskIds.has(t.id) && depsMet(t))
+        const reviewable = canReview(workers)
 
         if (!(orchestrationMode === 'assisted' && proposalPending)) {
-          for (const task of pending) {
-            // Prefer a free worker matching the task's assigned agent; if the
-            // task is unassigned, any free worker will do.
-            const pane = workers.find(
-              w => isFree(w) && (!task.assigned_agent || w.agentId === task.assigned_agent)
-            )
-            if (!pane) continue
-
+          const planned = planDispatches({
+            tasks,
+            workers,
+            occupiedPaneIds: occupied,
+            workingPaneIds,
+            activeTaskIds,
+            skippedTaskIds: skippedRef.current,
+            // assisted — surface one proposal at a time and wait for the user.
+            limit: orchestrationMode === 'assisted' ? 1 : undefined,
+          })
+          for (const { task, worker } of planned) {
             const proposal: DispatchProposal = {
-              paneId: pane.id,
+              paneId: worker.id,
               taskId: task.id,
               title: task.title,
-              agentId: pane.agentId,
-              prompt: buildDispatchPrompt(task, canReview) + await composeContext(task),
+              agentId: worker.agentId,
+              prompt: buildDispatchPrompt(task, reviewable) + await composeContext(task),
             }
-
             if (orchestrationMode === 'auto') {
               dispatch(proposal)
-              occupied.add(pane.id)      // claim the pane for the rest of this tick
-              activeTaskIds.add(task.id) // and the task
+              occupied.add(worker.id) // claim the pane for the review pass too
             } else {
-              // assisted — surface one proposal and wait for the user.
               useWorkspaceStore.getState().setOrchestratorProposal(proposal)
-              break
             }
           }
         }
@@ -490,21 +414,20 @@ export function useConductor(): void {
         // Assign each unreviewed `needs_review` task to a free worker of a
         // *different* agent than the author (no self-review). Runs in both auto
         // and assisted modes — review is lower-stakes than dispatch.
-        const underReview = new Set(reviewBindingRef.current.values())
-        const needingReview = tasks.filter(
-          t => t.status === 'needs_review' && !underReview.has(t.id) && !skippedRef.current.has(t.id)
-        )
-        for (const task of needingReview) {
-          const reviewer = workers.find(
-            w => isFree(w) && w.agentId !== task.assigned_agent
-          )
-          if (!reviewer) continue
-          inject(reviewer.id, buildReviewPrompt(task))
-          reviewBindingRef.current.set(reviewer.id, task.id)
-          occupied.add(reviewer.id)
-          cur.pushOrchestratorLog(`⚖ review of "${task.title}" → ${reviewer.agentId}`)
+        const reviews = planReviews({
+          tasks,
+          workers,
+          occupiedPaneIds: occupied,
+          workingPaneIds,
+          underReviewTaskIds: new Set(reviewBindingRef.current.values()),
+          skippedTaskIds: skippedRef.current,
+        })
+        for (const { task, worker } of reviews) {
+          inject(worker.id, buildReviewPrompt(task))
+          reviewBindingRef.current.set(worker.id, task.id)
+          cur.pushOrchestratorLog(`⚖ review of "${task.title}" → ${worker.agentId}`)
           window.swarmmind
-            .eventEmit('review', { taskId: task.id, title: task.title, verdict: 'assigned' }, reviewer.id, reviewer.agentId)
+            .eventEmit('review', { taskId: task.id, title: task.title, verdict: 'assigned' }, worker.id, worker.agentId)
             .catch(() => {})
         }
 
@@ -514,24 +437,22 @@ export function useConductor(): void {
           leadPaneId &&
           hadTasksRef.current &&
           !synthesizedRef.current &&
-          runningPaneIds.has(leadPaneId)
+          runningPaneIds.has(leadPaneId) &&
+          readyForSynthesis(tasks)
         ) {
-          const openTasks = tasks.filter(t => t.status === 'pending' || t.status === 'in_progress' || t.status === 'needs_review')
-          if (tasks.length > 0 && openTasks.length === 0) {
-            const doneTasks = tasks.filter(t => t.status === 'done')
-            const results: { title: string; value: string }[] = []
-            for (const t of doneTasks) {
-              const v = await readResult(t.id)
-              if (v) results.push({ title: t.title, value: v })
-            }
-            inject(leadPaneId, buildSynthesisPrompt(goal, results))
-            synthesizedRef.current = true
-            useWorkspaceStore.getState().setOrchestratorPhase('done')
-            useWorkspaceStore.getState().pushOrchestratorLog('lead synthesising results…')
-            window.swarmmind
-              .eventEmit('synthesis', { goal, results: results.length }, leadPaneId)
-              .catch(() => {})
+          const doneTasks = tasks.filter(t => t.status === 'done')
+          const results: { title: string; value: string }[] = []
+          for (const t of doneTasks) {
+            const v = await readResult(t.id)
+            if (v) results.push({ title: t.title, value: v })
           }
+          inject(leadPaneId, buildSynthesisPrompt(goal, results))
+          synthesizedRef.current = true
+          useWorkspaceStore.getState().setOrchestratorPhase('done')
+          useWorkspaceStore.getState().pushOrchestratorLog('lead synthesising results…')
+          window.swarmmind
+            .eventEmit('synthesis', { goal, results: results.length }, leadPaneId)
+            .catch(() => {})
         }
       } finally {
         busyRef.current = false

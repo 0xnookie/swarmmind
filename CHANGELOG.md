@@ -6,6 +6,24 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.14.1]
+
+### Changed
+- **Autonomous orchestration is now unit-tested.** The Conductor — the loop that
+  dispatches tasks across agent panes, retries failures, nudges stalled workers,
+  routes work to a second agent for review, and asks the lead to decompose a goal
+  and synthesise the results — had its every per-tick decision extracted into a
+  pure, dependency-free module (`src/lib/conductor.ts`) and covered by 23 new
+  assertions in the no-build test layer. This is exactly the code where a silent
+  autonomy regression (a task dispatched twice, a worker reviewing its own work,
+  a run that hangs) would hide, and it was previously guarded only by the type
+  checker. Behaviour is unchanged — this hardens it against future breakage.
+
+### Docs
+- Corrected the competitive scorecard: the opt-in **autonomous verify→fix loop**
+  (auto-run a workspace script → auto-fix → re-verify, bounded to 3 rounds under
+  one checkpoint) was already shipped and is now marked at parity.
+
 ## [0.14.0]
 
 ### Changed

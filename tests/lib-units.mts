@@ -23,6 +23,11 @@ import { tokenize, rankDocs, cosineSim, rankByEmbedding, fuseRankings, dedupeByP
 import { chunkText } from '../src/lib/chunk.ts'
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
 import { stripCodeFences, extractJsonObject } from '../electron/lib/aiParse.ts'
+import {
+  parseDeps, depsMet, canReview, buildDispatchPrompt, sweepAction, decomposeAction,
+  reviewSweepAction, planDispatches, planReviews, readyForSynthesis, planMessageDelivery,
+  type ConductorTask,
+} from '../src/lib/conductor.ts'
 import { scoreVoice, rankVoices, pickVoice, cleanForSpeech, chunkForSpeech, type VoiceLike } from '../src/lib/voices.ts'
 
 let pass = 0
@@ -594,6 +599,175 @@ t('voices: chunkForSpeech packs short sentences together', () => {
 t('voices: chunkForSpeech on empty/blank → []', () => {
   assert.deepEqual(chunkForSpeech(''), [])
   assert.deepEqual(chunkForSpeech('   \n  '), [])
+})
+
+// ---------- conductor (orchestration decision logic) ----------
+// Every per-tick decision of the autonomous conductor loop — the exact place a
+// silent autonomy regression would hide (previously only typechecked).
+const mkTask = (p: Partial<ConductorTask> & { id: string }): ConductorTask => ({
+  title: p.id, description: null, notes: null, status: 'pending',
+  assigned_agent: null, depends_on: null, ...p,
+})
+
+t('conductor: parseDeps handles null, spaces, trailing commas', () => {
+  assert.deepEqual(parseDeps(null), [])
+  assert.deepEqual(parseDeps(' a , b ,'), ['a', 'b'])
+})
+t('conductor: depsMet only when every dependency is done', () => {
+  const task = mkTask({ id: 't1', depends_on: 'a,b' })
+  assert.equal(depsMet(task, new Set(['a', 'b'])), true)
+  assert.equal(depsMet(task, new Set(['a'])), false)
+  assert.equal(depsMet(mkTask({ id: 't2' }), new Set()), true)
+})
+t('conductor: canReview needs two distinct agents, not two panes', () => {
+  assert.equal(canReview([{ id: 'p1', agentId: 'claude' }, { id: 'p2', agentId: 'claude' }]), false)
+  assert.equal(canReview([{ id: 'p1', agentId: 'claude' }, { id: 'p2', agentId: 'codex' }]), true)
+})
+t('conductor: dispatch prompt routes to needs_review only when reviewable', () => {
+  const task = mkTask({ id: 'abcdef1234567890', depends_on: 'dep1' })
+  const reviewed = buildDispatchPrompt(task, true)
+  const direct = buildDispatchPrompt(task, false)
+  assert.ok(reviewed.includes('"needs_review"'))
+  assert.ok(!direct.includes('needs_review'))
+  assert.ok(direct.includes('"done"'))
+  // Both carry the dependency hint and the failure escape hatch.
+  assert.ok(reviewed.includes('result:dep1'))
+  assert.ok(direct.includes('status "failed"'))
+})
+
+const sweepBase = {
+  retries: 0, maxRetries: 1, paneRunning: true, paneWaiting: false,
+  alreadyNudged: false, dispatchedAt: 0, now: 10_000, stallMs: 30_000,
+}
+t('conductor: sweep frees a vanished task', () => {
+  assert.equal(sweepAction({ ...sweepBase, task: undefined }), 'free_vanished')
+})
+t('conductor: sweep collects a done task', () => {
+  assert.equal(sweepAction({ ...sweepBase, task: mkTask({ id: 't', status: 'done' }) }), 'free_done')
+})
+t('conductor: sweep retries a failed task until maxRetries, then gives up', () => {
+  const failed = mkTask({ id: 't', status: 'failed' })
+  assert.equal(sweepAction({ ...sweepBase, task: failed, retries: 0 }), 'retry')
+  assert.equal(sweepAction({ ...sweepBase, task: failed, retries: 1 }), 'give_up')
+})
+t('conductor: sweep frees a task submitted for review', () => {
+  assert.equal(sweepAction({ ...sweepBase, task: mkTask({ id: 't', status: 'needs_review' }) }), 'free_for_review')
+})
+t('conductor: sweep frees the pane when its process died', () => {
+  const inProgress = mkTask({ id: 't', status: 'in_progress' })
+  assert.equal(sweepAction({ ...sweepBase, task: inProgress, paneRunning: false }), 'free_pane_exited')
+})
+t('conductor: sweep nudges an idle worker only past the stall window, only once', () => {
+  const inProgress = mkTask({ id: 't', status: 'in_progress' })
+  const idle = { ...sweepBase, task: inProgress, paneWaiting: true, dispatchedAt: 0, now: 31_000 }
+  assert.equal(sweepAction(idle), 'nudge')
+  assert.equal(sweepAction({ ...idle, now: 29_000 }), 'none') // window not elapsed
+  assert.equal(sweepAction({ ...idle, alreadyNudged: true }), 'none') // one nudge max
+  assert.equal(sweepAction({ ...idle, paneWaiting: false }), 'none') // still working
+  assert.equal(sweepAction({ ...idle, dispatchedAt: undefined }), 'none') // unknown dispatch time
+})
+
+const watchdogBase = { attempts: 1, askedAt: 0, now: 30_000, timeoutMs: 25_000, taskCount: 0, leadRunning: true }
+t('conductor: decompose watchdog re-prompts once after the timeout', () => {
+  assert.equal(decomposeAction(watchdogBase), 'reprompt')
+  assert.equal(decomposeAction({ ...watchdogBase, now: 20_000 }), 'none') // not yet
+  assert.equal(decomposeAction({ ...watchdogBase, taskCount: 2 }), 'none') // tasks appeared
+  assert.equal(decomposeAction({ ...watchdogBase, attempts: 0 }), 'none') // never asked
+})
+t('conductor: decompose watchdog gives up after the re-prompt or a dead lead', () => {
+  assert.equal(decomposeAction({ ...watchdogBase, attempts: 2 }), 'give_up')
+  assert.equal(decomposeAction({ ...watchdogBase, leadRunning: false }), 'give_up')
+  assert.equal(decomposeAction({ ...watchdogBase, attempts: 3 }), 'none') // already gave up
+})
+
+t('conductor: review sweep maps verdicts and dead panes', () => {
+  assert.equal(reviewSweepAction(mkTask({ id: 't', status: 'done' }), true), 'approved')
+  assert.equal(reviewSweepAction(mkTask({ id: 't', status: 'pending' }), true), 'rejected')
+  assert.equal(reviewSweepAction(undefined, true), 'unbind')
+  assert.equal(reviewSweepAction(mkTask({ id: 't', status: 'in_progress' }), false), 'unbind')
+  assert.equal(reviewSweepAction(mkTask({ id: 't', status: 'in_progress' }), true), 'none')
+})
+
+const empty = new Set<string>()
+const dispatchBase = {
+  workers: [{ id: 'p1', agentId: 'claude' }, { id: 'p2', agentId: 'codex' }],
+  occupiedPaneIds: empty, workingPaneIds: empty, activeTaskIds: empty, skippedTaskIds: empty,
+}
+t('conductor: dispatch matches assigned agent, unassigned takes any free worker', () => {
+  const tasks = [mkTask({ id: 'a', assigned_agent: 'codex' }), mkTask({ id: 'b' })]
+  const out = planDispatches({ ...dispatchBase, tasks })
+  assert.deepEqual(out.map(x => [x.task.id, x.worker.id]), [['a', 'p2'], ['b', 'p1']])
+})
+t('conductor: dispatch never double-books a pane or a task in one tick', () => {
+  const tasks = [mkTask({ id: 'a' }), mkTask({ id: 'b' }), mkTask({ id: 'c' })]
+  const out = planDispatches({ ...dispatchBase, tasks })
+  assert.equal(out.length, 2) // two workers → third task waits
+  assert.equal(new Set(out.map(x => x.worker.id)).size, 2)
+})
+t('conductor: dispatch honours dependency gating', () => {
+  const tasks = [mkTask({ id: 'dep', status: 'in_progress' }), mkTask({ id: 'b', depends_on: 'dep' })]
+  assert.equal(planDispatches({ ...dispatchBase, tasks }).length, 0)
+  const done = [mkTask({ id: 'dep', status: 'done' }), mkTask({ id: 'b', depends_on: 'dep' })]
+  assert.deepEqual(planDispatches({ ...dispatchBase, tasks: done }).map(x => x.task.id), ['b'])
+})
+t('conductor: dispatch skips occupied/working panes and skipped/active tasks', () => {
+  const tasks = [mkTask({ id: 'a' }), mkTask({ id: 'b' }), mkTask({ id: 'c' })]
+  const out = planDispatches({
+    ...dispatchBase, tasks,
+    occupiedPaneIds: new Set(['p1']), workingPaneIds: new Set(['p2']),
+  })
+  assert.equal(out.length, 0) // no free pane at all
+  const out2 = planDispatches({
+    ...dispatchBase, tasks,
+    skippedTaskIds: new Set(['a']), activeTaskIds: new Set(['b']),
+  })
+  assert.deepEqual(out2.map(x => x.task.id), ['c'])
+})
+t('conductor: dispatch limit=1 surfaces a single assisted proposal', () => {
+  const tasks = [mkTask({ id: 'a' }), mkTask({ id: 'b' })]
+  assert.equal(planDispatches({ ...dispatchBase, tasks, limit: 1 }).length, 1)
+})
+t('conductor: no worker of the assigned agent → task stays queued', () => {
+  const tasks = [mkTask({ id: 'a', assigned_agent: 'cursor' })]
+  assert.equal(planDispatches({ ...dispatchBase, tasks }).length, 0)
+})
+
+t('conductor: review routing never assigns the author\'s own agent', () => {
+  const tasks = [mkTask({ id: 'a', status: 'needs_review', assigned_agent: 'claude' })]
+  const out = planReviews({ ...dispatchBase, tasks, underReviewTaskIds: empty })
+  assert.deepEqual(out.map(x => x.worker.id), ['p2']) // codex reviews claude's work
+  const sameAgentOnly = planReviews({
+    tasks, workers: [{ id: 'p1', agentId: 'claude' }],
+    occupiedPaneIds: empty, workingPaneIds: empty, underReviewTaskIds: empty, skippedTaskIds: empty,
+  })
+  assert.equal(sameAgentOnly.length, 0) // no self-review, ever
+})
+t('conductor: review routing skips tasks already under review', () => {
+  const tasks = [mkTask({ id: 'a', status: 'needs_review', assigned_agent: 'claude' })]
+  const out = planReviews({ ...dispatchBase, tasks, underReviewTaskIds: new Set(['a']) })
+  assert.equal(out.length, 0)
+})
+
+t('conductor: synthesis waits for open tasks, including needs_review', () => {
+  assert.equal(readyForSynthesis([]), false) // no tasks yet → keep waiting
+  assert.equal(readyForSynthesis([mkTask({ id: 'a', status: 'done' }), mkTask({ id: 'b', status: 'in_progress' })]), false)
+  assert.equal(readyForSynthesis([mkTask({ id: 'a', status: 'done' }), mkTask({ id: 'b', status: 'needs_review' })]), false)
+  assert.equal(readyForSynthesis([mkTask({ id: 'a', status: 'done' }), mkTask({ id: 'b', status: 'failed' })]), true)
+})
+
+t('conductor: message delivery — one per pane per tick, skips busy panes', () => {
+  const panes = [
+    { id: 'p1', agentId: 'claude', running: true, working: false },
+    { id: 'p2', agentId: 'claude', running: true, working: true },
+    { id: 'p3', agentId: 'codex', running: false, working: false },
+  ]
+  const msgs = [
+    { id: 'm1', to_agent: 'claude' },
+    { id: 'm2', to_agent: 'claude' }, // p1 already used, p2 mid-output → waits
+    { id: 'm3', to_agent: 'codex' }, // only pane not running → waits
+  ]
+  const out = planMessageDelivery(msgs, panes)
+  assert.deepEqual(out.map(x => [x.message.id, x.pane.id]), [['m1', 'p1']])
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
