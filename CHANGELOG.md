@@ -6,6 +6,52 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.15.0]
+
+Seven features in one release, all aimed at the same goal: stitch the surfaces
+together and make the swarm the fastest way to vibe-code.
+
+### Added
+- **Terminal→editor bridge.** File references in any agent's terminal output —
+  `src/foo.ts:12`, `D:\x\y.py(3,1)`, tsc-style `path(12,5)` — are now links:
+  **Ctrl/Cmd+Click** opens the file in the editor at that exact line. Candidates
+  are checked against the filesystem before underlining (no dead links) and
+  resolved against the pane's worktree, then its cwd, then the workspace root.
+- **Agentic chat that edits.** SwarmAgent has a new `propose_edits` tool: ask it
+  to change/fix/implement something and it reads the code, then hands a complete
+  change plan to the Composer's existing review pipeline — per-file diffs, safety
+  checkpoint, one-click apply, optional verify run. Nothing is written until you
+  apply, so chat now *does* the work reversibly instead of pasting code to copy.
+  Works from the floating desktop widget too.
+- **Fresh semantic index while agents work.** The whole-repo vector index no
+  longer goes stale the moment an agent edits a file: file-watcher events
+  re-embed just the touched files (debounced, capped, and write-locked against
+  full rebuilds). Composer auto-context now ranks against what the swarm is
+  building *right now* — an edge even Cursor's index doesn't have.
+- **Diff drill-down everywhere.** The unified-diff renderer is now a shared
+  component: the **Changes panel** expands any file's live git diff on click
+  (worktree-aware, with an "Open in editor" jump), and the Kanban **Review**
+  column gained a PR-style card — **Approve / Request changes / View changes** —
+  so the human review gate shows the actual diff, and verdicts land in the
+  timeline like agent reviews.
+- **Dev-server auto-detect.** When an agent starts a dev server, SwarmMind spots
+  the announced URL in its output, badges the TopBar preview button, and offers
+  it one click away in the built-in preview browser (first open adopts it
+  automatically). Describe → agent builds → preview hot-reloads next to it.
+- **Swarm recipes.** A "Recipes" dropdown in the Orchestrator bar applies
+  one-click templates — *Builder + Reviewer*, *Lead + 2 workers*, *Full swarm*,
+  *3 parallel workers* — pre-wiring panes, titles, worktree isolation, the lead
+  pane and the orchestration mode in one action.
+- **Focus mode + ambient sound cues** (both opt-in, Settings → General): the
+  pane whose agent just asked a question is auto-spotlighted, and quiet audio
+  pings mark needs-you / turn-finished / file-contention moments — attention
+  management for running many agents at once.
+
+### Engineering
+- Four new pure, dependency-free modules (`terminalLinks`, `indexUpdate`,
+  `devServerUrl`, `recipes`) with 24 new assertions — the no-build unit layer is
+  now **160 assertions**, all green, `npm run typecheck` clean.
+
 ## [0.14.1]
 
 ### Changed

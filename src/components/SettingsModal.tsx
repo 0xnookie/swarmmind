@@ -111,6 +111,11 @@ export function SettingsModal() {
   const setTerminalCursorBlink = useWorkspaceStore(s => s.setTerminalCursorBlink)
   const storeCloseToTray = useWorkspaceStore(s => s.closeToTray)
   const setCloseToTray = useWorkspaceStore(s => s.setCloseToTray)
+  // Instant-apply (no draft/Save): ambient audio cues + focus-mode spotlight.
+  const soundCuesEnabled = useWorkspaceStore(s => s.soundCuesEnabled)
+  const setSoundCuesEnabled = useWorkspaceStore(s => s.setSoundCuesEnabled)
+  const focusModeEnabled = useWorkspaceStore(s => s.focusModeEnabled)
+  const setFocusModeEnabled = useWorkspaceStore(s => s.setFocusModeEnabled)
   const storeVoiceModel = useWorkspaceStore(s => s.voiceModel)
   const setVoiceModelStore = useWorkspaceStore(s => s.setVoiceModel)
   const storeVoicePreload = useWorkspaceStore(s => s.voicePreload)
@@ -521,6 +526,34 @@ export function SettingsModal() {
                     style={styles.range}
                   />
                   <p style={styles.desc}>{t('settings.notifications.idleDesc')}</p>
+
+                  <div style={{ ...styles.rowBetween, marginTop: 10 }}>
+                    <div>
+                      <FieldLabel>{t('settings.notifications.soundCues')}</FieldLabel>
+                      <p style={{ ...styles.desc, marginTop: 2 }}>{t('settings.notifications.soundCuesDesc')}</p>
+                    </div>
+                    <button
+                      className="settings-toggle"
+                      role="switch"
+                      aria-checked={soundCuesEnabled}
+                      aria-label={t('settings.notifications.soundCues')}
+                      onClick={() => setSoundCuesEnabled(!soundCuesEnabled)}
+                    />
+                  </div>
+
+                  <div style={{ ...styles.rowBetween, marginTop: 10 }}>
+                    <div>
+                      <FieldLabel>{t('settings.notifications.focusMode')}</FieldLabel>
+                      <p style={{ ...styles.desc, marginTop: 2 }}>{t('settings.notifications.focusModeDesc')}</p>
+                    </div>
+                    <button
+                      className="settings-toggle"
+                      role="switch"
+                      aria-checked={focusModeEnabled}
+                      aria-label={t('settings.notifications.focusMode')}
+                      onClick={() => setFocusModeEnabled(!focusModeEnabled)}
+                    />
+                  </div>
                 </Group>
 
                 <Group title={t('settings.voice.group')}>

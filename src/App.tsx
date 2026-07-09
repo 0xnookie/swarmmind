@@ -32,6 +32,7 @@ import { useLoops } from './hooks/useLoops'
 import { useWidgetBridge } from './hooks/useWidgetBridge'
 import { useWorkspaceStore, buildLayoutForCount, selectTerminalsVisible, type AgentId, type ShellStyle } from './store/workspace'
 import { parseSnippets } from './lib/snippets'
+import { playCue } from './lib/audioCues'
 import { SHORTCUTS, matchEvent, getEffectiveKeys } from './shortcuts'
 import type { ThemePreset, UiDensity, UiFontId, MonoFontId } from './appearance'
 import { THEMES, UI_FONTS, MONO_FONTS } from './appearance'
@@ -97,6 +98,12 @@ export default function App() {
     window.swarmmind.getAppSetting('closeToTray').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ closeToTray: val !== '0' })
     }).catch(() => {})
+    window.swarmmind.getAppSetting('soundCues').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ soundCuesEnabled: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('focusMode').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ focusModeEnabled: val !== '0' })
+    }).catch(() => {})
     window.swarmmind.getAppSetting('language').then(val => {
       if (val === 'en' || val === 'de') useWorkspaceStore.setState({ language: val })
     }).catch(() => {})
@@ -161,12 +168,24 @@ export default function App() {
     const unsubState = window.swarmmind.onPtyState((paneId, state) => {
       // Drives the per-pane "working/waiting" badge and the conductor. Going
       // quiet here is just "finished a turn" — not necessarily a reason to ping.
+      // The working→waiting transition is the "finished a turn" moment the soft
+      // audio tick attaches to (opt-in, rate-limited in playCue).
+      const st = useWorkspaceStore.getState()
+      if (st.soundCuesEnabled && st.paneAttention[paneId] === 'working' && state === 'waiting') playCue('done')
       setPaneAttention(paneId, state)
     })
     // The discrete "needs you" event: the agent is actually blocked on an answer
     // (a question/prompt was detected), so record it for the notification center
     // (deduped per pane while still unread).
-    const unsubAttention = window.swarmmind.onPtyAttention((paneId) => addPaneNotification(paneId))
+    const unsubAttention = window.swarmmind.onPtyAttention((paneId) => {
+      addPaneNotification(paneId)
+      const st = useWorkspaceStore.getState()
+      if (st.soundCuesEnabled) playCue('attention')
+      // Focus mode: spotlight the pane that just asked a question so the user's
+      // eye lands on the agent that's blocked. Only when the terminal grid is
+      // actually visible — never yank them out of another view.
+      if (st.focusModeEnabled && selectTerminalsVisible(st)) st.setActivePaneId(paneId)
+    })
     // A `/loop` typed into a pane's CLI — surface it (read-only) in the Loops panel.
     const unsubLoop = window.swarmmind.onPtyLoop((paneId, info) =>
       useWorkspaceStore.getState().addCliLoop(paneId, info.command, info.interval))
@@ -190,6 +209,17 @@ export default function App() {
       } else if (ev.type === 'contention') {
         const path = (ev.payload as { path?: string } | null)?.path
         if (path) useWorkspaceStore.getState().addContendedPath(path)
+        if (path && useWorkspaceStore.getState().soundCuesEnabled) playCue('contention')
+      } else if (ev.type === 'file_changed') {
+        // Keep the semantic index fresh while the swarm works: queue the touched
+        // path for a debounced incremental re-embed (no-op until the user has
+        // built an index). Dynamic import so embeddings stay out of the entry
+        // bundle (startup perf — see "lazy overlays" in CLAUDE.md).
+        const path = (ev.payload as { path?: string } | null)?.path
+        const root = useWorkspaceStore.getState().workspace?.rootPath
+        if (path && root) {
+          import('./lib/codeIndex').then(m => m.noteFileChanged(root, path)).catch(() => {})
+        }
       }
     })
     return () => { unsubState(); unsubAttention(); unsubLoop(); unsubExit(); unsubEvent() }

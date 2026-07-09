@@ -8,6 +8,7 @@
 import { chunkText } from './chunk'
 import { embedTexts } from './embed'
 import { rankByEmbedding, dedupeByPath, type RankedDoc } from './retrieval'
+import { INDEXABLE, extOf as extOfPath, isIndexablePath, planIncrementalUpdate, mergeIndexEntries } from './indexUpdate'
 
 const INDEX_VERSION = 1
 const INDEX_MODEL = 'Xenova/all-MiniLM-L6-v2'
@@ -20,13 +21,6 @@ const MAX_FILE_BYTES = 120_000
 const CHUNK_MAX_LINES = 40
 const CHUNK_OVERLAP = 8
 const EMBED_BATCH = 16
-
-// Code/text extensions worth indexing. Mirrors the spirit of the @-mention index.
-const INDEXABLE = new Set([
-  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'mts', 'cts', 'json', 'css', 'scss', 'less',
-  'html', 'md', 'mdx', 'py', 'rs', 'go', 'java', 'kt', 'rb', 'php', 'c', 'h', 'cpp',
-  'hpp', 'cs', 'swift', 'sh', 'yml', 'yaml', 'toml', 'sql', 'vue', 'svelte', 'txt',
-])
 
 export interface IndexChunk {
   path: string
@@ -47,9 +41,15 @@ export interface IndexStats {
   chunks: number
 }
 
-function extOf(path: string): string {
-  const i = path.lastIndexOf('.')
-  return i === -1 ? '' : path.slice(i + 1).toLowerCase()
+const extOf = extOfPath
+
+// Build and incremental-update both rewrite the persisted file; serialize them
+// so a debounced update can never clobber a concurrent full rebuild.
+let indexLock: Promise<unknown> = Promise.resolve()
+function withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = indexLock.then(fn)
+  indexLock = run.catch(() => undefined)
+  return run
 }
 
 /**
@@ -57,7 +57,14 @@ function extOf(path: string): string {
  * by the MAX_* caps. `onProgress(done,total)` reports embedding progress. Throws
  * if embeddings are unavailable (callers fall back to lexical retrieval).
  */
-export async function buildIndex(
+export function buildIndex(
+  rootPath: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<IndexStats> {
+  return withIndexLock(() => buildIndexInner(rootPath, onProgress))
+}
+
+async function buildIndexInner(
   rootPath: string,
   onProgress?: (done: number, total: number) => void,
 ): Promise<IndexStats> {
@@ -129,4 +136,70 @@ export async function queryIndex(entries: IndexChunk[], query: string, k = 8): P
     0.15, // drop very weak chunk matches
   )
   return dedupeByPath(perChunk, k)
+}
+
+// ── Incremental freshness ─────────────────────────────────────────────────────
+// The full build is a manual button, so the index goes stale the moment an agent
+// edits a file. `noteFileChanged` (fed from the Phase-2 file-watcher's
+// `file_changed` swarm events, see App.tsx) queues touched paths and, after a
+// quiet period, re-embeds just those files and rewrites the persisted index —
+// retrieval stays fresh while the swarm works. No-ops entirely when no index has
+// been built (the user hasn't opted in) and stays best-effort throughout.
+// Note: watcher paths are relative to the *pane's* working directory; we re-read
+// the main checkout's copy, which is what the root-scoped index represents.
+
+const FLUSH_QUIET_MS = 5_000
+const MAX_FILES_PER_FLUSH = 24
+
+const dirtyByRoot = new Map<string, { paths: Set<string>; timer: ReturnType<typeof setTimeout> | null }>()
+
+/** Queue a changed workspace-relative path for incremental re-embedding. */
+export function noteFileChanged(rootPath: string, relPath: string): void {
+  if (!isIndexablePath(relPath)) return
+  let entry = dirtyByRoot.get(rootPath)
+  if (!entry) {
+    entry = { paths: new Set(), timer: null }
+    dirtyByRoot.set(rootPath, entry)
+  }
+  entry.paths.add(relPath.replace(/\\/g, '/'))
+  if (entry.timer) clearTimeout(entry.timer)
+  entry.timer = setTimeout(() => {
+    entry.timer = null
+    const batch = planIncrementalUpdate(entry.paths, MAX_FILES_PER_FLUSH)
+    entry.paths.clear()
+    if (batch.length) {
+      updateIndexForFiles(rootPath, batch).catch(() => { /* best-effort freshness */ })
+    }
+  }, FLUSH_QUIET_MS)
+}
+
+/**
+ * Re-embed the given files and merge them into the persisted index. Returns the
+ * updated stats, or null when no (valid) index exists — incremental updates only
+ * run once the user has built one. Unreadable/deleted files simply have their
+ * stale chunks dropped.
+ */
+export function updateIndexForFiles(rootPath: string, relPaths: string[]): Promise<IndexStats | null> {
+  return withIndexLock(async () => {
+    const entries = await loadIndex(rootPath)
+    if (!entries) return null
+    const rootFwd = rootPath.replace(/\\/g, '/')
+    let merged = entries
+    for (const rel of relPaths) {
+      let fresh: IndexChunk[] = []
+      try {
+        let content = await window.swarmmind.fsReadFile(`${rootFwd}/${rel}`)
+        if (content.length > MAX_FILE_BYTES) content = content.slice(0, MAX_FILE_BYTES)
+        const chunks = chunkText(content, CHUNK_MAX_LINES, CHUNK_OVERLAP)
+        const vectors = await embedTexts(chunks.map((c) => c.text))
+        fresh = chunks.map((c, i) => ({ path: rel, startLine: c.startLine, endLine: c.endLine, vector: vectors[i] }))
+      } catch {
+        // Deleted or unreadable — fall through with fresh = [] to drop its entries.
+      }
+      merged = mergeIndexEntries(merged, rel, fresh, MAX_CHUNKS)
+    }
+    const payload: PersistedIndex = { version: INDEX_VERSION, model: INDEX_MODEL, builtAt: Date.now(), entries: merged }
+    await window.swarmmind.fsWriteFile(`${rootFwd}/${INDEX_REL}`, JSON.stringify(payload))
+    return { files: new Set(merged.map((e) => e.path)).size, chunks: merged.length }
+  })
 }

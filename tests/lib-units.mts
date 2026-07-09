@@ -29,6 +29,10 @@ import {
   type ConductorTask,
 } from '../src/lib/conductor.ts'
 import { scoreVoice, rankVoices, pickVoice, cleanForSpeech, chunkForSpeech, type VoiceLike } from '../src/lib/voices.ts'
+import { findPathLinks, isAbsolutePathLike, candidateAbsolutePaths } from '../src/lib/terminalLinks.ts'
+import { isIndexablePath, planIncrementalUpdate, mergeIndexEntries } from '../src/lib/indexUpdate.ts'
+import { findDevServerUrl } from '../src/lib/devServerUrl.ts'
+import { SWARM_RECIPES, buildRecipeLayout, type BuiltLeaf, type BuiltGroup } from '../src/lib/recipes.ts'
 
 let pass = 0
 let fail = 0
@@ -768,6 +772,165 @@ t('conductor: message delivery — one per pane per tick, skips busy panes', () 
   ]
   const out = planMessageDelivery(msgs, panes)
   assert.deepEqual(out.map(x => [x.message.id, x.pane.id]), [['m1', 'p1']])
+})
+
+// ---------- terminalLinks (terminal→editor bridge) ----------
+t('terminalLinks: relative path with :line', () => {
+  const links = findPathLinks('error in src/components/Foo.tsx:123 — fix it')
+  assert.equal(links.length, 1)
+  assert.equal(links[0].path, 'src/components/Foo.tsx')
+  assert.equal(links[0].line, 123)
+  assert.equal('error in '.length, links[0].start)
+  assert.equal(links[0].end, links[0].start + 'src/components/Foo.tsx:123'.length)
+})
+t('terminalLinks: windows absolute with :line:col', () => {
+  const links = findPathLinks('  at D:\\swarmmind\\electron\\main.ts:45:7')
+  assert.equal(links.length, 1)
+  assert.equal(links[0].path, 'D:\\swarmmind\\electron\\main.ts')
+  assert.equal(links[0].line, 45)
+})
+t('terminalLinks: tsc style path(line,col)', () => {
+  const links = findPathLinks('src/lib/verify.ts(12,5): error TS2304')
+  assert.equal(links.length, 1)
+  assert.equal(links[0].path, 'src/lib/verify.ts')
+  assert.equal(links[0].line, 12)
+})
+t('terminalLinks: dot-relative and backslash-relative', () => {
+  assert.equal(findPathLinks('see ./relative/path.js:7')[0]?.path, './relative/path.js')
+  assert.equal(findPathLinks('see ..\\up\\file.py')[0]?.path, '..\\up\\file.py')
+  assert.equal(findPathLinks('see src\\components\\Foo.tsx:12')[0]?.line, 12)
+})
+t('terminalLinks: trailing punctuation is not part of the link', () => {
+  assert.equal(findPathLinks('(see src/lib/verify.ts)')[0]?.path, 'src/lib/verify.ts')
+  assert.equal(findPathLinks('open src/foo.ts.')[0]?.path, 'src/foo.ts')
+  assert.equal(findPathLinks('files src/a.ts, src/b.ts changed').length, 2)
+})
+t('terminalLinks: URLs and non-paths do not match', () => {
+  assert.equal(findPathLinks('https://example.com/foo.ts').length, 0)
+  assert.equal(findPathLinks('meeting at 12:30 and/or later').length, 0)
+  assert.equal(findPathLinks('ran node_modules/.bin/tsc fine').length, 0) // no extension on last segment
+  assert.equal(findPathLinks('').length, 0)
+})
+t('terminalLinks: bare filename without a separator is too noisy to link', () => {
+  assert.equal(findPathLinks('edit foo.ts please').length, 0)
+})
+t('terminalLinks: multiple matches keep distinct offsets', () => {
+  const text = 'src/a.ts:1 then src/b.ts:2'
+  const links = findPathLinks(text)
+  assert.deepEqual(links.map(l => text.slice(l.start, l.end)), ['src/a.ts:1', 'src/b.ts:2'])
+})
+t('terminalLinks: isAbsolutePathLike', () => {
+  assert.equal(isAbsolutePathLike('D:\\x\\y.ts'), true)
+  assert.equal(isAbsolutePathLike('C:/x/y.ts'), true)
+  assert.equal(isAbsolutePathLike('/usr/y.ts'), true)
+  assert.equal(isAbsolutePathLike('src/y.ts'), false)
+})
+t('terminalLinks: candidateAbsolutePaths resolution order + dedupe', () => {
+  assert.deepEqual(candidateAbsolutePaths('D:/abs.ts', ['D:/root']), ['D:/abs.ts'])
+  assert.deepEqual(
+    candidateAbsolutePaths('src/foo.ts', ['D:/wt', null, 'D:/root/', 'D:/wt']),
+    ['D:/wt/src/foo.ts', 'D:/root/src/foo.ts'],
+  )
+  assert.deepEqual(candidateAbsolutePaths('./src/foo.ts', ['D:/root']), ['D:/root/src/foo.ts'])
+})
+
+// ---------- indexUpdate (incremental semantic index) ----------
+t('indexUpdate: isIndexablePath filters ext, noise dirs and slash styles', () => {
+  assert.equal(isIndexablePath('src/lib/foo.ts'), true)
+  assert.equal(isIndexablePath('src\\lib\\foo.ts'), true)
+  assert.equal(isIndexablePath('docs/readme.md'), true)
+  assert.equal(isIndexablePath('assets/logo.png'), false) // not a text ext
+  assert.equal(isIndexablePath('node_modules/x/foo.ts'), false)
+  assert.equal(isIndexablePath('.swarmmind/vector-index.json'), false)
+  assert.equal(isIndexablePath('dist/bundle.js'), false)
+  assert.equal(isIndexablePath(''), false)
+})
+t('indexUpdate: planIncrementalUpdate dedupes, filters, caps, keeps order', () => {
+  const out = planIncrementalUpdate(['a/x.ts', 'b\\y.md', 'a/x.ts', 'img/z.png', 'c/w.py'], 2)
+  assert.deepEqual(out, ['a/x.ts', 'b/y.md'])
+  assert.deepEqual(planIncrementalUpdate([], 5), [])
+})
+const chunk = (path: string, n = 1) =>
+  Array.from({ length: n }, (_, i) => ({ path, startLine: i * 10, endLine: i * 10 + 9, vector: [1] }))
+t('indexUpdate: mergeIndexEntries replaces a file’s chunks', () => {
+  const idx = [...chunk('a.ts', 2), ...chunk('b.ts', 1)]
+  const merged = mergeIndexEntries(idx, 'a.ts', chunk('a.ts', 3))
+  assert.equal(merged.filter(e => e.path === 'a.ts').length, 3)
+  assert.equal(merged.filter(e => e.path === 'b.ts').length, 1)
+})
+t('indexUpdate: mergeIndexEntries with fresh=[] drops a deleted file', () => {
+  const idx = [...chunk('a.ts', 2), ...chunk('b.ts', 1)]
+  const merged = mergeIndexEntries(idx, 'a.ts', [])
+  assert.deepEqual(merged.map(e => e.path), ['b.ts'])
+})
+t('indexUpdate: mergeIndexEntries trims stalest others at the cap, fresh survives', () => {
+  const idx = [...chunk('old.ts', 3), ...chunk('mid.ts', 2)]
+  const merged = mergeIndexEntries(idx, 'new.ts', chunk('new.ts', 2), 4)
+  assert.equal(merged.length, 4)
+  assert.equal(merged.filter(e => e.path === 'new.ts').length, 2) // fresh kept in full
+  assert.equal(merged.filter(e => e.path === 'old.ts').length, 0) // stalest trimmed first
+  assert.equal(merged.filter(e => e.path === 'mid.ts').length, 2)
+})
+
+// ---------- devServerUrl (preview auto-detect) ----------
+t('devServerUrl: vite-style announcement', () => {
+  assert.equal(findDevServerUrl('  VITE v5.0.0  ready\n  ➜  Local:   http://localhost:5173/\n'), 'http://localhost:5173/')
+})
+t('devServerUrl: latest announcement wins', () => {
+  const out = 'Local: http://localhost:3000/\n…restarted…\nLocal: http://localhost:3001/'
+  assert.equal(findDevServerUrl(out), 'http://localhost:3001/')
+})
+t('devServerUrl: 0.0.0.0 and [::1] map to localhost', () => {
+  assert.equal(findDevServerUrl('Serving on http://0.0.0.0:8000'), 'http://localhost:8000')
+  assert.equal(findDevServerUrl('ready http://[::1]:4321/app'), 'http://localhost:4321/app')
+})
+t('devServerUrl: bare host:port needs a serverish line', () => {
+  assert.equal(findDevServerUrl('Server listening on 127.0.0.1:8080'), 'http://localhost:8080')
+  assert.equal(findDevServerUrl('connect ECONNREFUSED 127.0.0.1:5432'), null) // a DB error is not a dev server
+})
+t('devServerUrl: remote URLs and empty input do not match', () => {
+  assert.equal(findDevServerUrl('see https://github.com/x/y'), null)
+  assert.equal(findDevServerUrl(''), null)
+})
+t('devServerUrl: trailing punctuation stripped', () => {
+  assert.equal(findDevServerUrl('running at http://localhost:3000.'), 'http://localhost:3000')
+})
+
+// ---------- recipes (one-click swarm templates) ----------
+const mkIdGen = () => { let n = 0; return () => `id-${n++}` }
+const recipeLeaves = (root: BuiltGroup<string>): BuiltLeaf<string>[] => {
+  const out: BuiltLeaf<string>[] = []
+  const walk = (n: BuiltLeaf<string> | BuiltGroup<string>) => {
+    if (n.type === 'leaf') out.push(n)
+    else n.children.forEach(walk)
+  }
+  walk(root)
+  return out
+}
+t('recipes: layout has one leaf per recipe pane, all auto-spawning', () => {
+  for (const r of SWARM_RECIPES) {
+    const { root } = buildRecipeLayout(r, 'claude', mkIdGen())
+    const leaves = recipeLeaves(root)
+    assert.equal(leaves.length, r.panes.length)
+    assert.ok(leaves.every(l => l.pendingAutoSpawn === true && l.agentId === 'claude'))
+    assert.deepEqual(leaves.map(l => l.title), r.panes.map(p => p.title))
+  }
+})
+t('recipes: lead pane id points at the lead leaf; none when no lead', () => {
+  const lead = SWARM_RECIPES.find(r => r.id === 'leadDuo')!
+  const built = buildRecipeLayout(lead, 'claude', mkIdGen())
+  const leadLeaf = recipeLeaves(built.root).find(l => l.title === 'Lead')!
+  assert.equal(built.leadPaneId, leadLeaf.id)
+  const parallel = SWARM_RECIPES.find(r => r.id === 'parallel')!
+  assert.equal(buildRecipeLayout(parallel, 'claude', mkIdGen()).leadPaneId, null)
+})
+t('recipes: worktree flags follow the recipe; ids unique', () => {
+  const full = SWARM_RECIPES.find(r => r.id === 'fullSwarm')!
+  const { root } = buildRecipeLayout(full, 'codex', mkIdGen())
+  const leaves = recipeLeaves(root)
+  assert.deepEqual(leaves.map(l => !!l.worktree), full.panes.map(p => !!p.worktree))
+  const ids = new Set(leaves.map(l => l.id))
+  assert.equal(ids.size, leaves.length)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

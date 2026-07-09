@@ -125,6 +125,21 @@ export function FilePanel() {
     [setOpenFiles, setActivePath]
   )
 
+  // Terminal→editor bridge: an openFileAtLine() request lands here as a one-shot
+  // seed. Open (or focus) the tab; FileEditor scrolls to the line and clears the
+  // seed. Images can't scroll to a line, so clear the seed for them here.
+  const editorReveal = useWorkspaceStore((s) => s.editorReveal)
+  useEffect(() => {
+    if (!editorReveal) return
+    const name = editorReveal.path.split(/[\\/]/).pop() ?? editorReveal.path
+    handleFileSelect(editorReveal.path, name).then(() => {
+      const opened = useWorkspaceStore.getState().editorTabs.some((f) => f.path === editorReveal.path)
+      // Failed reads and images can't scroll to a line — drop the seed so it
+      // doesn't fire against a later manually-opened file.
+      if (!opened || isImageName(name)) useWorkspaceStore.getState().clearEditorReveal()
+    })
+  }, [editorReveal, handleFileSelect])
+
   const handleChange = useCallback(
     (newContent: string) => {
       const path = useWorkspaceStore.getState().activeEditorPath

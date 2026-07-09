@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { useWorkspaceStore, type AgentId } from '../store/workspace'
+import { useWorkspaceStore, type AgentId, type PaneLeaf, type PaneNode } from '../store/workspace'
 import { AGENTS, AgentIcon } from '../data/agents'
+import { UnifiedDiff } from './UnifiedDiff'
 import { useT, type TranslationKey } from '../i18n'
 
 export interface KanbanTask {
@@ -33,6 +34,18 @@ const parseDeps = (t: KanbanTask): string[] =>
 
 // Filter value for the agent chips: 'all', the unassigned sentinel, or an agent id.
 const UNASSIGNED = '__none__'
+
+// Keep a runaway diff from freezing the board (mirrors WorktreeReview's cap).
+const MAX_REVIEW_DIFF_CHARS = 200_000
+
+function findLeaf(node: PaneNode, id: string): PaneLeaf | null {
+  if (node.type === 'leaf') return node.id === id ? node : null
+  for (const c of node.children) {
+    const f = findLeaf(c, id)
+    if (f) return f
+  }
+  return null
+}
 
 export function KanbanBoard() {
   const t = useT()
@@ -168,6 +181,49 @@ export function KanbanBoard() {
     await window.swarmmind.taskDelete(id)
     if (expandedTask === id) setExpandedTask(null)
     if (confirmDelete === id) setConfirmDelete(null)
+    onRefresh()
+  }
+
+  // ── Review gate (PR-style card for needs_review tasks) ────────────────────
+  // The human counterpart of the MCP task_review tool: approve → done, request
+  // changes → back to pending with the comment as a task note. Both emit a
+  // `review` event so the timeline shows the verdict like an agent review.
+  const paneTask = useWorkspaceStore(s => s.paneTask)
+  const rootPane = useWorkspaceStore(s => s.rootPane)
+  const [reviewDiff, setReviewDiff] = useState<{ taskId: string; text: string } | null>(null)
+  const [reviewComment, setReviewComment] = useState<{ id: string; text: string } | null>(null)
+
+  const loadReviewDiff = async (task: KanbanTask) => {
+    if (!workspace) return
+    const root = workspace.rootPath
+    // The author pane (if the conductor dispatched this task) may work in an
+    // isolated worktree — diff that against the base branch. Otherwise show the
+    // main checkout's uncommitted work.
+    const authorPaneId = Object.keys(paneTask).find(pid => paneTask[pid] === task.id)
+    const wt = authorPaneId ? findLeaf(rootPane, authorPaneId)?.worktreePath : null
+    try {
+      const text = wt
+        ? await window.swarmmind.gitWorktreeDiff(root, wt)
+        : await window.swarmmind.gitWorktreeDiff(root, root, undefined, 'HEAD')
+      setReviewDiff({ taskId: task.id, text: text.slice(0, MAX_REVIEW_DIFF_CHARS) })
+    } catch {
+      setReviewDiff({ taskId: task.id, text: '' })
+    }
+  }
+
+  const handleReview = async (task: KanbanTask, verdict: 'approve' | 'reject', comment?: string) => {
+    const note = comment?.trim()
+    if (verdict === 'approve') {
+      await window.swarmmind.taskUpdate(task.id, 'done')
+    } else {
+      if (note) await window.swarmmind.taskAppendNote(task.id, `Review (user): changes requested — ${note}`)
+      await window.swarmmind.taskUpdate(task.id, 'pending')
+    }
+    window.swarmmind.eventEmit('review', {
+      taskId: task.id, verdict, reviewer: 'user', ...(note ? { comment: note } : {}),
+    }).catch(() => {})
+    setReviewComment(null)
+    setReviewDiff(null)
     onRefresh()
   }
 
@@ -372,6 +428,54 @@ export function KanbanBoard() {
                             </div>
                           )}
 
+                          {/* Review gate — approve / request changes / inspect the diff */}
+                          {col.key === 'needs_review' && (
+                            <div style={styles.reviewBox}>
+                              <div style={styles.reviewActions}>
+                                <button style={styles.reviewApproveBtn} onClick={() => handleReview(task, 'approve')}>
+                                  {t('kanban.review.approve')}
+                                </button>
+                                <button
+                                  style={styles.reviewRejectBtn}
+                                  onClick={() => setReviewComment(reviewComment?.id === task.id ? null : { id: task.id, text: '' })}
+                                >
+                                  {t('kanban.review.requestChanges')}
+                                </button>
+                                <button
+                                  style={styles.reviewDiffBtn}
+                                  onClick={() => (reviewDiff?.taskId === task.id ? setReviewDiff(null) : loadReviewDiff(task))}
+                                >
+                                  {reviewDiff?.taskId === task.id ? t('kanban.review.hideChanges') : t('kanban.review.viewChanges')}
+                                </button>
+                              </div>
+                              {reviewComment?.id === task.id && (
+                                <div style={styles.noteInputRow}>
+                                  <textarea
+                                    style={styles.noteTextarea}
+                                    rows={2}
+                                    placeholder={t('kanban.review.commentPlaceholder')}
+                                    value={reviewComment.text}
+                                    onChange={e => setReviewComment({ id: task.id, text: e.target.value })}
+                                    autoFocus
+                                  />
+                                  <div style={styles.noteActions}>
+                                    <button style={styles.noteSaveBtn} onClick={() => handleReview(task, 'reject', reviewComment.text)}>
+                                      {t('kanban.review.sendBack')}
+                                    </button>
+                                    <button style={styles.cancelBtn} onClick={() => setReviewComment(null)}>{t('common.cancel')}</button>
+                                  </div>
+                                </div>
+                              )}
+                              {reviewDiff?.taskId === task.id && (
+                                <div style={styles.reviewDiffWrap}>
+                                  {reviewDiff.text.trim()
+                                    ? <UnifiedDiff text={reviewDiff.text} />
+                                    : <div style={styles.reviewDiffEmpty}>{t('kanban.review.noDiff')}</div>}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
                           {noteInput?.id === task.id ? (
                             <div style={styles.noteInputRow}>
                               <textarea
@@ -469,6 +573,11 @@ function FilterChip({ active, color, onClick, children }: {
       {children}
     </button>
   )
+}
+
+const reviewBtnBase: React.CSSProperties = {
+  border: '1px solid var(--border)', borderRadius: 'var(--radius)', background: 'var(--bg-elevated)',
+  padding: '3px 10px', cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap',
 }
 
 const COL_COLORS: Record<string, string> = {
@@ -828,6 +937,16 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     lineHeight: 1.4
   },
+  reviewBox: { display: 'flex', flexDirection: 'column', gap: 6 },
+  reviewActions: { display: 'flex', gap: 4, flexWrap: 'wrap' },
+  reviewApproveBtn: { ...reviewBtnBase, borderColor: 'var(--success)', color: 'var(--success)' },
+  reviewRejectBtn: { ...reviewBtnBase, borderColor: 'var(--warning)', color: 'var(--warning)' },
+  reviewDiffBtn: { ...reviewBtnBase, color: 'var(--text-secondary)' },
+  reviewDiffWrap: {
+    maxHeight: 260, overflow: 'auto', background: 'var(--bg-base)',
+    border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius)',
+  },
+  reviewDiffEmpty: { padding: '10px 12px', fontSize: 11, color: 'var(--text-muted)' },
   noteInputRow: { display: 'flex', flexDirection: 'column', gap: 4 },
   noteTextarea: {
     background: 'var(--bg-base)',

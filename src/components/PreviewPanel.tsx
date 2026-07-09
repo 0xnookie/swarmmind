@@ -37,6 +37,7 @@ export function PreviewPanel() {
   const t = useT()
   const previewUrl = useWorkspaceStore(s => s.previewUrl)
   const setPreviewUrl = useWorkspaceStore(s => s.setPreviewUrl)
+  const detectedUrl = useWorkspaceStore(s => s.detectedPreviewUrl)
 
   const webviewRef = useRef<WebviewEl | null>(null)
   const readyRef = useRef(false)
@@ -264,6 +265,14 @@ export function PreviewPanel() {
         {loading && <div className="preview-loadbar" />}
       </div>
 
+      {/* Detected dev-server banner — one click to jump to what an agent just started */}
+      {detectedUrl && detectedUrl !== previewUrl && (
+        <div style={styles.detectedStrip}>
+          <span style={styles.detectedText} title={detectedUrl}>{t('preview.detected', { url: detectedUrl })}</span>
+          <button style={styles.detectedBtn} onClick={() => navigate(detectedUrl)}>{t('preview.open')}</button>
+        </div>
+      )}
+
       {/* Page title strip */}
       {title && !error && (
         <div style={styles.titleStrip} title={title}>{title}</div>
@@ -342,6 +351,35 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '4px 0',
     zIndex: 1000,
     minWidth: 150,
+  },
+  detectedStrip: {
+    flexShrink: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 8,
+    padding: '4px 10px',
+    fontSize: 11,
+    background: 'var(--accent-subtle)',
+    borderBottom: '1px solid var(--border-subtle)',
+  },
+  detectedText: {
+    flex: 1,
+    minWidth: 0,
+    color: 'var(--text-secondary)',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  detectedBtn: {
+    background: 'transparent',
+    border: '1px solid var(--accent)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--accent)',
+    padding: '2px 10px',
+    cursor: 'pointer',
+    fontSize: 11,
+    fontWeight: 600,
+    flexShrink: 0,
   },
   titleStrip: {
     flexShrink: 0,

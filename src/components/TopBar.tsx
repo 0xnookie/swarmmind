@@ -335,6 +335,7 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const toggleChanges = useWorkspaceStore(s => s.toggleChanges)
   const changesOpen = useWorkspaceStore(s => s.changesOpen)
   const contendedPaths = useWorkspaceStore(s => s.contendedPaths)
+  const detectedPreviewUrl = useWorkspaceStore(s => s.detectedPreviewUrl)
   const toggleCheckpoints = useWorkspaceStore(s => s.toggleCheckpoints)
   const checkpointsOpen = useWorkspaceStore(s => s.checkpointsOpen)
   const toggleBenchmarks = useWorkspaceStore(s => s.toggleBenchmarks)
@@ -554,8 +555,18 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
           )}
         </IconBtn>
 
-        <IconBtn label={t('topbar.previewBrowser')} onClick={onTogglePreview} active={previewOpen}>
+        <IconBtn
+          label={detectedPreviewUrl && !previewOpen ? t('topbar.previewDetected', { url: detectedPreviewUrl }) : t('topbar.previewBrowser')}
+          onClick={onTogglePreview}
+          active={previewOpen}
+        >
           <IconGlobe />
+          {detectedPreviewUrl && !previewOpen && (
+            <span style={{
+              position: 'absolute', top: 3, right: 3, width: 6, height: 6, borderRadius: '50%',
+              background: 'var(--success)', boxShadow: '0 0 4px var(--success)',
+            }} />
+          )}
         </IconBtn>
 
         <IconBtn label={terminalsVisible ? t('topbar.broadcast') : t('topbar.broadcastDisabled')} onClick={toggleBroadcastBar} active={broadcastBarOpen} disabled={!terminalsVisible}>

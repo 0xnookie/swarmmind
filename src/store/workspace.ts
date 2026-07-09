@@ -189,6 +189,9 @@ interface WorkspaceState {
   memoryPanelOpen: boolean
   previewPanelOpen: boolean
   previewUrl: string
+  // Latest dev-server URL detected in agent terminal output (devServerUrl.ts).
+  // Drives the TopBar preview badge and the PreviewPanel "detected" banner.
+  detectedPreviewUrl: string | null
   setupModalOpen: boolean
   filePanelOpen: boolean
   settingsOpen: boolean
@@ -199,6 +202,12 @@ interface WorkspaceState {
   terminalFontSize: number
   terminalCursorBlink: boolean
   closeToTray: boolean
+  // Ambient audio cues on swarm signals (needs-you / turn done / contention).
+  // Off by default; persisted as the `soundCues` app setting.
+  soundCuesEnabled: boolean
+  // Focus mode: auto-spotlight (select) the pane whose agent just asked a
+  // question. Off by default; persisted as the `focusMode` app setting.
+  focusModeEnabled: boolean
   // UI display language (persisted as the `language` app setting).
   language: Language
   // ── SwarmVoice (persisted as `voiceModel` / `voicePreload` app settings) ──
@@ -290,10 +299,16 @@ interface WorkspaceState {
   // survive toggling the editor away (the panel unmounts when another view opens).
   editorTabs: EditorTab[]
   activeEditorPath: string | null
+  // One-shot "open this file (at this line)" request — e.g. a Ctrl-clicked
+  // path:line in a terminal. FilePanel opens the tab; FileEditor scrolls to the
+  // line and clears the seed.
+  editorReveal: { path: string; line?: number } | null
 
   setWorkspace: (ws: WorkspaceInfo | null) => void
   setEditorTabs: (tabs: EditorTab[]) => void
   setActiveEditorPath: (path: string | null) => void
+  openFileAtLine: (path: string, line?: number) => void
+  clearEditorReveal: () => void
   setLayout: (root: PaneGroup) => void
   setPtyStatus: (paneId: string, status: PtyStatus) => void
   setAgentId: (paneId: string, agentId: AgentId | null) => void
@@ -316,6 +331,7 @@ interface WorkspaceState {
   toggleMemoryPanel: () => void
   togglePreviewPanel: () => void
   setPreviewUrl: (url: string) => void
+  setDetectedPreviewUrl: (url: string | null) => void
   openSetupModal: () => void
   closeSetupModal: () => void
   toggleFilePanel: () => void
@@ -327,6 +343,8 @@ interface WorkspaceState {
   setTerminalFontSize: (n: number) => void
   setTerminalCursorBlink: (b: boolean) => void
   setCloseToTray: (b: boolean) => void
+  setSoundCuesEnabled: (b: boolean) => void
+  setFocusModeEnabled: (b: boolean) => void
   setLanguage: (lang: Language) => void
   setVoiceModel: (m: VoiceModel) => void
   setVoicePreload: (b: boolean) => void
@@ -549,6 +567,8 @@ export function selectTerminalsVisible(
     .every(k => !s[k])
 }
 
+const DEFAULT_PREVIEW_URL = 'http://localhost:3000'
+
 const initialRoot: PaneGroup = {
   type: 'group',
   id: uuidv4(),
@@ -563,7 +583,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   leftPanelTab: 'tasks',
   memoryPanelOpen: false,
   previewPanelOpen: false,
-  previewUrl: 'http://localhost:3000',
+  previewUrl: DEFAULT_PREVIEW_URL,
+  detectedPreviewUrl: null,
   setupModalOpen: false,
   filePanelOpen: false,
   settingsOpen: false,
@@ -574,6 +595,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   terminalFontSize: 13,
   terminalCursorBlink: true,
   closeToTray: true,
+  soundCuesEnabled: false,
+  focusModeEnabled: false,
   language: 'en',
   voiceModel: 'base',
   voicePreload: true,
@@ -618,6 +641,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   cliLoops: [],
   editorTabs: [],
   activeEditorPath: null,
+  editorReveal: null,
 
   setWorkspace: (ws) => set(s => {
     // On an actual switch (not a rename of the current workspace), clear the
@@ -632,6 +656,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setEditorTabs: (tabs) => set({ editorTabs: tabs }),
   setActiveEditorPath: (path) => set({ activeEditorPath: path }),
+
+  // Terminal→editor bridge: open the file editor focused on `path` (optionally
+  // at a 1-based line). FilePanel consumes the seed to open the tab; FileEditor
+  // scrolls to the line and clears it.
+  openFileAtLine: (path, line) =>
+    set({ ...ALL_OVERLAYS_CLOSED, filePanelOpen: true, editorReveal: line !== undefined ? { path, line } : { path } }),
+  clearEditorReveal: () => set({ editorReveal: null }),
 
   setLayout: (root) => {
     set({ rootPane: root })
@@ -813,8 +844,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   // The skills panel and the preview browser share the right edge, so opening
   // one closes the other (they can't be shown side by side).
   toggleMemoryPanel: () => set(s => ({ memoryPanelOpen: !s.memoryPanelOpen, previewPanelOpen: false })),
-  togglePreviewPanel: () => set(s => ({ previewPanelOpen: !s.previewPanelOpen, memoryPanelOpen: false })),
+  // Opening the preview for the first time (URL still the untouched default)
+  // adopts a detected dev-server URL, so the first open lands on the app the
+  // agent just started instead of a dead default port.
+  togglePreviewPanel: () => set(s => ({
+    previewPanelOpen: !s.previewPanelOpen,
+    memoryPanelOpen: false,
+    previewUrl: !s.previewPanelOpen && s.detectedPreviewUrl && s.previewUrl === DEFAULT_PREVIEW_URL
+      ? s.detectedPreviewUrl
+      : s.previewUrl,
+  })),
   setPreviewUrl: (url) => set({ previewUrl: url }),
+  setDetectedPreviewUrl: (url) => set({ detectedPreviewUrl: url }),
   openSetupModal: () => set({ setupModalOpen: true }),
   closeSetupModal: () => set({ setupModalOpen: false }),
   toggleFilePanel: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, filePanelOpen: !s.filePanelOpen })),
@@ -1056,6 +1097,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setCloseToTray: (b) => {
     set({ closeToTray: b })
     window.swarmmind.setAppSetting('closeToTray', b ? '1' : '0').catch(() => {})
+  },
+
+  setSoundCuesEnabled: (b) => {
+    set({ soundCuesEnabled: b })
+    window.swarmmind.setAppSetting('soundCues', b ? '1' : '0').catch(() => {})
+  },
+
+  setFocusModeEnabled: (b) => {
+    set({ focusModeEnabled: b })
+    window.swarmmind.setAppSetting('focusMode', b ? '1' : '0').catch(() => {})
   },
 
   setLanguage: (lang) => {

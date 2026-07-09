@@ -139,6 +139,35 @@ export function FileEditor({
   editRef.current = edit
   hintRef.current = nextEditHint
 
+  // Terminal→editor bridge: consume a one-shot reveal seed (openFileAtLine) once
+  // this editor shows the requested file. The CodeMirror view is created by
+  // ReactCodeMirror's own effect, so poll briefly until it exists, then select
+  // the line, center it, and clear the seed.
+  const editorReveal = useWorkspaceStore((s) => s.editorReveal)
+  useEffect(() => {
+    if (!editorReveal || editorReveal.path !== filePath) return
+    let cancelled = false
+    let attempts = 0
+    const tryReveal = () => {
+      if (cancelled) return
+      const view = viewRef.current
+      if (!view) {
+        if (++attempts < 20) setTimeout(tryReveal, 30)
+        return
+      }
+      const lineNo = Math.max(1, Math.min(view.state.doc.lines, editorReveal.line ?? 1))
+      const ln = view.state.doc.line(lineNo)
+      view.dispatch({
+        selection: { anchor: ln.from, head: ln.to },
+        effects: EditorView.scrollIntoView(ln.from, { y: 'center' }),
+      })
+      view.focus()
+      useWorkspaceStore.getState().clearEditorReveal()
+    }
+    tryReveal()
+    return () => { cancelled = true }
+  }, [editorReveal, filePath])
+
   // Position the floating widget near a document offset, in wrap-local coords.
   const widgetCoordsFor = (view: EditorView, pos: number) => {
     const coords = view.coordsAtPos(pos)

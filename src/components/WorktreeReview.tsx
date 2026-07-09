@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useWorkspaceStore, type PaneNode } from '../store/workspace'
+import { UnifiedDiff } from './UnifiedDiff'
 import { useT } from '../i18n'
 
 // ── Worktree Review ─────────────────────────────────────────────────────────
@@ -272,7 +273,7 @@ export function WorktreeReview() {
               )}
 
               <div style={styles.diffWrap}>
-                {diff ? <DiffView text={diff} /> : <div style={styles.empty}>{t('worktree.noChanges', { base })}</div>}
+                {diff ? <UnifiedDiff text={diff} /> : <div style={styles.empty}>{t('worktree.noChanges', { base })}</div>}
               </div>
             </>
           ) : (
@@ -281,24 +282,6 @@ export function WorktreeReview() {
         </div>
       </div>
     </div>
-  )
-}
-
-// Render a unified diff with per-line colouring. Cheap and dependency-free.
-function DiffView({ text }: { text: string }) {
-  const lines = text.split('\n')
-  return (
-    <pre style={styles.diff}>
-      {lines.map((ln, i) => {
-        let color = 'var(--text-secondary)'
-        let bg = 'transparent'
-        if (ln.startsWith('+') && !ln.startsWith('+++')) { color = '#7ee787'; bg = 'rgba(46,160,67,0.10)' }
-        else if (ln.startsWith('-') && !ln.startsWith('---')) { color = '#ff7b72'; bg = 'rgba(248,81,73,0.10)' }
-        else if (ln.startsWith('@@')) color = '#79c0ff'
-        else if (ln.startsWith('diff ') || ln.startsWith('index ') || ln.startsWith('+++') || ln.startsWith('---')) color = 'var(--text-muted)'
-        return <div key={i} style={{ color, background: bg, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{ln || ' '}</div>
-      })}
-    </pre>
   )
 }
 
@@ -359,6 +342,5 @@ const styles: Record<string, React.CSSProperties> = {
   fileCheck: { cursor: 'pointer', accentColor: 'var(--accent)', width: 12, height: 12 },
   chipInWrap: { border: '1px solid transparent', background: 'transparent' },
   diffWrap: { flex: 1, minHeight: 0, overflow: 'auto', background: 'var(--bg-base)' },
-  diff: { margin: 0, padding: '8px 12px', fontSize: 11.5, lineHeight: 1.5, fontFamily: 'var(--font-mono, monospace)' },
   empty: { padding: 24, color: 'var(--text-muted)', fontSize: 12, textAlign: 'center' },
 }

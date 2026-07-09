@@ -1,12 +1,15 @@
 import React, { useMemo, useEffect, useState } from 'react'
+import { v4 as uuidv4 } from 'uuid'
 import {
   useWorkspaceStore,
+  type PaneGroup,
   type PaneNode,
   type PaneLeaf,
   type AgentId,
   type OrchestrationMode,
 } from '../store/workspace'
 import { conductorControls } from '../hooks/useConductor'
+import { SWARM_RECIPES, buildRecipeLayout, type SwarmRecipe } from '../lib/recipes'
 import { AgentIcon } from '../data/agents'
 import { useT, type TranslationKey } from '../i18n'
 
@@ -69,6 +72,30 @@ export function OrchestratorBar() {
   const leaves = useMemo(() => collectLeaves(rootPane), [rootPane])
   const agentPanes = useMemo(() => leaves.filter(l => l.agentId), [leaves])
 
+  // ── Recipes: one-click multi-agent templates ───────────────────────────────
+  const [recipesOpen, setRecipesOpen] = useState(false)
+  useEffect(() => {
+    if (!recipesOpen) return
+    const close = () => setRecipesOpen(false)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [recipesOpen])
+
+  const applyRecipe = (recipe: SwarmRecipe) => {
+    const st = useWorkspaceStore.getState()
+    if (!st.workspace) return
+    // Replacing the layout drops the current panes — confirm if agents are live.
+    const anyRunning = collectLeaves(st.rootPane).some(l => l.ptyStatus === 'running')
+    if (anyRunning && !window.confirm(t('recipes.replaceConfirm'))) return
+    const agentId: AgentId = st.defaultAgentId ?? 'claude'
+    const { root, leadPaneId: leadId } = buildRecipeLayout(recipe, agentId, uuidv4)
+    st.setLayout(root as PaneGroup)
+    st.setLeadPaneId(leadId)
+    st.setOrchestrationMode(recipe.mode)
+    st.pushOrchestratorLog(t('recipes.applied', { name: t(`recipes.${recipe.id}.name` as TranslationKey) }))
+    setRecipesOpen(false)
+  }
+
   if (!open) return null
 
   const labelFor = (leaf: PaneLeaf, i: number) =>
@@ -83,6 +110,30 @@ export function OrchestratorBar() {
       <div style={styles.header}>
         <span style={styles.badge}>{t('orch.badge')}</span>
         <span style={styles.phasePill} data-phase={phase}>{t(PHASE_KEY[phase] ?? 'orch.phase.idle')}</span>
+        {/* Recipes dropdown — pre-wire panes, worktrees, lead + mode in one click */}
+        <div style={{ position: 'relative' }}>
+          <button
+            style={styles.recipesBtn}
+            onClick={e => { e.stopPropagation(); setRecipesOpen(o => !o) }}
+            title={t('recipes.title')}
+          >
+            {t('recipes.button')} ▾
+          </button>
+          {recipesOpen && (
+            <div style={styles.recipesMenu} onClick={e => e.stopPropagation()}>
+              {SWARM_RECIPES.map(r => (
+                <button key={r.id} style={styles.recipeItem} onClick={() => applyRecipe(r)}>
+                  <span style={styles.recipeEmoji}>{r.emoji}</span>
+                  <span style={styles.recipeText}>
+                    <span style={styles.recipeName}>{t(`recipes.${r.id}.name` as TranslationKey)}</span>
+                    <span style={styles.recipeDesc}>{t(`recipes.${r.id}.desc` as TranslationKey)}</span>
+                  </span>
+                  <span style={styles.recipeCount}>{r.panes.length}×</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
         <div style={{ flex: 1 }} />
         {/* Mode segmented control */}
         <div style={styles.segmented}>
@@ -216,6 +267,24 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-elevated-2)', border: '1px solid var(--border)',
     borderRadius: 9999, padding: '1px 9px', textTransform: 'capitalize',
   },
+  recipesBtn: {
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+    color: 'var(--text-secondary)', fontSize: 11, fontWeight: 600, padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap',
+  },
+  recipesMenu: {
+    position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, zIndex: 1000, minWidth: 300,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)',
+    boxShadow: 'var(--shadow-lg)', padding: 4, display: 'flex', flexDirection: 'column', gap: 2,
+  },
+  recipeItem: {
+    display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', borderRadius: 'var(--radius)',
+    background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', width: '100%',
+  },
+  recipeEmoji: { fontSize: 16, flexShrink: 0 },
+  recipeText: { display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0, flex: 1 },
+  recipeName: { fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' },
+  recipeDesc: { fontSize: 10.5, color: 'var(--text-muted)', lineHeight: 1.35 },
+  recipeCount: { fontSize: 10, color: 'var(--text-dim)', fontFamily: 'var(--font-mono, monospace)', flexShrink: 0 },
   segmented: { display: 'flex', gap: 2, background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 7, padding: 2 },
   segBtn: { border: 'none', borderRadius: 5, fontSize: 11, fontWeight: 600, padding: '3px 11px', cursor: 'pointer', transition: 'background 120ms, color 120ms' },
   close: { background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13, padding: '0 2px 0 6px' },

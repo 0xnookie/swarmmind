@@ -202,10 +202,13 @@ own `.claude/CLAUDE.md` rule: never self-approve).
 ---
 
 ## Vibe layer (cheap, high-delight; after the surface exists)
-- Ambient audio cues for finished / needs-you / contention (attach to existing signals).
+- ✅ Ambient audio cues for finished / needs-you / contention (`src/lib/audioCues.ts`,
+  WebAudio, rate-limited, opt-in via Settings → General `soundCues`).
 - Agent presence: per-pane avatar + animated state (reuse `status-pulse`).
-- Focus mode: auto-spotlight the pane that just went `agent_question`.
-- Swarm recipes: one-click templates ("1 lead + 2 workers + 1 reviewer") that pre-wire
-  panes, worktrees, and the review gate.
+- ✅ Focus mode: auto-spotlight (select) the pane that just fired `pty:attention`
+  (opt-in `focusMode` setting; only while the terminal grid is visible).
+- ✅ Swarm recipes: one-click templates ("1 lead + 2 workers + 1 reviewer") that
+  pre-wire panes, titles, worktrees, the lead pane and the orchestration mode
+  (pure `src/lib/recipes.ts` + OrchestratorBar "Recipes" dropdown).
 - Voice orchestration: extend SwarmVoice from dictation to commands routed at the
   OrchestratorBar goal.

@@ -110,6 +110,17 @@ export function registerFsHandlers(): void {
     return matches
   })
 
+  // Cheap file-existence probe (regular files only). Used by the terminal's
+  // path-link provider to validate candidates before underlining them.
+  ipcMain.handle('fs:exists', async (_e, filePath: string): Promise<boolean> => {
+    try {
+      const stat = statSync(filePath, { throwIfNoEntry: false })
+      return !!stat && stat.isFile()
+    } catch {
+      return false
+    }
+  })
+
   // Read a text file (max 5MB)
   ipcMain.handle('fs:readFile', async (_e, filePath: string): Promise<string> => {
     const stat = statSync(filePath, { throwIfNoEntry: false })

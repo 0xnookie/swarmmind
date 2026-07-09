@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { useWorkspaceStore } from '../store/workspace'
+import { useWorkspaceStore, type PaneLeaf, type PaneNode } from '../store/workspace'
 import { AgentIcon } from '../data/agents'
+import { UnifiedDiff } from './UnifiedDiff'
 import { useT, type TFunction } from '../i18n'
 
 // ── Changes panel (shared world model) ────────────────────────────────────────
@@ -20,6 +21,18 @@ interface FileEntry {
   count: number
   lastTs: number
   contended: boolean
+  // The pane that most recently changed the file — resolves which working
+  // directory (worktree vs main checkout) the diff drill-down should run in.
+  lastPaneId: string | null
+}
+
+function findLeaf(node: PaneNode, id: string): PaneLeaf | null {
+  if (node.type === 'leaf') return node.id === id ? node : null
+  for (const c of node.children) {
+    const f = findLeaf(c, id)
+    if (f) return f
+  }
+  return null
 }
 
 function relTime(ts: number, now: number, t: TFunction): string {
@@ -81,7 +94,7 @@ export function ChangesPanel() {
     const map = new Map<string, FileEntry>()
     const ensure = (path: string): FileEntry => {
       let e = map.get(path)
-      if (!e) { e = { path, agents: new Set(), intents: new Set(), count: 0, lastTs: 0, contended: false }; map.set(path, e) }
+      if (!e) { e = { path, agents: new Set(), intents: new Set(), count: 0, lastTs: 0, contended: false, lastPaneId: null }; map.set(path, e) }
       return e
     }
     for (const ev of events) {
@@ -92,6 +105,7 @@ export function ChangesPanel() {
         const e = ensure(path)
         if (ev.agent_id) e.agents.add(ev.agent_id)
         e.count += 1
+        if (ev.ts >= e.lastTs && ev.pane_id) e.lastPaneId = ev.pane_id
         e.lastTs = Math.max(e.lastTs, ev.ts)
       } else if (ev.type === 'contention') {
         const path = typeof d.path === 'string' ? d.path : null
@@ -119,6 +133,46 @@ export function ChangesPanel() {
 
   const contendedCount = files.filter(f => f.contended).length
 
+  // ── Diff drill-down ─────────────────────────────────────────────────────────
+  // Clicking a row expands its current git diff, run in the working directory
+  // of the pane that last touched it (its worktree if isolated, else the main
+  // checkout). Uncommitted change first (`diff HEAD`); if the agent already
+  // committed inside a worktree, fall back to the diff vs the base branch.
+  const rootPane = useWorkspaceStore(s => s.rootPane)
+  const openFileAtLine = useWorkspaceStore(s => s.openFileAtLine)
+  const rootPath = workspace?.rootPath ?? null
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [diffs, setDiffs] = useState<Record<string, string>>({})
+
+  const workDirFor = (f: FileEntry): string | null => {
+    if (!rootPath) return null
+    const leaf = f.lastPaneId ? findLeaf(rootPane, f.lastPaneId) : null
+    return leaf?.worktreePath ?? rootPath
+  }
+
+  const toggleExpand = async (f: FileEntry) => {
+    const next = expanded === f.path ? null : f.path
+    setExpanded(next)
+    if (!next || !rootPath || diffs[f.path] !== undefined) return
+    const dir = workDirFor(f) ?? rootPath
+    try {
+      let d = await window.swarmmind.gitWorktreeDiff(rootPath, dir, f.path, 'HEAD')
+      if (!d.trim() && dir !== rootPath) {
+        d = await window.swarmmind.gitWorktreeDiff(rootPath, dir, f.path)
+      }
+      setDiffs(prev => ({ ...prev, [f.path]: d }))
+    } catch {
+      setDiffs(prev => ({ ...prev, [f.path]: '' }))
+    }
+  }
+
+  const openInEditor = (f: FileEntry, e: React.MouseEvent) => {
+    e.stopPropagation()
+    const dir = workDirFor(f)
+    if (!dir) return
+    openFileAtLine(dir.replace(/[\\/]+$/, '') + '/' + f.path)
+  }
+
   return (
     <div style={styles.root}>
       <div style={styles.header}>
@@ -136,26 +190,46 @@ export function ChangesPanel() {
           </div>
         ) : (
           files.map(f => (
-            <div key={f.path} style={{ ...styles.row, ...(f.contended ? styles.rowContended : null) }}>
-              <div style={styles.fileMain}>
-                <span style={styles.fileName} title={f.path}>{baseName(f.path)}</span>
-                <span style={styles.filePath} title={f.path}>{f.path}</span>
-              </div>
-              <div style={styles.rowRight}>
-                {f.contended && <span style={styles.contendTag}>{t('changes.contendedTag')}</span>}
-                <div style={styles.dots}>
-                  {Array.from(f.agents).map(a => (
-                    <AgentIcon key={a} id={a} size={13} title={t('changes.changedThis', { agent: a })} />
-                  ))}
-                  {Array.from(f.intents).filter(a => !f.agents.has(a)).map(a => (
-                    <span key={`i-${a}`} style={{ display: 'inline-flex', opacity: 0.4 }}>
-                      <AgentIcon id={a} size={13} title={t('changes.declaredIntent', { agent: a })} />
-                    </span>
-                  ))}
+            <div key={f.path}>
+              <div
+                style={{ ...styles.row, ...(f.contended ? styles.rowContended : null), cursor: 'pointer' }}
+                onClick={() => toggleExpand(f)}
+                title={t('changes.viewDiff')}
+              >
+                <div style={styles.fileMain}>
+                  <span style={styles.fileName} title={f.path}>{baseName(f.path)}</span>
+                  <span style={styles.filePath} title={f.path}>{f.path}</span>
                 </div>
-                {f.count > 0 && <span style={styles.changeCount}>{f.count}×</span>}
-                <span style={styles.time}>{relTime(f.lastTs, now, t)}</span>
+                <div style={styles.rowRight}>
+                  {f.contended && <span style={styles.contendTag}>{t('changes.contendedTag')}</span>}
+                  <div style={styles.dots}>
+                    {Array.from(f.agents).map(a => (
+                      <AgentIcon key={a} id={a} size={13} title={t('changes.changedThis', { agent: a })} />
+                    ))}
+                    {Array.from(f.intents).filter(a => !f.agents.has(a)).map(a => (
+                      <span key={`i-${a}`} style={{ display: 'inline-flex', opacity: 0.4 }}>
+                        <AgentIcon id={a} size={13} title={t('changes.declaredIntent', { agent: a })} />
+                      </span>
+                    ))}
+                  </div>
+                  {f.count > 0 && <span style={styles.changeCount}>{f.count}×</span>}
+                  <span style={styles.time}>{relTime(f.lastTs, now, t)}</span>
+                  <button style={styles.openBtn} onClick={e => openInEditor(f, e)} title={t('changes.openInEditor')}>
+                    {t('changes.openInEditor')}
+                  </button>
+                </div>
               </div>
+              {expanded === f.path && (
+                <div style={styles.diffWrap}>
+                  {diffs[f.path] === undefined ? (
+                    <div style={styles.diffNote}>{t('common.loading')}</div>
+                  ) : diffs[f.path].trim() ? (
+                    <UnifiedDiff text={diffs[f.path]} />
+                  ) : (
+                    <div style={styles.diffNote}>{t('changes.noDiff')}</div>
+                  )}
+                </div>
+              )}
             </div>
           ))
         )}
@@ -188,4 +262,13 @@ const styles: Record<string, React.CSSProperties> = {
   dots: { display: 'flex', alignItems: 'center', gap: 3 },
   changeCount: { fontSize: 11, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' },
   time: { fontSize: 11, color: 'var(--text-dim)', minWidth: 56, textAlign: 'right' },
+  openBtn: {
+    background: 'transparent', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+    color: 'var(--text-muted)', padding: '2px 8px', cursor: 'pointer', fontSize: 10, whiteSpace: 'nowrap',
+  },
+  diffWrap: {
+    maxHeight: 320, overflow: 'auto', background: 'var(--bg-panel)',
+    borderBottom: '1px solid var(--border-subtle)',
+  },
+  diffNote: { padding: '10px 18px', fontSize: 11, color: 'var(--text-muted)' },
 }

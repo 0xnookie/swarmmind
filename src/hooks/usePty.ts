@@ -1,10 +1,12 @@
 import { useEffect, useRef, useCallback } from 'react'
-import { Terminal } from '@xterm/xterm'
+import { Terminal, type ILink } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { SearchAddon } from '@xterm/addon-search'
-import type { AgentId, ShellStyle } from '../store/workspace'
+import type { AgentId, ShellStyle, PaneLeaf, PaneNode } from '../store/workspace'
 import { useWorkspaceStore } from '../store/workspace'
+import { findPathLinks, candidateAbsolutePaths } from '../lib/terminalLinks'
+import { findDevServerUrl } from '../lib/devServerUrl'
 import { monoFontStack, ANSI_DEFAULT, TERM_ANSI_KEYS, termAnsiVar } from '../appearance'
 
 // Fixed semantic ANSI palette — these don't change with the theme. The
@@ -73,6 +75,67 @@ export function readPaneOutput(paneId: string, maxChars = 4000): string {
   return text.length > maxChars ? text.slice(-maxChars) : text
 }
 
+// ── Dev-server detection ──────────────────────────────────────────────────────
+// When an agent starts a dev server, its announced URL ("Local: http://…") is
+// picked out of the output tail so the preview browser can offer it one click
+// away (TopBar badge + PreviewPanel banner). Debounced per pane; the scan runs
+// over the same ANSI-stripped cache readPaneOutput uses.
+const urlScanTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function scheduleDevUrlScan(paneId: string): void {
+  if (urlScanTimers.has(paneId)) return
+  urlScanTimers.set(paneId, setTimeout(() => {
+    urlScanTimers.delete(paneId)
+    const url = findDevServerUrl(readPaneOutput(paneId, 2500))
+    if (url && useWorkspaceStore.getState().detectedPreviewUrl !== url) {
+      useWorkspaceStore.getState().setDetectedPreviewUrl(url)
+    }
+  }, 800))
+}
+
+// ── Terminal→editor bridge ────────────────────────────────────────────────────
+// File-path references in agent output (src/foo.ts:12, D:\x\y.py(3,1), …) become
+// links that open the file in the editor at that line on Ctrl/Cmd+Click (plain
+// click stays free for text selection, matching VS Code's terminal). Candidates
+// are validated against the filesystem before underlining, resolved relative to
+// the pane's worktree/cwd, then the workspace root. The existence probe is
+// cached briefly since provideLinks fires on every hover.
+const existsCache = new Map<string, { ok: Promise<boolean>; ts: number }>()
+const EXISTS_TTL_MS = 15_000
+
+function pathExists(p: string): Promise<boolean> {
+  const now = Date.now()
+  const hit = existsCache.get(p)
+  if (hit && now - hit.ts < EXISTS_TTL_MS) return hit.ok
+  const ok = window.swarmmind.fsExists(p).catch(() => false)
+  existsCache.set(p, { ok, ts: now })
+  if (existsCache.size > 500) {
+    const oldest = existsCache.keys().next().value
+    if (oldest !== undefined) existsCache.delete(oldest)
+  }
+  return ok
+}
+
+async function firstExisting(candidates: string[]): Promise<string | null> {
+  for (const c of candidates) if (await pathExists(c)) return c
+  return null
+}
+
+// Base directories to resolve a relative path against, most specific first.
+function paneBaseDirs(paneId: string): (string | null | undefined)[] {
+  const s = useWorkspaceStore.getState()
+  const find = (node: PaneNode): PaneLeaf | null => {
+    if (node.type === 'leaf') return node.id === paneId ? node : null
+    for (const c of node.children) {
+      const f = find(c)
+      if (f) return f
+    }
+    return null
+  }
+  const leaf = find(s.rootPane)
+  return [leaf?.worktreePath, leaf?.cwd, s.workspace?.rootPath]
+}
+
 interface UsePtyOptions {
   // Called when the pane's process exits. When provided, the caller fully owns
   // the exit reaction (e.g. respawning a shell); the default "[process exited]"
@@ -125,6 +188,40 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
     term.loadAddon(webLinksAddon)
     term.loadAddon(searchAddon)
     searchAddonRef.current = searchAddon
+
+    // Terminal→editor bridge: underline file references and open them in the
+    // editor at the referenced line on Ctrl/Cmd+Click (see helpers above).
+    const linkProviderDispose = term.registerLinkProvider({
+      provideLinks: (y, cb) => {
+        const bufLine = term.buffer.active.getLine(y - 1)
+        const text = bufLine?.translateToString(true) ?? ''
+        const matches = text ? findPathLinks(text) : []
+        if (!matches.length) {
+          cb(undefined)
+          return
+        }
+        const dirs = paneBaseDirs(paneId)
+        Promise.all(
+          matches.map(async (m): Promise<ILink | null> => {
+            const abs = await firstExisting(candidateAbsolutePaths(m.path, dirs))
+            if (!abs) return null
+            return {
+              range: { start: { x: m.start + 1, y }, end: { x: m.end, y } },
+              text: text.slice(m.start, m.end),
+              decorations: { pointerCursor: true, underline: true },
+              activate: (ev) => {
+                if (!(ev.ctrlKey || ev.metaKey)) return
+                useWorkspaceStore.getState().openFileAtLine(abs, m.line)
+              },
+            }
+          }),
+        ).then((links) => {
+          const found = links.filter((l): l is ILink => l !== null)
+          cb(found.length ? found : undefined)
+        })
+      },
+    })
+
     term.open(containerRef.current)
 
     // Copy & paste. xterm forwards every keystroke to the PTY, so without this
@@ -199,6 +296,7 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
         term.write(data)
         appendToCache(paneId, data)
         scheduleScrollbackSave(paneId)
+        scheduleDevUrlScan(paneId)
         optsRef.current?.onOutput?.()
       }
     })
@@ -245,6 +343,7 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
       clearTimeout(t3)
       cancelAnimationFrame(rafHandle)
       inputDispose.dispose()
+      linkProviderDispose.dispose()
       unsubOutput()
       unsubExit()
       observer.disconnect()

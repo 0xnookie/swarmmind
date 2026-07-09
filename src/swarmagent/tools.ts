@@ -533,6 +533,34 @@ export const SWARM_AGENT_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'propose_edits',
+      description:
+        "Propose concrete code changes to workspace files and open them in the Composer's review UI (per-file diffs, optional safety checkpoint, one-click apply, then an optional verify/test run). This is how you EDIT code: when the user asks you to change/fix/implement something and you know the edit, first read_file (and search_code) to see the exact current contents, then call this with the COMPLETE new content of every changed or created file — never fragments or diffs. Nothing is written until the user reviews and applies, so prefer this over dictating code for the user to copy.",
+      parameters: {
+        type: 'object',
+        properties: {
+          summary: { type: 'string', description: 'One-line summary of the whole change, e.g. "Fix null handling in the session loader".' },
+          changes: {
+            type: 'array',
+            description: 'One entry per changed or created file.',
+            items: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: 'Workspace-relative file path, e.g. "src/lib/foo.ts".' },
+                action: { type: 'string', enum: ['edit', 'create'], description: 'edit = file exists, create = new file.' },
+                content: { type: 'string', description: 'The COMPLETE new file contents (the full file, not a snippet).' },
+              },
+              required: ['path', 'action', 'content'],
+            },
+          },
+        },
+        required: ['summary', 'changes'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'review_agent_work',
       description:
         "Summarise the git changes in each agent's isolated worktree branch versus the main checkout: files changed with +/- line counts, how many commits ahead, and whether there are still uncommitted edits. Use for \"what did the agents build?\", \"is anything ready to merge?\", \"review the agents' work\". Read-only.",
@@ -1105,6 +1133,36 @@ export const TOOL_EXECUTORS: Record<string, Executor> = {
     if (!files.length) return filter ? `No files matching "${filter}".` : 'No files found.'
     const shown = files.slice(0, 100)
     return `${files.length} file(s)${filter ? ` matching "${filter}"` : ''}${files.length > shown.length ? ` (showing first ${shown.length})` : ''}:\n${shown.join('\n')}`
+  },
+
+  async propose_edits(args) {
+    const st = useWorkspaceStore.getState()
+    if (!st.workspace) return 'Open a workspace first.'
+    const summary = typeof args.summary === 'string' ? args.summary.trim() : ''
+    const raw = Array.isArray(args.changes) ? args.changes : []
+    const changes: { path: string; action: string; content: string }[] = []
+    for (const c of raw) {
+      if (!c || typeof c !== 'object') continue
+      const rec = c as Record<string, unknown>
+      if (typeof rec.path !== 'string' || typeof rec.content !== 'string') continue
+      // Normalize to a safe workspace-relative forward-slash path.
+      const path = rec.path.trim().replace(/\\/g, '/').replace(/^[./]+/, '')
+      if (!path || path.includes('..')) continue
+      changes.push({ path, action: rec.action === 'create' ? 'create' : 'edit', content: rec.content })
+    }
+    if (!changes.length) {
+      return 'No valid changes — each change needs a workspace-relative path and the complete new file content.'
+    }
+    // Hand the pre-built plan to the Composer: it diffs against the files'
+    // current contents and offers checkpoint/apply/verify. Nothing is written
+    // until the user applies.
+    st.openComposerWith({
+      instruction: summary || 'Changes proposed by SwarmAgent',
+      contextPaths: [],
+      plan: { summary: summary || undefined, changes },
+    })
+    const names = changes.map(ch => ch.path.split('/').pop()).join(', ')
+    return `Opened the Composer with ${changes.length} proposed file change${changes.length === 1 ? '' : 's'} (${names}). The user can review the diffs and apply.`
   },
 
   async review_agent_work() {
