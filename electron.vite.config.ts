@@ -6,13 +6,19 @@ export default defineConfig({
   main: {
     plugins: [externalizeDepsPlugin()],
     build: {
-      lib: {
-        entry: resolve('electron/main.ts')
-      },
       rollupOptions: {
+        // Two entries: the main process, and the TypeScript language service that
+        // runs in a worker_thread (electron/lsp/worker.ts). The client resolves it
+        // as `__dirname/lsp-worker.js`, i.e. a sibling of the main bundle — so the
+        // names below are load-bearing, not cosmetic.
+        input: {
+          index: resolve('electron/main.ts'),
+          'lsp-worker': resolve('electron/lsp/worker.ts')
+        },
         external: ['node-pty', 'better-sqlite3'],
         output: {
-          entryFileNames: 'index.js'
+          format: 'cjs',
+          entryFileNames: '[name].js'
         }
       }
     },

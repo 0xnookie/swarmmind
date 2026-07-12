@@ -23,6 +23,8 @@ import { tokenize, rankDocs, cosineSim, rankByEmbedding, fuseRankings, dedupeByP
 import { chunkText } from '../src/lib/chunk.ts'
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
 import { stripCodeFences, extractJsonObject } from '../electron/lib/aiParse.ts'
+import { severityOf, flattenMessage, displayPartsToText, formatHover, isTsLike, samePath, chooseProject } from '../electron/lib/tsLsp.ts'
+import { mergeDiagnostics, normalizeMessage, summarizeDiagnostics } from '../src/lib/diagnostics.ts'
 import {
   parseDeps, depsMet, canReview, buildDispatchPrompt, sweepAction, decomposeAction,
   reviewSweepAction, planDispatches, planReviews, readyForSynthesis, planMessageDelivery,
@@ -931,6 +933,113 @@ t('recipes: worktree flags follow the recipe; ids unique', () => {
   assert.deepEqual(leaves.map(l => !!l.worktree), full.panes.map(p => !!p.worktree))
   const ids = new Set(leaves.map(l => l.id))
   assert.equal(ids.size, leaves.length)
+})
+
+// ── TypeScript language service mapping (electron/lib/tsLsp.ts) ─────────────
+t('tsLsp: DiagnosticCategory maps to lint severity', () => {
+  assert.equal(severityOf(1), 'error')   // ts.DiagnosticCategory.Error
+  assert.equal(severityOf(0), 'warning') // Warning
+  assert.equal(severityOf(2), 'info')    // Suggestion
+  assert.equal(severityOf(3), 'info')    // Message
+})
+t('tsLsp: a message chain flattens with indentation, a plain string passes through', () => {
+  assert.equal(flattenMessage('Type X is not assignable to Y.'), 'Type X is not assignable to Y.')
+  const chain = {
+    messageText: "Type 'A' is not assignable to type 'B'.",
+    next: [
+      { messageText: "Property 'x' is missing.", next: [{ messageText: "Did you mean 'y'?" }] },
+    ],
+  }
+  assert.equal(
+    flattenMessage(chain),
+    "Type 'A' is not assignable to type 'B'.\n  Property 'x' is missing.\n    Did you mean 'y'?",
+  )
+})
+t('tsLsp: display parts join; hover fences the signature and keeps docs', () => {
+  assert.equal(displayPartsToText([{ text: 'const' }, { text: ' ' }, { text: 'x' }]), 'const x')
+  assert.equal(displayPartsToText(undefined), '')
+  assert.equal(formatHover('const x: number', 'The count.'), '```ts\nconst x: number\n```\n\nThe count.')
+  assert.equal(formatHover('const x: number', ''), '```ts\nconst x: number\n```')
+  // Nothing to show → '' so the caller skips the tooltip rather than flashing an empty box.
+  assert.equal(formatHover('  ', '\n'), '')
+})
+t('tsLsp: isTsLike accepts the JS/TS family only', () => {
+  for (const f of ['a.ts', 'a.tsx', 'a.mts', 'a.cts', 'a.js', 'a.jsx', 'a.mjs', 'a.cjs', 'A.TS'])
+    assert.equal(isTsLike(f), true, f)
+  for (const f of ['a.py', 'a.rs', 'a.json', 'a.md', 'a.txt', 'noext']) assert.equal(isTsLike(f), false, f)
+})
+t('tsLsp: samePath is separator- and case-insensitive (Windows)', () => {
+  assert.equal(samePath('D:\\swarmmind\\src\\a.ts', 'd:/swarmmind/src/A.ts'), true)
+  assert.equal(samePath('/a/b.ts', '/a/c.ts'), false)
+})
+t('tsLsp: chooseProject skips the solution root for the project that owns the file', () => {
+  // The exact shape of this repo: root tsconfig has `files: []` + references.
+  const root = { configPath: 'D:/p/tsconfig.json', fileNames: [] }
+  const web = { configPath: 'D:/p/tsconfig.web.json', fileNames: ['D:/p/src/App.tsx'] }
+  const node = { configPath: 'D:/p/tsconfig.node.json', fileNames: ['D:/p/electron/main.ts'] }
+  // Trusting the *nearest* config here would hand back the file-less root, whose
+  // compilerOptions lack `jsx` — and every .tsx would be reported as broken.
+  assert.equal(chooseProject('D:\\p\\src\\App.tsx', root, [web, node]), 'D:/p/tsconfig.web.json')
+  assert.equal(chooseProject('D:\\p\\electron\\main.ts', root, [web, node]), 'D:/p/tsconfig.node.json')
+})
+t('tsLsp: chooseProject prefers a nearest config that claims the file; falls back when none do', () => {
+  const near = { configPath: '/p/tsconfig.json', fileNames: ['/p/src/a.ts'] }
+  assert.equal(chooseProject('/p/src/a.ts', near, []), '/p/tsconfig.json')
+  // An untracked/new file: nothing claims it, but the nearest real config is
+  // still a better guess than no compiler options at all.
+  assert.equal(chooseProject('/p/src/brand-new.ts', near, []), '/p/tsconfig.json')
+  // No tsconfig anywhere → null, and the worker uses defaults.
+  assert.equal(chooseProject('/p/src/a.ts', null, []), null)
+})
+
+// ── Diagnostic merging (src/lib/diagnostics.ts) ─────────────────────────────
+const tsDiag = (line: number, message: string, severity: 'error' | 'warning' | 'info' = 'error') =>
+  ({ line, message, severity, source: 'ts' as const })
+const aiDiag = (line: number, message: string, severity: 'error' | 'warning' | 'info' = 'warning') =>
+  ({ line, message, severity, source: 'ai' as const })
+
+t('diagnostics: normalizeMessage ignores case, quotes and punctuation', () => {
+  assert.equal(normalizeMessage("Type 'A' is not assignable to type 'B'."), 'type a is not assignable to type b')
+  assert.equal(normalizeMessage('Type A is not assignable to type B'), 'type a is not assignable to type b')
+})
+t('diagnostics: an AI diagnostic on a line the compiler already errored on is dropped', () => {
+  // The model restating the type error in vaguer words is pure noise.
+  const merged = mergeDiagnostics(
+    [tsDiag(3, "Type 'string' is not assignable to type 'number'.")],
+    [aiDiag(3, 'This assignment looks like it has the wrong type.')],
+  )
+  assert.equal(merged.length, 1)
+  assert.equal(merged[0].source, 'ts')
+})
+t('diagnostics: a TS warning does NOT suppress an AI finding on the same line', () => {
+  // The model may have spotted something the checker cannot see.
+  const merged = mergeDiagnostics([tsDiag(5, 'Unused variable.', 'warning')], [aiDiag(5, 'Off-by-one in the loop bound.')])
+  assert.equal(merged.length, 2)
+})
+t('diagnostics: AI findings on other lines survive — that is the whole point of the model', () => {
+  const merged = mergeDiagnostics([tsDiag(2, 'Cannot find name x.')], [aiDiag(9, 'This promise is never awaited.')])
+  assert.deepEqual(merged.map((d) => [d.line, d.source]), [[2, 'ts'], [9, 'ai']])
+})
+t('diagnostics: duplicate TS diagnostics collapse (a file can be a root of two projects)', () => {
+  const merged = mergeDiagnostics([tsDiag(4, "Cannot find name 'x'."), tsDiag(4, 'Cannot find name x')], [])
+  assert.equal(merged.length, 1)
+})
+t('diagnostics: sorted by line, then errors before warnings', () => {
+  // The AI diag sits on line 4 (no TS error there), so it survives and we can
+  // see the ordering: line 1 error → line 4 info → line 7 error. Note line 4
+  // also carries a TS warning, which must NOT suppress it.
+  const merged = mergeDiagnostics(
+    [tsDiag(7, 'boom'), tsDiag(1, 'bang'), tsDiag(4, 'unused', 'warning')],
+    [aiDiag(4, 'style nit', 'info')],
+  )
+  assert.deepEqual(
+    merged.map((d) => [d.line, d.severity]),
+    [[1, 'error'], [4, 'warning'], [4, 'info'], [7, 'error']],
+  )
+})
+t('diagnostics: summarize counts errors and warnings', () => {
+  const s = summarizeDiagnostics([tsDiag(1, 'a'), tsDiag(2, 'b'), tsDiag(3, 'c', 'warning'), aiDiag(4, 'd', 'info')])
+  assert.deepEqual(s, { errors: 2, warnings: 1 })
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

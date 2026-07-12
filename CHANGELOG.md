@@ -6,6 +6,41 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.16.0]
+
+Real language intelligence. The editor now understands your code the way a
+compiler does — and hands what it finds straight to the AI.
+
+### Added
+- **Live TypeScript diagnostics.** Type errors appear as you type: red underline
+  on the exact expression, gutter marker, and a live count in the status bar. No
+  button to press, no tokens spent — this is the real compiler, not a model
+  guessing. Runs on TS/JS/TSX/JSX.
+- **Type error → one-click "Fix with AI".** The payoff of the whole feature:
+  compiler diagnostics land in the *same* list as SwarmMind's AI diagnostics, so
+  every genuine type error inherits the existing **Fix with AI** action — click
+  it and the error goes to a prefilled Cmd/Ctrl-K inline edit. The checker finds
+  it; the model fixes it.
+- **Hover for types, F12 / Ctrl+Cmd-Click for go-to-definition.** Hover any
+  symbol for its real signature and doc comment. Ctrl/⌘+Click (or **F12**) jumps
+  to a definition, across files, following imports.
+- **No language server to install.** The TypeScript compiler ships *inside*
+  SwarmMind and runs in a background worker thread, so a cold project analysis
+  never stalls your terminals or the UI.
+
+### Fixed
+- **AI diagnostics now actually underline.** The first "Diagnose" run of a
+  session showed a gutter marker and a problem count but no underline and no
+  tooltip — CodeMirror's lint state was being installed in the same transaction
+  that carried the diagnostics, which silently dropped that first batch. Both
+  diagnostic sources render correctly from the first run now.
+
+### Notes for contributors
+- `typescript` moved from a dev dependency to a runtime one (it's the engine).
+- New: `npm run lsp-verify` — a Playwright check that drives a real type error in
+  the built app all the way to a rendered squiggle, the Fix-with-AI action, and a
+  cross-file F12 jump. Unit tests are up to 174 assertions.
+
 ## [0.15.0]
 
 Seven features in one release, all aimed at the same goal: stitch the surfaces

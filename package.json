@@ -1,7 +1,7 @@
 {
   "name": "swarmmind",
   "productName": "SwarmMind",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Multi-agent AI coding workspace with shared MCP memory",
   "main": "out/main/index.js",
   "scripts": {
@@ -10,6 +10,7 @@
     "test": "node --experimental-strip-types tests/lib-units.mts",
     "build": "electron-vite build",
     "smoke": "node tests/smoke.mjs",
+    "lsp-verify": "node tests/lsp-verify.mjs",
     "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",
@@ -34,6 +35,7 @@
     "express": "^4.21.2",
     "groq-sdk": "^1.2.1",
     "node-pty": "^1.0.0",
+    "typescript": "^5.6.3",
     "uuid": "^10.0.0"
   },
   "devDependencies": {
@@ -71,7 +73,6 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "to-ico": "^1.1.5",
-    "typescript": "^5.6.3",
     "vite": "^5.4.10",
     "zustand": "^4.5.4"
   }

@@ -1,6 +1,6 @@
 # SwarmMind
 
-[![Version](https://img.shields.io/badge/Version-0.15.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
+[![Version](https://img.shields.io/badge/Version-0.16.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
 [![License](https://img.shields.io/badge/License-MIT-3fb950)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-32-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -68,7 +68,8 @@ A built-in CodeMirror editor (syntax highlighting for ~150 languages, image view
 - **Inline AI edit — `Ctrl/⌘-K`** — select code (or place the cursor) and describe a change; the result streams in as an accept / reject / regenerate preview. Supports **@-mention file context**.
 - **Tab-to-jump** — after an accepted inline edit, the editor predicts the likely follow-up and shows a **Tab** chip to chain related edits.
 - **Ghost-text autocomplete — Tab** — Copilot-style inline completions as you pause typing (off by default).
-- **AI diagnostics & "Fix with AI"** — a **Diagnose** button flags problems as editor underlines/gutter markers, each with a one-click fix that opens the inline-edit widget pre-filled.
+- **Live TypeScript diagnostics** — real type errors as you type, underlined on the exact expression, with hover types and **F12** / `Ctrl/⌘+Click` go-to-definition across files. It's the actual TypeScript compiler running in a background worker — no language server to install, no tokens spent.
+- **AI diagnostics & "Fix with AI"** — compiler errors *and* a **Diagnose** button's AI findings share one gutter, and **every one of them carries a one-click fix** that opens the inline-edit widget pre-filled. The type checker finds it; the model fixes it.
 - **Rename symbol — F2** — renames an identifier across the workspace through the Composer pipeline, skipping strings, comments, and substring matches.
 - **Verify → fix loop** — after applying a plan, run one of your repo's own npm scripts (typecheck/test/lint/build); on failure, **Fix errors with AI** condenses the output and re-runs the plan so the model fixes its own change. The runner only ever executes an allowlisted script already declared in your `package.json`.
 

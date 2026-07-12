@@ -17,6 +17,8 @@ import { registerCheckpointHandlers } from './ipc/checkpoints'
 import { registerVoiceCacheHandlers } from './ipc/voice-cache'
 import { registerBenchmarkHandlers } from './ipc/benchmarks'
 import { registerSwarmAgentHandlers } from './ipc/swarmagent'
+import { registerLspHandlers } from './ipc/lsp'
+import { shutdownLsp } from './lsp/client'
 import { registerUpdater } from './updater'
 import { killAll } from './pty-manager'
 import { existsSync, mkdirSync } from 'fs'
@@ -317,6 +319,7 @@ app.whenReady().then(async () => {
   registerVoiceCacheHandlers()
   registerBenchmarkHandlers()
   registerSwarmAgentHandlers(() => mainWindow)
+  registerLspHandlers()
 
   ipcMain.handle('app:version', () => app.getVersion())
 
@@ -391,6 +394,7 @@ app.on('before-quit', async () => {
   tray?.destroy()
   tray = null
   killAll()
+  shutdownLsp()
   await stopMcpServer()
   closeAll()
 })

@@ -153,6 +153,24 @@ declare global {
       fsReadImage: (filePath: string) => Promise<ImageData>
       verifyScripts: (rootPath: string) => Promise<string[]>
       verifyRun: (rootPath: string, script: string) => Promise<{ code: number; stdout: string; stderr: string; error?: string }>
+      // TypeScript language service — real diagnostics, hover, go-to-definition.
+      // Offsets (not lines) cross the boundary; the renderer owns the doc and
+      // converts, so the two sides can't disagree about line endings.
+      lspDiagnostics: (
+        filePath: string,
+        content: string,
+      ) => Promise<{ from: number; to: number; message: string; severity: 'error' | 'warning' | 'info'; code?: number }[]>
+      lspHover: (
+        filePath: string,
+        content: string,
+        offset: number,
+      ) => Promise<{ markdown: string; from: number; to: number } | null>
+      lspDefinition: (
+        filePath: string,
+        content: string,
+        offset: number,
+      ) => Promise<{ path: string; line: number; col: number } | null>
+      lspClose: (filePath: string) => Promise<void>
       // Sessions & scrollback
       sessionList: (rootPath: string) => Promise<SessionInfo[]>
       scrollbackLoad: (paneId: string) => Promise<string>

@@ -207,6 +207,13 @@ contextBridge.exposeInMainWorld('swarmmind', {
   fsReadFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
   fsWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeFile', filePath, content),
   fsReadImage: (filePath: string) => ipcRenderer.invoke('fs:readImage', filePath),
+  // TypeScript language service (real diagnostics / hover / go-to-definition).
+  // The live buffer travels with each request — unsaved text is the truth.
+  lspDiagnostics: (filePath: string, content: string) => ipcRenderer.invoke('lsp:diagnostics', filePath, content),
+  lspHover: (filePath: string, content: string, offset: number) => ipcRenderer.invoke('lsp:hover', filePath, content, offset),
+  lspDefinition: (filePath: string, content: string, offset: number) =>
+    ipcRenderer.invoke('lsp:definition', filePath, content, offset),
+  lspClose: (filePath: string) => ipcRenderer.invoke('lsp:close', filePath),
   // Constrained verify runner (Composer verify→fix loop): list/run the
   // workspace's own npm scripts only.
   verifyScripts: (rootPath: string) => ipcRenderer.invoke('verify:scripts', rootPath),

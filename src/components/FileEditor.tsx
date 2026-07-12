@@ -9,15 +9,21 @@ import { editorTheme } from '../editor/theme'
 import { loadLanguage, languageName } from '../editor/languages'
 import { inlineEdit, setEditHighlight } from '../editor/inlineEdit'
 import { ghostCompletion } from '../editor/autocomplete'
-import { lintGutter, setDiagnostics, type Diagnostic } from '@codemirror/lint'
+import { lspGoToDefinition, lspHover, jumpToDefinition } from '../editor/lsp'
+import { lintGutter, linter, setDiagnostics, type Diagnostic } from '@codemirror/lint'
 import { activeMentionAt } from '../lib/mention'
 import { lineDiff } from '../lib/lineDiff'
 import { fuzzyRank } from '../lib/fuzzy'
 import { resolveNextEditTarget, type NextEditTarget } from '../lib/nextEdit'
+import { mergeDiagnostics, summarizeDiagnostics, type RawDiag } from '../lib/diagnostics'
 import { renderDiffRows } from './DiffRows'
 
 // How many lines of surrounding context to send the model with an inline edit.
 const CONTEXT_LINES = 40
+// Quiet period after a keystroke before we re-ask the language service. Type
+// checking is free (no tokens), so this can be tight — it just shouldn't run on
+// every character.
+const LSP_DEBOUNCE_MS = 500
 
 interface RenameState {
   from: number
@@ -112,6 +118,10 @@ export function FileEditor({
   ghostEnabledRef.current = ghostEnabled
   const langNameRef = useRef<string>('plain text')
   const viewRef = useRef<EditorView | null>(null)
+  // The open file, read live by the once-built LSP extensions (hover / go-to-def)
+  // so switching files doesn't force CodeMirror to rebuild them.
+  const filePathRef = useRef<string | null>(filePath)
+  filePathRef.current = filePath
   const promptInputRef = useRef<HTMLTextAreaElement>(null)
   const [edit, setEdit] = useState<InlineEditState | null>(null)
   // Next-edit prediction ("Tab to jump"): after an AI edit, the model points at
@@ -430,10 +440,111 @@ export function FileEditor({
     setSnipOpen(false)
   }
 
-  // ── AI diagnostics ("Fix with AI" lint) ─────────────────────────────────
+  // ── Diagnostics: compiler + AI, one gutter ──────────────────────────────
+  // Two sources feed the same lint list:
+  //   • the TypeScript language service — free, automatic, authoritative;
+  //   • the model (`swarmAgent:diagnose`) — click-triggered, catches what a type
+  //     checker can't see (logic bugs, edge cases).
+  // `mergeDiagnostics` (pure, unit-tested) resolves the overlap. The payoff is
+  // that a REAL type error now inherits the existing "Fix with AI" action: one
+  // click sends it to the inline-edit widget.
   const [diagnosing, setDiagnosing] = useState(false)
   const [diagCount, setDiagCount] = useState<number | null>(null)
   const [diagError, setDiagError] = useState<string | null>(null)
+  const aiDiagsRef = useRef<RawDiag[]>([])
+  const tsDiagsRef = useRef<RawDiag[]>([])
+  const [tsSummary, setTsSummary] = useState<{ errors: number; warnings: number } | null>(null)
+
+  // Rebuild the CodeMirror lint list from both sources and dispatch it.
+  const renderDiagnostics = (view: EditorView) => {
+    const doc = view.state.doc
+    const merged = mergeDiagnostics(tsDiagsRef.current, aiDiagsRef.current)
+    const diags: Diagnostic[] = merged.map((d) => {
+      const lineNo = Math.min(Math.max(1, d.line), doc.lines)
+      const line = doc.line(lineNo)
+      // The compiler gives an exact span, so underline just the offending
+      // expression; the model only knows a line, so underline the whole line.
+      const from = d.from != null ? Math.min(Math.max(d.from, 0), doc.length) : line.from
+      const to = d.to != null ? Math.min(Math.max(d.to, from), doc.length) : line.to
+      const instruction =
+        d.source === 'ts'
+          ? `Fix this TypeScript error${d.code ? ` (TS${d.code})` : ''}: ${d.message}`
+          : d.fix || `Fix this problem: ${d.message}`
+      return {
+        from,
+        to,
+        severity: d.severity,
+        message: d.message,
+        source: d.source === 'ts' ? 'tsserver' : 'ai',
+        actions: [
+          {
+            name: t('file.diag.fix'),
+            // Hand the inline-edit widget the whole LINE, not the error's narrow
+            // span — the model needs a complete statement to rewrite.
+            apply: (v: EditorView) => {
+              v.focus()
+              const ln = v.state.doc.lineAt(from)
+              openInlineEdit(v, { from: ln.from, to: ln.to, instruction })
+            },
+          },
+        ],
+      }
+    })
+    view.dispatch(setDiagnostics(view.state, diags))
+    return merged
+  }
+
+  // Live compiler diagnostics: debounced on every edit, no click and no tokens.
+  useEffect(() => {
+    const path = filePath
+    if (!path) return
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      let list: RawDiag[] = []
+      try {
+        const raw = await window.swarmmind.lspDiagnostics(path, content)
+        const view = viewRef.current
+        if (cancelled || !view) return
+        // Offsets are indices into the text we SENT. If the user kept typing
+        // while the request was in flight the doc has moved, so drop the result
+        // rather than underlining the wrong characters — the next debounce tick
+        // will produce a fresh, correct set.
+        if (view.state.doc.length !== content.length) return
+        const doc = view.state.doc
+        list = raw.map((d) => ({
+          line: doc.lineAt(Math.min(Math.max(d.from, 0), doc.length)).number,
+          from: d.from,
+          to: d.to,
+          message: d.message,
+          severity: d.severity,
+          source: 'ts' as const,
+          code: d.code,
+        }))
+      } catch {
+        list = [] // no TypeScript in this repo, or the service is down — stay quiet
+      }
+      if (cancelled) return
+      const view = viewRef.current
+      if (!view) return
+      tsDiagsRef.current = list
+      renderDiagnostics(view)
+      setTsSummary(list.length ? summarizeDiagnostics(list) : { errors: 0, warnings: 0 })
+    }, LSP_DEBOUNCE_MS)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [filePath, content])
+
+  // Drop the language service's copy of a file the editor no longer has open.
+  useEffect(() => {
+    const path = filePath
+    if (!path) return
+    return () => {
+      void window.swarmmind.lspClose(path)
+    }
+  }, [filePath])
 
   const runDiagnostics = async () => {
     const view = viewRef.current
@@ -453,35 +564,15 @@ export function FileEditor({
         setDiagCount(null)
         return
       }
-      const list = res.diagnostics ?? []
-      const doc = view.state.doc
-      const diags: Diagnostic[] = list.map((d) => {
-        const lineNo = Math.min(Math.max(1, d.line), doc.lines)
-        const line = doc.line(lineNo)
-        return {
-          from: line.from,
-          to: line.to,
-          severity: (d.severity as Diagnostic['severity']) ?? 'warning',
-          message: d.message,
-          // Offer a one-click "Fix with AI" that opens Cmd-K on the flagged line,
-          // prefilled with the model's suggested fix.
-          actions: [
-            {
-              name: t('file.diag.fix'),
-              apply: (v: EditorView, from: number, to: number) => {
-                v.focus()
-                openInlineEdit(v, {
-                  from,
-                  to,
-                  instruction: d.fix || `Fix this problem: ${d.message}`,
-                })
-              },
-            },
-          ],
-        }
-      })
-      view.dispatch(setDiagnostics(view.state, diags))
-      setDiagCount(diags.length)
+      aiDiagsRef.current = (res.diagnostics ?? []).map((d) => ({
+        line: d.line,
+        message: d.message,
+        severity: (d.severity as RawDiag['severity']) ?? 'warning',
+        source: 'ai' as const,
+        fix: d.fix,
+      }))
+      const merged = renderDiagnostics(view)
+      setDiagCount(merged.length)
     } catch (err) {
       setDiagError(err instanceof Error ? err.message : String(err))
       setDiagCount(null)
@@ -513,6 +604,9 @@ export function FileEditor({
     setNextEditHint(null)
     setDiagCount(null)
     setDiagError(null)
+    setTsSummary(null)
+    aiDiagsRef.current = []
+    tsDiagsRef.current = []
     const view = viewRef.current
     if (view) view.dispatch(setDiagnostics(view.state, []))
   }, [filePath])
@@ -537,12 +631,43 @@ export function FileEditor({
     () => [
       ...staticExtensions,
       lintGutter(),
+      // `linter(null)` = "install the lint state, but no lint source of our own"
+      // (the library's documented hook for externally-supplied diagnostics).
+      //
+      // It is load-bearing. Without it `setDiagnostics` takes its fallback path:
+      // it appends the lint extensions via `appendConfig` in the SAME transaction
+      // that carries the diagnostics — but a state field added by `appendConfig`
+      // starts from `create()` and never sees that transaction's effects, so the
+      // first batch is silently dropped by `lintState`. The gutter has its own
+      // field (already installed by `lintGutter()` above), so the symptom is
+      // gutter markers and a problem count with NO underline and no lint tooltip.
+      // Installing the field up front means the very first dispatch renders.
+      linter(null),
+      // Language-service surfaces. Both read the open file through a ref, so the
+      // extensions are built once and never rebuilt on a file switch.
+      lspHover(() => filePathRef.current),
+      lspGoToDefinition(() => filePathRef.current, (target) => {
+        useWorkspaceStore.getState().openFileAtLine(target.path, target.line)
+      }),
       Prec.highest(
         keymap.of([
           {
             key: 'F2',
             run: (view) => {
               renameRef.current(view)
+              return true
+            },
+          },
+          {
+            // F12 → go to definition (VS Code's key). Falls through when the
+            // language service has nothing, so it never eats the keystroke.
+            key: 'F12',
+            run: (view) => {
+              const path = filePathRef.current
+              if (!path) return false
+              void jumpToDefinition(view, path, view.state.selection.main.head, (target) => {
+                useWorkspaceStore.getState().openFileAtLine(target.path, target.line)
+              })
               return true
             },
           },
@@ -816,6 +941,31 @@ export function FileEditor({
         )}
 
         <span>{langName ?? t('file.plainText')}</span>
+
+        {/* Compiler status — live, no click needed. Absent for non-TS/JS files. */}
+        {tsSummary && (
+          <span
+            title={t('file.lsp.tooltip')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              color:
+                tsSummary.errors > 0
+                  ? '#e57373'
+                  : tsSummary.warnings > 0
+                    ? '#e0a44a'
+                    : '#7cba7c',
+            }}
+          >
+            {tsSummary.errors === 0 && tsSummary.warnings === 0
+              ? `✓ ${t('file.lsp.clean')}`
+              : `⨯ ${t('file.lsp.problems', {
+                  e: String(tsSummary.errors),
+                  w: String(tsSummary.warnings),
+                })}`}
+          </span>
+        )}
 
         <button
           onClick={runDiagnostics}

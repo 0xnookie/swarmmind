@@ -221,6 +221,31 @@ const chrome = EditorView.theme({
     fontSize: '12.5px',
     maxHeight: '240px',
   },
+  // Language-service hover: the compiler's type signature, then its doc comment.
+  '.cm-lsp-hover': {
+    padding: '7px 10px',
+    maxWidth: '520px',
+    maxHeight: '320px',
+    overflow: 'auto',
+  },
+  '.cm-lsp-hover-sig': {
+    margin: 0,
+    fontFamily: 'var(--font-editor)',
+    fontSize: '12px',
+    lineHeight: 1.5,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    color: 'var(--text-primary)',
+  },
+  '.cm-lsp-hover-doc': {
+    marginTop: '6px',
+    paddingTop: '6px',
+    borderTop: '1px solid var(--border-subtle)',
+    fontSize: '11.5px',
+    lineHeight: 1.5,
+    whiteSpace: 'pre-wrap',
+    color: 'var(--text-secondary)',
+  },
   '.cm-tooltip.cm-tooltip-autocomplete > ul > li': {
     padding: '3px 8px',
   },

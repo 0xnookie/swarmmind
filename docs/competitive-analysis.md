@@ -24,6 +24,8 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 | Agentic chat that edits (chat → applyable diffs) | ✅ | ✅ | SwarmAgent's **`propose_edits` tool**: the chat assistant reads the code (search_code/read_file), then hands a full change plan to the Composer's diff/checkpoint/apply/verify pipeline. Nothing writes until the user applies — Cursor's agent mode, but on SwarmMind's reversibility rails |
 | Terminal→editor bridge (clickable path:line) | ✅ | ✅ | File references in agent terminal output (`src/foo.ts:12`, `D:\x\y.py(3,1)`) are validated against the FS and **Ctrl/Cmd+Click** opens the file at that line in the editor. Pure matcher `terminalLinks.ts` (unit-tested), resolves against worktree → pane cwd → root |
 | Fresh semantic index while agents work | ✅ | ⬜ | The vector index **re-embeds just the touched files** on the file-watcher's `file_changed` events (debounced, capped, write-locked against full rebuilds). Cursor's index doesn't watch other agents' edits; ours does. Pure merge/plan logic `indexUpdate.ts` (unit-tested) |
+| Real language intelligence (LSP) | ✅ | ✅ | **TypeScript language service in a worker thread** (`electron/lsp/*`): live type diagnostics as you type (free, no tokens), hover types, and Ctrl/⌘+Click / F12 go-to-definition across files. No external language server to install — the `typescript` package *is* the engine. Off the main thread, so a cold program build never stalls the PTYs |
+| Type error → one-click AI fix | ✅ | 🟡 | Compiler diagnostics merge into the *same* lint list as the AI diagnostics (`mergeDiagnostics`, unit-tested), so **every real type error inherits the existing "Fix with AI" action** → prefilled Cmd-K inline edit. The checker finds it, the model fixes it |
 
 ## Differentiators SwarmMind has and Cursor/BridgeMind do not
 
@@ -46,9 +48,9 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 | | SwarmMind |
 |---|---|
 | Type gate | `npm run typecheck` clean (two tsconfig projects) |
-| Pure-logic unit tests | `npm test` — 160 assertions over pure modules (incl. `nextEdit`, `codeBlocks`, `retrieval` lexical+vector, `verify`, `conductor` orchestration decisions, `terminalLinks`, `indexUpdate`, `devServerUrl`, `recipes`), no build step |
+| Pure-logic unit tests | `npm test` — 174 assertions over pure modules (incl. `nextEdit`, `codeBlocks`, `retrieval` lexical+vector, `verify`, `conductor` orchestration decisions, `terminalLinks`, `indexUpdate`, `devServerUrl`, `recipes`, `tsLsp`, `diagnostics`), no build step |
 | Constrained exec | `verify:run` only runs the workspace's declared npm scripts (allowlist + strict charset), execFile without a shell — no arbitrary command surface |
-| Boot/integration | `npm run smoke`, `node tests/editor-verify.mjs` (Playwright on the built app) |
+| Boot/integration | `npm run smoke`, `node tests/editor-verify.mjs`, `npm run lsp-verify` (Playwright on the built app — the last drives a real type error to a rendered squiggle + Fix-with-AI action + cross-file F12) |
 | Spawn safety | HMAC-signed agent config, shell-quoted argv, per-workspace MCP token |
 
 ## Honest gaps / next targets (priority order)
@@ -70,13 +72,23 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
    every terminal, Ctrl/Cmd+Click opens the file at that line in the editor.
 7. ~~**Shared DiffView**~~ — ✅ shipped as `UnifiedDiff.tsx` (WorktreeReview,
    ChangesPanel drill-down, Kanban ReviewCard all render the same component).
-8. **LSP integration** — real go-to-definition/hover/diagnostics in the editor
-   (big lift; AI diagnostics + typecheck-as-verify cover most value today).
+8. ~~**LSP integration**~~ — ✅ shipped: a TypeScript language service in a
+   worker thread gives live type diagnostics, hover types and go-to-definition —
+   and, because compiler diagnostics merge into the AI lint list, every real type
+   error gets a one-click "Fix with AI". No external server to install.
 9. **Session export** — the timeline is event-sourced, so a shareable/replayable
    "here's what the swarm did" artifact falls out of `eventList` almost for free.
 10. **Event-driven conductor** — subscribe to `onSwarmEvent` instead of polling
    `taskList` each tick: lower latency, scales with pane count.
+11. **LSP depth** — the service currently answers diagnostics/hover/definition.
+   Find-references, rename-from-the-index and completions are the natural next
+   asks (F2 rename still routes through the Composer, which works but is
+   model-mediated where the compiler could be exact).
+12. **Other languages** — the language service covers TS/JS/TSX only. Python/Rust
+   would each need a real external language server; worth it only if users ask.
 
 This file is a living scorecard, not a marketing claim: "best" is earned row by
-row. The in-editor AI table is at parity row-for-row (plus a freshness edge
-Cursor lacks); the remaining targets are depth (LSP) and shareability (export).
+row. The in-editor AI table is now at parity row-for-row *and* carries two things
+Cursor does not: an index that stays fresh while other agents edit, and compiler
+diagnostics wired straight into the AI fix loop. The remaining targets are LSP
+depth (references/rename) and shareability (session export).
