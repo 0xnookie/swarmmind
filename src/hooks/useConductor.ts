@@ -26,6 +26,7 @@ import {
   planReviews,
   readyForSynthesis,
   planMessageDelivery,
+  isWakeEvent,
 } from '../lib/conductor'
 
 // ── The Conductor ───────────────────────────────────────────────────────────
@@ -52,6 +53,17 @@ import {
 // gate, message routing) is a pure function in src/lib/conductor.ts, unit-tested
 // in tests/lib-units.mts. This hook is only the impure shell: store access, IPC,
 // PTY injection, timers.
+//
+// SCHEDULING IS EVENT-DRIVEN. The tick is an idempotent reconciler, so *when*
+// it runs is purely a latency/efficiency question. It wakes on (a) swarm-bus
+// events that can change a decision — `isWakeEvent` in conductor.ts: task
+// changes, messages, result writes, pane spawn/exit — and (b) store changes to
+// pane attention/layout/orchestration state; wakes are coalesced through a
+// short debounce so a burst (the lead creating five tasks) costs one tick, not
+// five. A slow heartbeat remains ONLY for the time-based watchdogs (worker
+// stall, decomposition timeout), which no event announces. Compared to the old
+// fixed 1.5s poll this reacts in ~150ms instead of up-to-1.5s, and an idle
+// swarm costs one cheap tick per 5s instead of a taskList round-trip per 1.5s.
 
 interface WorkerPane {
   id: string
@@ -65,7 +77,13 @@ export const conductorControls: { approve: () => void; skip: () => void } = {
   skip: () => {},
 }
 
-const TICK_MS = 1500
+// Debounce for event-triggered wakes: long enough to coalesce a burst (a lead
+// creating several tasks back-to-back), short enough to feel instant.
+const COALESCE_MS = 150
+// Fallback heartbeat. Exists only for the time-based watchdogs (STALL_MS,
+// DECOMPOSE_TIMEOUT_MS) — everything else is woken by events. Its granularity
+// bounds watchdog latency, so keep it well under those timeouts.
+const HEARTBEAT_MS = 5000
 
 function collectLeaves(node: PaneNode): PaneLeaf[] {
   return node.type === 'leaf' ? [node] : node.children.flatMap(collectLeaves)
@@ -209,6 +227,13 @@ export function useConductor(): void {
   }, [])
 
   useEffect(() => {
+    // Event-driven scheduling state (see the module comment). `tickTimer` holds
+    // the one coalesced pending wake; `pendingWhileBusy` remembers a wake that
+    // arrived mid-tick so nothing is ever dropped (the tick re-runs once after).
+    let tickTimer: ReturnType<typeof setTimeout> | null = null
+    let pendingWhileBusy = false
+    let disposed = false
+
     const tick = async () => {
       if (busyRef.current) return
       const st = useWorkspaceStore.getState()
@@ -459,8 +484,66 @@ export function useConductor(): void {
       }
     }
 
-    const handle = setInterval(tick, TICK_MS)
-    return () => clearInterval(handle)
+    const runScheduled = async () => {
+      tickTimer = null
+      if (disposed) return
+      if (busyRef.current) {
+        // A tick is mid-flight; run once more when it finishes so the wake that
+        // fired during it is honoured.
+        pendingWhileBusy = true
+        return
+      }
+      await tick()
+      if (pendingWhileBusy && !disposed) {
+        pendingWhileBusy = false
+        schedule(0)
+      }
+    }
+
+    const schedule = (delay = COALESCE_MS) => {
+      if (disposed) return
+      if (busyRef.current) {
+        pendingWhileBusy = true
+        return
+      }
+      if (tickTimer) return // a wake is already pending — coalesce
+      tickTimer = setTimeout(() => void runScheduled(), delay)
+    }
+
+    // (a) Swarm-bus events: task/message/memory/pane changes wake the loop.
+    const unsubEvents = window.swarmmind.onSwarmEvent((ev) => {
+      if (ev && isWakeEvent(ev.type)) schedule()
+    })
+
+    // (b) Renderer state the tick's decisions read: pane attention (a worker
+    // going `waiting` gates dispatch and stall-nudges), the pane tree (spawn/
+    // exit/status), and the orchestration controls themselves.
+    const unsubStore = useWorkspaceStore.subscribe((s, prev) => {
+      if (
+        s.paneAttention !== prev.paneAttention ||
+        s.rootPane !== prev.rootPane ||
+        s.orchestrationMode !== prev.orchestrationMode ||
+        s.orchestratorPhase !== prev.orchestratorPhase ||
+        s.orchestratorProposal !== prev.orchestratorProposal ||
+        s.orchestratorGoal !== prev.orchestratorGoal ||
+        s.leadPaneId !== prev.leadPaneId ||
+        s.workspace !== prev.workspace
+      ) {
+        schedule()
+      }
+    })
+
+    // (c) Heartbeat for the time-based watchdogs only.
+    const heartbeat = setInterval(() => schedule(0), HEARTBEAT_MS)
+    schedule(0) // initial reconcile on mount
+
+    return () => {
+      disposed = true
+      clearInterval(heartbeat)
+      unsubEvents()
+      unsubStore()
+      if (tickTimer) clearTimeout(tickTimer)
+    }
   }, [])
 
   // ── Persist the run log per workspace ───────────────────────────────────────

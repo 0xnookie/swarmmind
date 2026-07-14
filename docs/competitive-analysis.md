@@ -33,7 +33,7 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 | Capability | SwarmMind | Why it matters |
 |---|---|---|
 | ⭐ Multiple CLI agents side-by-side | ✅ | Run Claude Code / Codex / etc. in resizable panes at once |
-| ⭐ Autonomous Conductor + Lead orchestration | ✅ | Decompose a goal → dispatch tasks across panes → synthesize, zero model tokens in the loop |
+| ⭐ Autonomous Conductor + Lead orchestration | ✅ | Decompose a goal → dispatch tasks across panes → synthesize, zero model tokens in the loop. **Event-driven**: wakes on swarm-bus events (task/message/result/pane changes, coalesced ~150ms) instead of polling — reaction in ~150ms, idle cost one heartbeat tick per 5s, scales with pane count |
 | ⭐ Shared MCP memory between agents | ✅ | Agents exchange context/results via a per-workspace MCP server |
 | ⭐ Per-pane git worktree isolation + review/merge | ✅ | Each agent on its own branch; diff, commit, merge from the UI |
 | ⭐ Desktop chat widget (tray/minimized) | ✅ | Assistant reachable when the main window is hidden |
@@ -50,7 +50,7 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 | | SwarmMind |
 |---|---|
 | Type gate | `npm run typecheck` clean (two tsconfig projects) |
-| Pure-logic unit tests | `npm test` — 192 assertions over pure modules (incl. `nextEdit`, `codeBlocks`, `retrieval` lexical+vector, `verify`, `conductor` orchestration decisions, `terminalLinks`, `indexUpdate`, `devServerUrl`, `recipes`, `tsLsp` incl. span edits, `rename`, `diagnostics`, `sessionExport`), no build step |
+| Pure-logic unit tests | `npm test` — 194 assertions over pure modules (incl. `nextEdit`, `codeBlocks`, `retrieval` lexical+vector, `verify`, `conductor` orchestration decisions, `terminalLinks`, `indexUpdate`, `devServerUrl`, `recipes`, `tsLsp` incl. span edits, `rename`, `diagnostics`, `sessionExport`), no build step |
 | Constrained exec | `verify:run` only runs the workspace's declared npm scripts (allowlist + strict charset), execFile without a shell — no arbitrary command surface |
 | Boot/integration | `npm run smoke`, `node tests/editor-verify.mjs`, `npm run lsp-verify` (Playwright on the built app — the last drives a real type error to a rendered squiggle + Fix-with-AI action, cross-file F12, Shift+F12 references across files, and an F2 rename landing as a two-file Composer plan) |
 | Spawn safety | HMAC-signed agent config, shell-quoted argv, per-workspace MCP token |
@@ -87,13 +87,20 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
    Composer's preview/checkpoint/apply. The model-mediated flow remains only as
    the non-TS fallback. (LSP-backed *completions* remain unshipped; ghost-text
    covers that surface for now.)
-11. **Event-driven conductor** — subscribe to `onSwarmEvent` instead of polling
-   `taskList` each tick: lower latency, scales with pane count.
+11. ~~**Event-driven conductor**~~ — ✅ shipped: the conductor's (idempotent,
+   unit-tested) tick is now woken by swarm-bus events + store changes (pure
+   `isWakeEvent` gate, ~150ms coalescing) instead of a fixed 1.5s poll; a 5s
+   heartbeat survives only for the time-based watchdogs. Lower latency, near-zero
+   idle cost, scales with pane count.
 12. **Other languages** — the language service covers TS/JS/TSX only. Python/Rust
    would each need a real external language server; worth it only if users ask.
+13. **LSP-backed completions** — symbol-exact completion popups from the language
+   service; ghost-text covers the AI side of this surface today.
 
 This file is a living scorecard, not a marketing claim: "best" is earned row by
-row. The in-editor AI table is now at parity row-for-row *and* carries things
-Cursor does not: an index that stays fresh while other agents edit, compiler
-diagnostics wired straight into the AI fix loop, and a compiler-exact rename that
-still rides the review/checkpoint rails. Next up: the event-driven conductor.
+row. The in-editor AI table is at parity row-for-row *and* carries things Cursor
+does not: an index that stays fresh while other agents edit, compiler diagnostics
+wired straight into the AI fix loop, and a compiler-exact rename that still rides
+the review/checkpoint rails. Every numbered priority target on this list has now
+been shipped except the two explicitly-conditional ones (other-language servers
+"only if users ask"; LSP completions, whose surface ghost-text already covers).

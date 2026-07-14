@@ -56,6 +56,30 @@ export function canReview(workers: readonly WorkerPane[]): boolean {
   return new Set(workers.map(w => w.agentId)).size >= 2
 }
 
+// ── Event-driven wake-up ─────────────────────────────────────────────────────
+// The conductor is a reconciler: its tick is idempotent, so *when* it runs is
+// purely a latency/efficiency question. These are the event types that can
+// change what a tick would decide — the task queue (create/update/note), the
+// message queue, pane availability (spawn/exit/question), or the review gate.
+// Deliberately excluded: `dispatch`/`synthesis` (the conductor's own output —
+// waking on them would only echo), and pure telemetry (`cost`, `file_changed`,
+// `contention`, `file_intent`, `checkpoint`).
+export const CONDUCTOR_WAKE_EVENTS: ReadonlySet<string> = new Set([
+  'task_create',
+  'task_update',
+  'task_note',
+  'message',
+  'memory_write',
+  'agent_spawn',
+  'agent_exit',
+  'agent_question',
+  'review',
+])
+
+export function isWakeEvent(type: string): boolean {
+  return CONDUCTOR_WAKE_EVENTS.has(type)
+}
+
 // ── Prompt builders ──────────────────────────────────────────────────────────
 
 // Build the single-line prompt injected into a worker's PTY. Kept to one line on

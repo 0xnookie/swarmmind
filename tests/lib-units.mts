@@ -32,6 +32,7 @@ import { mergeDiagnostics, normalizeMessage, summarizeDiagnostics } from '../src
 import {
   parseDeps, depsMet, canReview, buildDispatchPrompt, sweepAction, decomposeAction,
   reviewSweepAction, planDispatches, planReviews, readyForSynthesis, planMessageDelivery,
+  isWakeEvent,
   type ConductorTask,
 } from '../src/lib/conductor.ts'
 import { scoreVoice, rankVoices, pickVoice, cleanForSpeech, chunkForSpeech, type VoiceLike } from '../src/lib/voices.ts'
@@ -541,6 +542,18 @@ t('verify: buildFixInstruction embeds script + summary', () => {
   assert.ok(instr.includes('add a button'))
   assert.ok(instr.includes('npm run typecheck'))
   assert.ok(instr.includes('error TS1'))
+})
+
+// ---------- conductor: event-driven wake set ----------
+t('isWakeEvent: task/message/memory/pane events wake the conductor', () => {
+  for (const type of ['task_create', 'task_update', 'task_note', 'message', 'memory_write', 'agent_spawn', 'agent_exit', 'agent_question', 'review']) {
+    assert.ok(isWakeEvent(type), `${type} should wake`)
+  }
+})
+t('isWakeEvent: own output and telemetry do NOT wake (no echo loops, no churn)', () => {
+  for (const type of ['dispatch', 'synthesis', 'cost', 'file_changed', 'contention', 'file_intent', 'checkpoint', 'unknown_future_type']) {
+    assert.ok(!isWakeEvent(type), `${type} should not wake`)
+  }
 })
 
 // ---------- voices (SwarmAgent spoken-reply voice selection + cleanup) ----------
