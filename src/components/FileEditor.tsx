@@ -16,6 +16,7 @@ import { lineDiff } from '../lib/lineDiff'
 import { fuzzyRank } from '../lib/fuzzy'
 import { resolveNextEditTarget, type NextEditTarget } from '../lib/nextEdit'
 import { mergeDiagnostics, summarizeDiagnostics, type RawDiag } from '../lib/diagnostics'
+import { buildRenamePlan, toWorkspaceRelative } from '../lib/rename'
 import { renderDiffRows } from './DiffRows'
 
 // How many lines of surrounding context to send the model with an inline edit.
@@ -140,6 +141,13 @@ export function FileEditor({
   const [rename, setRename] = useState<RenameState | null>(null)
   const renameRef = useRef<(view: EditorView) => void>(() => {})
   const renameInputRef = useRef<HTMLInputElement>(null)
+  // Find-references (Shift+F12) drawer. Peek-style: clicking a same-file row
+  // keeps it open; navigating to another file dismisses it (FilePanel keys this
+  // component by path, so a cross-file jump remounts the editor).
+  const [refs, setRefs] = useState<{ symbol: string; list: LspReferenceItem[]; busy: boolean } | null>(null)
+  const refsRef = useRef<typeof refs>(null)
+  refsRef.current = refs
+  const refsTriggerRef = useRef<(view: EditorView) => void>(() => {})
   // Stable trigger for the Tab-to-jump keybinding; returns whether it jumped so
   // the keymap can fall through to ghost-accept / default Tab when there's no hint.
   const jumpRef = useRef<() => boolean>(() => false)
@@ -383,6 +391,34 @@ export function FileEditor({
       return
     }
     setRename((r) => (r ? { ...r, busy: true } : r))
+
+    // 1) Compiler-exact rename: the language service resolves every true
+    // reference (never substring/string/comment matches) and returns the full
+    // new file contents, which route through the same Composer preview/
+    // checkpoint/apply pipeline as the model flow — just with nothing to guess.
+    const view = viewRef.current
+    if (filePath && view) {
+      try {
+        const res = await window.swarmmind.lspRename(filePath, view.state.doc.toString(), rename.from, newName)
+        if (res.ok) {
+          const plan = buildRenamePlan(rootPath, rename.oldName, newName, res.files)
+          if (plan) {
+            setRename(null)
+            openComposerWith({
+              instruction: `Rename "${rename.oldName}" to "${newName}" (exact, via the TypeScript language service)`,
+              contextPaths: [],
+              plan,
+            })
+            return
+          }
+        }
+      } catch {
+        /* fall through to the model-mediated flow */
+      }
+    }
+
+    // 2) Fallback (non-TS files, or the service couldn't rename): grep the
+    // workspace and let the model do it through the Composer.
     // Find files that reference the symbol (grep), plus the current file.
     let paths: string[] = []
     try {
@@ -407,6 +443,25 @@ export function FileEditor({
     setRename(null)
     openComposerWith({ instruction, contextPaths: paths })
   }
+
+  // ── Find references (Shift+F12) ─────────────────────────────────────────
+  const openReferences = async (view: EditorView) => {
+    const path = filePathRef.current
+    if (!path) return
+    const sel = view.state.selection.main
+    const wordRange = view.state.wordAt(sel.head) ?? (sel.empty ? null : sel)
+    if (!wordRange) return
+    const symbol = view.state.doc.sliceString(wordRange.from, wordRange.to).trim()
+    if (!symbol) return
+    setRefs({ symbol, list: [], busy: true })
+    try {
+      const list = await window.swarmmind.lspReferences(path, view.state.doc.toString(), sel.head)
+      setRefs((r) => (r && r.symbol === symbol ? { symbol, list, busy: false } : r))
+    } catch {
+      setRefs((r) => (r && r.symbol === symbol ? { symbol, list: [], busy: false } : r))
+    }
+  }
+  refsTriggerRef.current = openReferences
 
   // ── Snippets (save selection / insert at cursor) ────────────────────────
   const [snipOpen, setSnipOpen] = useState(false)
@@ -537,14 +592,11 @@ export function FileEditor({
     }
   }, [filePath, content])
 
-  // Drop the language service's copy of a file the editor no longer has open.
-  useEffect(() => {
-    const path = filePath
-    if (!path) return
-    return () => {
-      void window.swarmmind.lspClose(path)
-    }
-  }, [filePath])
+  // NOTE: the language service's copy of a file is dropped when its TAB closes
+  // (FilePanel.closeTab → lspClose), NOT here on a file switch. Evicting on
+  // switch removed the previous file from the program roots, which silently
+  // broke cross-file find-references/rename for every file except the one on
+  // screen (the bug only shows up when a query needs files that import you).
 
   const runDiagnostics = async () => {
     const view = viewRef.current
@@ -659,6 +711,15 @@ export function FileEditor({
             },
           },
           {
+            // Shift+F12 → find all references (VS Code's key). Registered
+            // before plain F12 so the modifier variant wins.
+            key: 'Shift-F12',
+            run: (view) => {
+              refsTriggerRef.current(view)
+              return true
+            },
+          },
+          {
             // F12 → go to definition (VS Code's key). Falls through when the
             // language service has nothing, so it never eats the keystroke.
             key: 'F12',
@@ -678,11 +739,17 @@ export function FileEditor({
             run: () => jumpRef.current(),
           },
           {
-            // Escape dismisses the next-edit hint (when no inline-edit widget is
-            // open to claim it); falls through otherwise.
+            // Escape closes the references drawer, then dismisses the next-edit
+            // hint (when no inline-edit widget is open to claim it); falls
+            // through otherwise.
             key: 'Escape',
             run: () => {
-              if (editRef.current || !hintRef.current) return false
+              if (editRef.current) return false
+              if (refsRef.current) {
+                setRefs(null)
+                return true
+              }
+              if (!hintRef.current) return false
               setNextEditHint(null)
               return true
             },
@@ -896,6 +963,107 @@ export function FileEditor({
             />
             <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-dim)' }}>
               {rename.busy ? t('file.rename.searching') : t('file.rename.hint')}
+            </div>
+          </div>
+        )}
+
+        {refs && (
+          <div
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              bottom: 0,
+              maxHeight: '42%',
+              zIndex: 15,
+              display: 'flex',
+              flexDirection: 'column',
+              background: 'var(--bg-elevated)',
+              borderTop: '1px solid var(--border-active)',
+              boxShadow: '0 -6px 24px rgba(0,0,0,0.35)',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 12px',
+                borderBottom: '1px solid var(--border-subtle)',
+                fontSize: 11.5,
+                flexShrink: 0,
+              }}
+            >
+              <span style={{ fontWeight: 600, color: 'var(--accent)' }}>
+                ⛓ {t('file.refs.title', { name: refs.symbol })}
+              </span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                {refs.busy ? t('file.refs.searching') : refs.list.length}
+              </span>
+              <div style={{ flex: 1 }} />
+              <button
+                onClick={() => setRefs(null)}
+                title="Esc"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  padding: '0 4px',
+                }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ overflowY: 'auto', padding: '4px 0' }}>
+              {!refs.busy && refs.list.length === 0 && (
+                <div style={{ padding: '10px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
+                  {t('file.refs.none')}
+                </div>
+              )}
+              {refs.list.map((r, i) => {
+                const rel = (rootPath && toWorkspaceRelative(rootPath, r.path)) || r.path.split(/[\\/]/).pop() || r.path
+                return (
+                  <button
+                    key={`${r.path}:${r.line}:${r.col}:${i}`}
+                    onClick={() => useWorkspaceStore.getState().openFileAtLine(r.path, r.line)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      gap: 10,
+                      width: '100%',
+                      textAlign: 'left',
+                      background: 'transparent',
+                      border: 'none',
+                      cursor: 'pointer',
+                      padding: '3px 12px',
+                      fontSize: 12,
+                      color: 'var(--text-secondary)',
+                      fontFamily: 'var(--font-mono, monospace)',
+                    }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--overlay-hover)')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                  >
+                    <span style={{ color: 'var(--text-muted)', flexShrink: 0, fontSize: 11 }}>
+                      {rel}:{r.line}
+                    </span>
+                    {r.isDefinition && (
+                      <span style={{ flexShrink: 0, fontSize: 9.5, color: 'var(--accent)', border: '1px solid var(--accent)', borderRadius: 4, padding: '0 4px' }}>
+                        {t('file.refs.def')}
+                      </span>
+                    )}
+                    {r.isWrite && !r.isDefinition && (
+                      <span style={{ flexShrink: 0, fontSize: 9.5, color: 'var(--warning)', border: '1px solid var(--warning)', borderRadius: 4, padding: '0 4px' }}>
+                        {t('file.refs.write')}
+                      </span>
+                    )}
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.lineText}
+                    </span>
+                  </button>
+                )
+              })}
             </div>
           </div>
         )}

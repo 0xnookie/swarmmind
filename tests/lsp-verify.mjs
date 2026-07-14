@@ -135,7 +135,80 @@ try {
 
   await win.screenshot({ path: join(root, 'tests', 'lsp-verify.png') })
   console.log('[lsp-verify] screenshot -> tests/lsp-verify.png')
-  console.log('[lsp-verify] PASS — real type error squiggled, Fix-with-AI attached, F12 crossed files')
+
+  // ── 5. Find references (Shift+F12): from the definition in lib.ts, the drawer
+  //       must list usages in BOTH files, and clicking a main.ts row navigates.
+  const defSite = win.locator('.cm-line').filter({ hasText: 'export function double' }).getByText('double', { exact: true })
+  await defSite.click()
+  await win.keyboard.press('Shift+F12')
+  await win.waitForSelector('text=/References to|Verweise auf/', { timeout: 20_000 })
+  // Rows render as buttons "file.ts:line  <line text>"; wait for the cross-file hit.
+  const mainRow = win.locator('button').filter({ hasText: /main\.ts:/ }).first()
+  await mainRow.waitFor({ timeout: 20_000 }).catch(async (err) => {
+    const drawer = await win.evaluate(() => {
+      const title = Array.from(document.querySelectorAll('span')).find((s) => /References to|Verweise auf/.test(s.textContent || ''))
+      const panel = title?.closest('div')?.parentElement
+      return panel ? panel.textContent : '(drawer not found)'
+    })
+    console.error('[lsp-verify] drawer contents at failure:', JSON.stringify(drawer))
+    throw err
+  })
+  const refRows = await win.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('button')).filter((b) => /\.ts:\d+/.test(b.textContent || ''))
+    return rows.map((r) => (r.textContent || '').slice(0, 60))
+  })
+  console.log('[lsp-verify] reference rows:', JSON.stringify(refRows))
+  if (!refRows.some((r) => r.includes('lib.ts:'))) throw new Error('references drawer lacks the lib.ts definition row')
+  if (!refRows.some((r) => r.includes('main.ts:'))) throw new Error('references drawer lacks the main.ts usage rows')
+  await win.screenshot({ path: join(root, 'tests', 'lsp-verify-refs.png') })
+  console.log('[lsp-verify] screenshot -> tests/lsp-verify-refs.png')
+
+  await mainRow.click()
+  await win.waitForFunction(
+    () => (document.querySelector('.cm-content')?.textContent || '').includes('import { double }'),
+    null,
+    { timeout: 20_000 }
+  )
+  console.log('[lsp-verify] clicking a reference row navigated back to main.ts')
+  // The cross-file jump remounts the editor (peek-style), dismissing the drawer.
+
+  // ── 6. Compiler-exact rename (F2): renaming `double` at a call site must land
+  //       in the Composer with a pre-built two-file plan — no model round-trip.
+  const renameSite = win.locator('.cm-line').filter({ hasText: 'const ok' }).getByText('double', { exact: true })
+  await renameSite.click()
+  await win.keyboard.press('F2')
+  await win.waitForSelector('text=/Rename symbol|Symbol umbenennen/', { timeout: 10_000 }).catch(async (err) => {
+    const state = await win.evaluate(() => ({
+      focused: document.activeElement?.className ?? null,
+      selection: window.getSelection()?.toString() ?? null,
+      cmFocused: !!document.querySelector('.cm-editor.cm-focused'),
+      bodySnippet: (document.body.textContent || '').includes('Rename') ? 'has-rename-text' : 'no-rename-text',
+    }))
+    console.error('[lsp-verify] F2 state at failure:', JSON.stringify(state))
+    await win.screenshot({ path: join(root, 'tests', 'lsp-verify-f2-fail.png') })
+    throw err
+  })
+  await win.keyboard.type('twice')
+  await win.keyboard.press('Enter')
+  await win.waitForFunction(
+    () => /compiler-exact/.test(document.body.textContent || ''),
+    null,
+    { timeout: 30_000 }
+  )
+  const composerText = await win.evaluate(() => document.body.textContent || '')
+  // The plan summary counts its own files — the tab bar also says "lib.ts", so
+  // asserting on the summary (not mere presence of the names) keeps this honest.
+  if (!/across 2 files/.test(composerText)) {
+    throw new Error('rename did not propagate to both files (expected "across 2 files" in the plan summary)')
+  }
+  if (!composerText.includes('twice(21)')) {
+    throw new Error('Composer diff does not show the renamed call site')
+  }
+  console.log('[lsp-verify] F2 rename produced a compiler-exact Composer plan across both files')
+  await win.screenshot({ path: join(root, 'tests', 'lsp-verify-rename.png') })
+  console.log('[lsp-verify] screenshot -> tests/lsp-verify-rename.png')
+
+  console.log('[lsp-verify] PASS — squiggle + Fix-with-AI, F12, Shift+F12 references, F2 exact rename')
 } catch (err) {
   failure = err instanceof Error ? err.message : String(err)
 } finally {

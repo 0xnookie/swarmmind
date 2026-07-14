@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore, AGENT_IDS } from '../store/workspace'
 import { AgentIcon } from '../data/agents'
 import { useT, type TFunction, type TranslationKey } from '../i18n'
+import { renderSessionHtml, renderSessionMarkdown, exportFileBase } from '../lib/sessionExport'
 
 // ── Swarm Timeline ────────────────────────────────────────────────────────────
 //
@@ -85,8 +86,31 @@ export function SwarmTimeline() {
   const [events, setEvents] = useState<SwarmEvent[]>([]) // ascending by ts
   const [filter, setFilter] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
+  const [exportState, setExportState] = useState<'idle' | 'busy' | 'done' | 'failed'>('idle')
   const wsId = workspace?.id ?? null
   const seen = useRef<Set<string>>(new Set())
+
+  // Session export: pull the full retained log (not just the 400 shown), render
+  // both artifacts with the pure lib, and let the save dialog's chosen extension
+  // pick the format (main writes whichever matches).
+  const exportSession = async () => {
+    if (exportState === 'busy' || !workspace) return
+    setExportState('busy')
+    try {
+      const all = await window.swarmmind.eventsList(undefined, 2000)
+      const list = Array.isArray(all) ? all : []
+      const meta = { workspaceName: workspace.name, exportedAt: Date.now() }
+      const res = await window.swarmmind.exportSaveSession(
+        exportFileBase(meta.workspaceName, meta.exportedAt),
+        renderSessionHtml(list, meta),
+        renderSessionMarkdown(list, meta)
+      )
+      setExportState(res?.ok ? 'done' : res?.canceled ? 'idle' : 'failed')
+    } catch {
+      setExportState('failed')
+    }
+    setTimeout(() => setExportState(s => (s === 'busy' ? s : 'idle')), 2500)
+  }
 
   // Load the recent log whenever the workspace changes.
   useEffect(() => {
@@ -146,6 +170,21 @@ export function SwarmTimeline() {
             <Chip key={a} label={a} iconId={a} active={filter === a} color={agentColor(a)} onClick={() => setFilter(filter === a ? null : a)} />
           ))}
         </div>
+        <button
+          onClick={exportSession}
+          disabled={exportState === 'busy' || events.length === 0}
+          title={t('timeline.exportTip')}
+          style={{
+            ...styles.exportBtn,
+            color: exportState === 'failed' ? 'var(--error)' : exportState === 'done' ? 'var(--success)' : 'var(--text-secondary)',
+            opacity: events.length === 0 ? 0.5 : 1,
+          }}
+        >
+          {exportState === 'busy' ? t('timeline.exporting')
+            : exportState === 'done' ? t('timeline.exported')
+            : exportState === 'failed' ? t('timeline.exportFailed')
+            : `⬇ ${t('timeline.export')}`}
+        </button>
       </div>
 
       <div style={styles.feed}>
@@ -234,6 +273,16 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: 'pointer',
     textTransform: 'capitalize',
     transition: 'background 120ms, color 120ms',
+  },
+  exportBtn: {
+    fontSize: 11,
+    padding: '3px 10px',
+    borderRadius: 999,
+    border: '1px solid var(--border-strong)',
+    background: 'transparent',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+    transition: 'color 120ms, border-color 120ms',
   },
   feed: { flex: 1, overflowY: 'auto', padding: '6px 0' },
   empty: {

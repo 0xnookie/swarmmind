@@ -12,6 +12,15 @@ interface AgentAccount {
 }
 
 declare global {
+  interface LspReferenceItem {
+    path: string
+    line: number
+    col: number
+    lineText: string
+    isDefinition: boolean
+    isWrite: boolean
+  }
+
   interface Window {
     swarmmind: {
       // PTY
@@ -45,6 +54,7 @@ declare global {
       // Swarm event bus (timeline + cost meter)
       eventsList: (sinceTs?: number, limit?: number, types?: string[]) => Promise<SwarmEvent[]>
       eventEmit: (type: string, payload?: Record<string, unknown>, paneId?: string, agentId?: string) => Promise<SwarmEvent | null>
+      exportSaveSession: (defaultBase: string, html: string, markdown: string) => Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>
       onSwarmEvent: (cb: (event: SwarmEvent) => void) => () => void
       // Skills
       skillList: () => Promise<Skill[]>
@@ -170,6 +180,22 @@ declare global {
         content: string,
         offset: number,
       ) => Promise<{ path: string; line: number; col: number } | null>
+      lspReferences: (
+        filePath: string,
+        content: string,
+        offset: number,
+      ) => Promise<LspReferenceItem[]>
+      // Compiler-exact rename: the worker applies the edits against its own
+      // snapshots and returns full new file contents (Composer-plan-ready).
+      lspRename: (
+        filePath: string,
+        content: string,
+        offset: number,
+        newName: string,
+      ) => Promise<
+        | { ok: true; displayName: string; files: { path: string; newContent: string; edits: number }[] }
+        | { ok: false; error: string }
+      >
       lspClose: (filePath: string) => Promise<void>
       // Sessions & scrollback
       sessionList: (rootPath: string) => Promise<SessionInfo[]>

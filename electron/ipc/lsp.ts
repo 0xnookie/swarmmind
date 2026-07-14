@@ -1,7 +1,7 @@
 import { ipcMain } from 'electron'
 import { isTsLike } from '../lib/tsLsp'
-import { lspClose, lspDefinition, lspDiagnostics, lspHover } from '../lsp/client'
-import type { LspDefinition, LspDiagnostic, LspHover } from '../lsp/protocol'
+import { lspClose, lspDefinition, lspDiagnostics, lspHover, lspReferences, lspRename } from '../lsp/client'
+import type { LspDefinition, LspDiagnostic, LspHover, LspReference, LspRenameResult } from '../lsp/protocol'
 
 // IPC surface for the TypeScript language service (electron/lsp/*).
 //
@@ -31,6 +31,22 @@ export function registerLspHandlers(): void {
     async (_e, path: string, content: string, offset: number): Promise<LspDefinition | null> => {
       if (!path || !isTsLike(path)) return null
       return lspDefinition(path, content, offset)
+    },
+  )
+
+  ipcMain.handle(
+    'lsp:references',
+    async (_e, path: string, content: string, offset: number): Promise<LspReference[]> => {
+      if (!path || !isTsLike(path)) return []
+      return lspReferences(path, content, offset)
+    },
+  )
+
+  ipcMain.handle(
+    'lsp:rename',
+    async (_e, path: string, content: string, offset: number, newName: string): Promise<LspRenameResult> => {
+      if (!path || !isTsLike(path)) return { ok: false, error: 'not-ts' }
+      return lspRename(path, content, offset, newName)
     },
   )
 

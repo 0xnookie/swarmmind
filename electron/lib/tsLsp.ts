@@ -76,6 +76,60 @@ export function normPath(p: string): string {
 }
 
 /**
+ * Apply a set of span edits (offset + length + replacement) to a text.
+ *
+ * The rename path lives or dies on this being right: TS hands back
+ * `findRenameLocations` spans measured against ONE snapshot of each file, so
+ * edits must be applied in a single pass, back-to-front, against that exact
+ * snapshot — applying front-to-back would shift every later offset. Overlapping
+ * spans indicate a bogus input (or a TS bug); we refuse rather than corrupt the
+ * file, returning null so the caller can fall back.
+ */
+export type SpanEdit = { start: number; length: number; newText: string }
+
+export function applyTextEdits(text: string, edits: SpanEdit[]): string | null {
+  const sorted = [...edits].sort((a, b) => a.start - b.start)
+  let lastEnd = -1
+  for (const e of sorted) {
+    if (e.start < 0 || e.length < 0 || e.start + e.length > text.length) return null
+    if (e.start < lastEnd) return null // overlap — refuse to guess
+    lastEnd = e.start + e.length
+  }
+  let out = text
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const e = sorted[i]
+    out = out.slice(0, e.start) + e.newText + out.slice(e.start + e.length)
+  }
+  return out
+}
+
+/** 0-based offset → 1-based line number, counting '\n' (CRLF-safe: '\r' rides along). */
+export function offsetToLine(text: string, offset: number): number {
+  let line = 1
+  const end = Math.min(Math.max(offset, 0), text.length)
+  for (let i = 0; i < end; i++) if (text.charCodeAt(i) === 10) line++
+  return line
+}
+
+/** The (trimmed, capped) text of the line containing `offset` — reference previews. */
+export function lineTextAt(text: string, offset: number, cap = 200): string {
+  const end = Math.min(Math.max(offset, 0), text.length)
+  let from = text.lastIndexOf('\n', end - 1) + 1
+  let to = text.indexOf('\n', end)
+  if (to === -1) to = text.length
+  return text.slice(from, to).replace(/\r$/, '').trim().slice(0, cap)
+}
+
+/**
+ * Is `newName` a plausible identifier to rename to? Deliberately conservative
+ * (ASCII identifier chars) — the exact-rename path writes files without a model
+ * in the loop, so a typo'd "foo bar" must be rejected before it lands in code.
+ */
+export function isValidIdentifier(name: string): boolean {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)
+}
+
+/**
  * Pick the tsconfig that actually OWNS a file.
  *
  * Naively taking the nearest tsconfig.json breaks on the solution-style root

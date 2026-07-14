@@ -8,7 +8,7 @@
 import { Worker } from 'node:worker_threads'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import type { LspDefinition, LspDiagnostic, LspHover, LspRequest, LspRequestBody, LspResponse } from './protocol'
+import type { LspDefinition, LspDiagnostic, LspHover, LspReference, LspRenameResult, LspRequest, LspRequestBody, LspResponse } from './protocol'
 
 const REQUEST_TIMEOUT_MS = 20_000
 // A worker that dies *before* its ready ping never loaded (e.g. `typescript`
@@ -108,6 +108,16 @@ export async function lspHover(path: string, content: string, offset: number): P
 export async function lspDefinition(path: string, content: string, offset: number): Promise<LspDefinition | null> {
   const res = await request({ type: 'definition', path, content, offset })
   return res.ok && res.data ? (res.data as LspDefinition) : null
+}
+
+export async function lspReferences(path: string, content: string, offset: number): Promise<LspReference[]> {
+  const res = await request({ type: 'references', path, content, offset })
+  return res.ok && Array.isArray(res.data) ? (res.data as LspReference[]) : []
+}
+
+export async function lspRename(path: string, content: string, offset: number, newName: string): Promise<LspRenameResult> {
+  const res = await request({ type: 'rename', path, content, offset, newName })
+  return res.ok && res.data ? (res.data as LspRenameResult) : { ok: false, error: res.error ?? 'lsp-unavailable' }
 }
 
 export function shutdownLsp(): void {

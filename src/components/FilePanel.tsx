@@ -204,6 +204,11 @@ export function FilePanel() {
         const neighbor = next[Math.min(idx, next.length - 1)] ?? null
         setActivePath(neighbor ? neighbor.path : null)
       }
+      // The tab is truly gone — NOW the language service may drop its overlay
+      // (and the file's program-root slot). This must not happen on a mere file
+      // switch: every open tab has to stay in the program, or cross-file queries
+      // (find-references, exact rename) go blind to files that import this one.
+      void window.swarmmind.lspClose(path)
     },
     [t, setOpenFiles, setActivePath]
   )

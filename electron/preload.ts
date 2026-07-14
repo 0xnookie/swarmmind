@@ -76,6 +76,8 @@ contextBridge.exposeInMainWorld('swarmmind', {
     ipcRenderer.invoke('events:list', sinceTs, limit, types),
   eventEmit: (type: string, payload?: Record<string, unknown>, paneId?: string, agentId?: string) =>
     ipcRenderer.invoke('events:emit', type, payload, paneId, agentId),
+  exportSaveSession: (defaultBase: string, html: string, markdown: string) =>
+    ipcRenderer.invoke('export:saveSession', defaultBase, html, markdown),
   onSwarmEvent: (cb: (event: unknown) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, evt: unknown) => cb(evt)
     ipcRenderer.on('swarm:event', handler)
@@ -213,6 +215,10 @@ contextBridge.exposeInMainWorld('swarmmind', {
   lspHover: (filePath: string, content: string, offset: number) => ipcRenderer.invoke('lsp:hover', filePath, content, offset),
   lspDefinition: (filePath: string, content: string, offset: number) =>
     ipcRenderer.invoke('lsp:definition', filePath, content, offset),
+  lspReferences: (filePath: string, content: string, offset: number) =>
+    ipcRenderer.invoke('lsp:references', filePath, content, offset),
+  lspRename: (filePath: string, content: string, offset: number, newName: string) =>
+    ipcRenderer.invoke('lsp:rename', filePath, content, offset, newName),
   lspClose: (filePath: string) => ipcRenderer.invoke('lsp:close', filePath),
   // Constrained verify runner (Composer verify→fix loop): list/run the
   // workspace's own npm scripts only.

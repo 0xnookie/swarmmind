@@ -29,6 +29,29 @@ export type LspDefinition = {
   col: number
 }
 
+export type LspReference = {
+  /** Absolute path of the file holding the reference. */
+  path: string
+  /** 1-based, ready for `openFileAtLine`. */
+  line: number
+  col: number
+  /** Trimmed text of the containing line, for the references list preview. */
+  lineText: string
+  isDefinition: boolean
+  isWrite: boolean
+}
+
+/**
+ * Result of a compiler-exact rename. The worker applies the span edits itself —
+ * against the very snapshots it computed them on (overlay for open files, disk
+ * for the rest) — and returns full new file contents. Shipping offsets to the
+ * renderer instead would invite the classic desync: the renderer would apply
+ * them to text the service never saw.
+ */
+export type LspRenameResult =
+  | { ok: true; displayName: string; files: { path: string; newContent: string; edits: number }[] }
+  | { ok: false; error: string }
+
 // Every query carries the editor's live buffer, so a request is self-contained:
 // the worker can be restarted at any moment without a resync handshake, and
 // there is no window in which it answers against a stale document.
@@ -37,6 +60,8 @@ export type LspRequest =
   | { id: number; type: 'diagnostics'; path: string; content: string }
   | { id: number; type: 'hover'; path: string; content: string; offset: number }
   | { id: number; type: 'definition'; path: string; content: string; offset: number }
+  | { id: number; type: 'references'; path: string; content: string; offset: number }
+  | { id: number; type: 'rename'; path: string; content: string; offset: number; newName: string }
 
 export type LspResponse = {
   id: number

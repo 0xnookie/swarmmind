@@ -19,15 +19,19 @@ import { statSync } from 'node:fs'
 import { dirname, resolve as resolvePath } from 'node:path'
 import ts from 'typescript'
 import {
+  applyTextEdits,
   chooseProject,
   displayPartsToText,
   flattenMessage,
   formatHover,
+  isValidIdentifier,
+  lineTextAt,
   normPath,
   severityOf,
   type ProjectCandidate,
+  type SpanEdit,
 } from '../lib/tsLsp'
-import type { LspDefinition, LspDiagnostic, LspHover, LspRequest, LspResponse } from './protocol'
+import type { LspDefinition, LspDiagnostic, LspHover, LspReference, LspRenameResult, LspRequest, LspResponse } from './protocol'
 
 if (!parentPort) throw new Error('lsp worker must be run as a worker thread')
 const port = parentPort
@@ -261,6 +265,99 @@ function definition(file: string, offset: number): LspDefinition | null {
   return { path: impl.fileName, line: pos.line + 1, col: pos.character + 1 }
 }
 
+/** The file's text exactly as the language service sees it (overlay wins). */
+function serviceText(file: string): string | null {
+  const doc = overlay.get(normPath(file))
+  if (doc) return doc.content
+  const text = ts.sys.readFile(file)
+  return text === undefined ? null : text
+}
+
+const MAX_REFERENCES = 300
+
+function references(file: string, offset: number): LspReference[] {
+  const { service } = projectFor(file)
+  // findReferences (not getReferencesAtPosition): its entries carry
+  // `isDefinition`, which the flat variant dropped in TS 5.
+  const symbols = service.findReferences(scriptName(file), offset)
+  if (!symbols || symbols.length === 0) return []
+  const refs = symbols.flatMap((s) => s.references)
+
+  const out: LspReference[] = []
+  // Cache each file's text once — a symbol with hundreds of usages would
+  // otherwise re-read the same sources per hit.
+  const texts = new Map<string, string | null>()
+  for (const r of refs.slice(0, MAX_REFERENCES)) {
+    if (isExternal(r.fileName)) continue // usages inside node_modules/lib.d.ts aren't actionable
+    let text = texts.get(r.fileName)
+    if (text === undefined) {
+      text = serviceText(r.fileName)
+      texts.set(r.fileName, text)
+    }
+    if (text === null) continue
+    const before = text.slice(0, r.textSpan.start)
+    const line = before.length - before.replace(/\n/g, '').length + 1
+    const lineStart = before.lastIndexOf('\n') + 1
+    out.push({
+      path: r.fileName,
+      line,
+      col: r.textSpan.start - lineStart + 1,
+      lineText: lineTextAt(text, r.textSpan.start),
+      isDefinition: r.isDefinition ?? false,
+      isWrite: r.isWriteAccess ?? false,
+    })
+  }
+  return out
+}
+
+/**
+ * Compiler-exact rename. Collects every rename location (with the prefix/suffix
+ * text TS needs for shorthand properties, `export { x as y }`, etc.), applies
+ * the spans per file against the service's own snapshots, and returns full new
+ * file contents ready for the Composer's diff/checkpoint/apply pipeline.
+ */
+function rename(file: string, offset: number, newName: string): LspRenameResult {
+  if (!isValidIdentifier(newName)) return { ok: false, error: 'invalid-name' }
+  const { service } = projectFor(file)
+  const name = scriptName(file)
+
+  const info = service.getRenameInfo(name, offset, { allowRenameOfImportPath: false })
+  if (!info.canRename) return { ok: false, error: info.localizedErrorMessage || 'cannot-rename' }
+
+  // providePrefixAndSuffixTextForRename: FALSE — with it on, renaming an
+  // imported symbol at a use site produces an import alias (`double as twice`)
+  // instead of renaming the export: exactly not what this app's F2 ("rename
+  // across files") promises. Propagation is safe here because the result is
+  // never applied silently — it lands in the Composer's diff preview first.
+  // We still honor any prefix/suffix TS emits (it may for other constructs).
+  const locs = service.findRenameLocations(name, offset, false, false, {
+    providePrefixAndSuffixTextForRename: false,
+  })
+  if (!locs || locs.length === 0) return { ok: false, error: 'no-locations' }
+
+  const byFile = new Map<string, SpanEdit[]>()
+  for (const loc of locs) {
+    if (isExternal(loc.fileName)) return { ok: false, error: 'renames-external' } // touching node_modules is never right
+    const edits = byFile.get(loc.fileName) ?? []
+    edits.push({
+      start: loc.textSpan.start,
+      length: loc.textSpan.length,
+      newText: (loc.prefixText ?? '') + newName + (loc.suffixText ?? ''),
+    })
+    byFile.set(loc.fileName, edits)
+  }
+
+  const files: { path: string; newContent: string; edits: number }[] = []
+  for (const [fileName, edits] of byFile) {
+    const text = serviceText(fileName)
+    if (text === null) return { ok: false, error: `unreadable: ${fileName}` }
+    const newContent = applyTextEdits(text, edits)
+    if (newContent === null) return { ok: false, error: `overlapping-edits: ${fileName}` }
+    files.push({ path: fileName, newContent, edits: edits.length })
+  }
+  return { ok: true, displayName: info.displayName, files }
+}
+
 // ── Message loop ────────────────────────────────────────────────────────────
 
 port.on('message', (req: LspRequest) => {
@@ -291,6 +388,14 @@ port.on('message', (req: LspRequest) => {
       case 'definition':
         applyDoc(req.path, req.content)
         reply({ ok: true, data: definition(req.path, req.offset) })
+        return
+      case 'references':
+        applyDoc(req.path, req.content)
+        reply({ ok: true, data: references(req.path, req.offset) })
+        return
+      case 'rename':
+        applyDoc(req.path, req.content)
+        reply({ ok: true, data: rename(req.path, req.offset, req.newName) })
         return
       default:
         reply({ ok: false, error: 'unknown-request' })

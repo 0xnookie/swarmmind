@@ -23,7 +23,11 @@ import { tokenize, rankDocs, cosineSim, rankByEmbedding, fuseRankings, dedupeByP
 import { chunkText } from '../src/lib/chunk.ts'
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
 import { stripCodeFences, extractJsonObject } from '../electron/lib/aiParse.ts'
-import { severityOf, flattenMessage, displayPartsToText, formatHover, isTsLike, samePath, chooseProject } from '../electron/lib/tsLsp.ts'
+import {
+  severityOf, flattenMessage, displayPartsToText, formatHover, isTsLike, samePath, chooseProject,
+  applyTextEdits, offsetToLine, lineTextAt, isValidIdentifier,
+} from '../electron/lib/tsLsp.ts'
+import { toWorkspaceRelative, buildRenamePlan } from '../src/lib/rename.ts'
 import { mergeDiagnostics, normalizeMessage, summarizeDiagnostics } from '../src/lib/diagnostics.ts'
 import {
   parseDeps, depsMet, canReview, buildDispatchPrompt, sweepAction, decomposeAction,
@@ -35,6 +39,11 @@ import { findPathLinks, isAbsolutePathLike, candidateAbsolutePaths } from '../sr
 import { isIndexablePath, planIncrementalUpdate, mergeIndexEntries } from '../src/lib/indexUpdate.ts'
 import { findDevServerUrl } from '../src/lib/devServerUrl.ts'
 import { SWARM_RECIPES, buildRecipeLayout, type BuiltLeaf, type BuiltGroup } from '../src/lib/recipes.ts'
+import {
+  escapeHtml, summarizeEvent, buildSessionStats, formatDuration, compactNumber,
+  exportFileBase, agentPalette, renderSessionMarkdown, renderSessionHtml,
+  type ExportEvent,
+} from '../src/lib/sessionExport.ts'
 
 let pass = 0
 let fail = 0
@@ -1040,6 +1049,196 @@ t('diagnostics: sorted by line, then errors before warnings', () => {
 t('diagnostics: summarize counts errors and warnings', () => {
   const s = summarizeDiagnostics([tsDiag(1, 'a'), tsDiag(2, 'b'), tsDiag(3, 'c', 'warning'), aiDiag(4, 'd', 'info')])
   assert.deepEqual(s, { errors: 2, warnings: 1 })
+})
+
+// ---------- tsLsp: applyTextEdits + rename plan (compiler-exact F2) ----------
+t('applyTextEdits: multiple edits land without shifting each other', () => {
+  assert.equal(
+    applyTextEdits('foo(); foo(); foo();', [
+      { start: 0, length: 3, newText: 'barBaz' },
+      { start: 7, length: 3, newText: 'barBaz' },
+      { start: 14, length: 3, newText: 'barBaz' },
+    ]),
+    'barBaz(); barBaz(); barBaz();',
+  )
+})
+t('applyTextEdits: prefix/suffix text (shorthand property) applies as one span', () => {
+  // TS renames `{ a }` by replacing the span of `a` with `a: newName`.
+  assert.equal(
+    applyTextEdits('const o = { a }', [{ start: 12, length: 1, newText: 'a: b' }]),
+    'const o = { a: b }',
+  )
+})
+t('applyTextEdits: unordered input is fine; overlap or out-of-range refuses (null)', () => {
+  assert.equal(
+    applyTextEdits('abcdef', [
+      { start: 4, length: 1, newText: 'Y' },
+      { start: 0, length: 1, newText: 'X' },
+    ]),
+    'XbcdYf',
+  )
+  assert.equal(applyTextEdits('abc', [{ start: 1, length: 5, newText: 'x' }]), null)
+  assert.equal(
+    applyTextEdits('abcdef', [
+      { start: 0, length: 3, newText: 'x' },
+      { start: 2, length: 2, newText: 'y' },
+    ]),
+    null,
+  )
+})
+t('offsetToLine + lineTextAt: CRLF-safe line lookup', () => {
+  const s = 'first\r\nsecond line\r\nthird'
+  const off = s.indexOf('second')
+  assert.equal(offsetToLine(s, off), 2)
+  assert.equal(lineTextAt(s, off), 'second line')
+  assert.equal(offsetToLine(s, 0), 1)
+  assert.equal(lineTextAt(s, s.length - 1), 'third')
+})
+t('isValidIdentifier: identifiers only — the exact-rename path writes files unattended', () => {
+  assert.ok(isValidIdentifier('fooBar_2$'))
+  assert.ok(!isValidIdentifier('foo bar'))
+  assert.ok(!isValidIdentifier('2foo'))
+  assert.ok(!isValidIdentifier('foo-bar'))
+  assert.ok(!isValidIdentifier(''))
+})
+t('rename: toWorkspaceRelative survives Windows separator/case drift', () => {
+  assert.equal(toWorkspaceRelative('D:\\swarmmind', 'd:/swarmmind/src/App.tsx'), 'src/App.tsx')
+  assert.equal(toWorkspaceRelative('/home/u/repo', '/home/u/repo/a/b.ts'), 'a/b.ts')
+  assert.equal(toWorkspaceRelative('D:\\swarmmind', 'D:/elsewhere/x.ts'), null)
+  // real case of the file path is preserved
+  assert.equal(toWorkspaceRelative('d:/repo', 'D:/repo/Src/Foo.TS'), 'Src/Foo.TS')
+})
+t('rename: buildRenamePlan maps files to a Composer plan; any out-of-root file rejects the whole plan', () => {
+  const plan = buildRenamePlan('D:\\repo', 'old', 'shiny', [
+    { path: 'd:/repo/src/a.ts', newContent: 'A', edits: 2 },
+    { path: 'd:/repo/src/b.ts', newContent: 'B', edits: 1 },
+  ])
+  assert.ok(plan)
+  assert.deepEqual(plan!.changes, [
+    { path: 'src/a.ts', action: 'edit', content: 'A' },
+    { path: 'src/b.ts', action: 'edit', content: 'B' },
+  ])
+  assert.ok(plan!.summary.includes('3 occurrences across 2 files'))
+  // one file outside the root → null (a partial rename is worse than none)
+  assert.equal(
+    buildRenamePlan('D:\\repo', 'old', 'shiny', [
+      { path: 'd:/repo/src/a.ts', newContent: 'A', edits: 1 },
+      { path: 'd:/other/b.ts', newContent: 'B', edits: 1 },
+    ]),
+    null,
+  )
+  assert.equal(buildRenamePlan('D:\\repo', 'a', 'b', []), null)
+})
+
+// ---------- sessionExport (Swarm Timeline → shareable report) ----------
+const xe = (over: Partial<ExportEvent>): ExportEvent => ({
+  id: Math.random().toString(36).slice(2),
+  ts: 1_700_000_000_000,
+  type: 'memory_write',
+  agent_id: null,
+  pane_id: null,
+  payload: null,
+  ...over,
+})
+t('sessionExport: escapeHtml neutralizes markup and quotes', () => {
+  assert.equal(escapeHtml(`<img src=x onerror="pwn()">&'`), '&lt;img src=x onerror=&quot;pwn()&quot;&gt;&amp;&#39;')
+})
+t('sessionExport: stats aggregate cost, tasks, files (unique), agents (first-seen order)', () => {
+  const events: ExportEvent[] = [
+    xe({ ts: 1000, type: 'agent_spawn', agent_id: 'codex' }),
+    xe({ ts: 2000, type: 'task_create', agent_id: 'claude', payload: { title: 'a' } }),
+    xe({ ts: 3000, type: 'cost', agent_id: 'claude', payload: { usd: 0.5, tokens: 1200 } }),
+    xe({ ts: 4000, type: 'cost', agent_id: 'codex', payload: { usd: 0.25, tokens: 800 } }),
+    xe({ ts: 5000, type: 'file_changed', payload: { path: 'src/a.ts' } }),
+    xe({ ts: 6000, type: 'file_changed', payload: { path: 'src/a.ts' } }),
+    xe({ ts: 7000, type: 'task_update', agent_id: 'claude', payload: { title: 'a', status: 'done' } }),
+  ]
+  const s = buildSessionStats(events)
+  assert.equal(s.total, 7)
+  assert.equal(s.durationMs, 6000)
+  assert.deepEqual(s.agents, ['codex', 'claude']) // first-seen, never re-sorted
+  assert.equal(s.totalCostUsd, 0.75)
+  assert.equal(s.totalTokens, 2000)
+  assert.deepEqual(s.filesChanged, ['src/a.ts'])
+  assert.equal(s.tasksCreated, 1)
+  assert.equal(s.tasksCompleted, 1)
+})
+t('sessionExport: stats on an empty log are all-zero, no crash', () => {
+  const s = buildSessionStats([])
+  assert.equal(s.total, 0)
+  assert.equal(s.startTs, null)
+  assert.equal(s.durationMs, 0)
+})
+t('sessionExport: malformed payloads never throw', () => {
+  const s = buildSessionStats([
+    xe({ type: 'cost', payload: { usd: 'garbage', tokens: NaN } }),
+    xe({ type: 'file_changed', payload: { path: 42 as unknown as string } }),
+    xe({ type: 'task_update', payload: null }),
+  ])
+  assert.equal(s.totalCostUsd, 0)
+  assert.equal(s.filesChanged.length, 0)
+})
+t('sessionExport: summarizeEvent covers known types and falls back to the raw type', () => {
+  assert.equal(summarizeEvent(xe({ type: 'task_update', payload: { title: 'fix', status: 'done' } })), 'task "fix" → done')
+  assert.equal(summarizeEvent(xe({ type: 'checkpoint', payload: { label: 'pre', trigger: 'composer' } })), 'checkpoint "pre" (composer)')
+  assert.equal(summarizeEvent(xe({ type: 'something_new' })), 'something_new')
+})
+t('sessionExport: formatDuration and compactNumber', () => {
+  assert.equal(formatDuration(45_000), '45s')
+  assert.equal(formatDuration(192_000), '3m 12s')
+  assert.equal(formatDuration(8_040_000), '2h 14m')
+  assert.equal(compactNumber(1284), '1,284')
+  assert.equal(compactNumber(12_900), '12.9K')
+  assert.equal(compactNumber(4_200_000), '4.2M')
+})
+t('sessionExport: exportFileBase is filename-safe', () => {
+  const base = exportFileBase('My Repo / weird:name?', Date.UTC(2026, 6, 14))
+  assert.ok(/^swarm-session-My-Repo-weird-name-\d{4}-\d{2}-\d{2}$/.test(base))
+  assert.ok(!/[\\/:*?"<>|\s]/.test(base))
+})
+t('sessionExport: agentPalette uses brand colours, fixed-order fallback for unknowns', () => {
+  const p = agentPalette(['claude', 'mystery-a', 'mystery-b'])
+  assert.equal(p['claude'], '#c084fc')
+  assert.notEqual(p['mystery-a'], p['mystery-b'])
+  // deterministic: same input, same assignment
+  assert.deepEqual(agentPalette(['claude', 'mystery-a', 'mystery-b']), p)
+})
+t('sessionExport: HTML report is self-contained and escapes payload-derived text', () => {
+  const html = renderSessionHtml(
+    [xe({ ts: 2000, type: 'task_create', agent_id: 'claude', payload: { title: '<script>alert(1)</script>' } })],
+    { workspaceName: 'demo & co', exportedAt: 3000 },
+  )
+  assert.ok(html.startsWith('<!doctype html>'))
+  assert.ok(!html.includes('<script>alert(1)</script>'))
+  assert.ok(html.includes('&lt;script&gt;'))
+  assert.ok(html.includes('demo &amp; co'))
+  // self-contained: no external fetches of any kind
+  assert.ok(!/(src|href)\s*=\s*["']?https?:/i.test(html))
+  assert.ok(!html.includes('@import'))
+})
+t('sessionExport: HTML renders events oldest-first regardless of input order', () => {
+  const html = renderSessionHtml(
+    [
+      xe({ ts: 9000, type: 'agent_exit', agent_id: 'claude', payload: { exitCode: 0 } }),
+      xe({ ts: 1000, type: 'agent_spawn', agent_id: 'claude' }),
+    ],
+    { workspaceName: 'w', exportedAt: 9500 },
+  )
+  assert.ok(html.indexOf('spawned') < html.indexOf('exited'))
+})
+t('sessionExport: markdown digest carries stats, day headers and timeline lines', () => {
+  const md = renderSessionMarkdown(
+    [
+      xe({ ts: Date.UTC(2026, 6, 14, 10, 0, 0), type: 'task_create', agent_id: 'claude', payload: { title: 'build it' } }),
+      xe({ ts: Date.UTC(2026, 6, 14, 11, 0, 0), type: 'task_update', agent_id: 'claude', payload: { title: 'build it', status: 'done' } }),
+    ],
+    { workspaceName: 'demo', exportedAt: Date.UTC(2026, 6, 14, 12, 0, 0) },
+  )
+  assert.ok(md.startsWith('# Swarm session — demo'))
+  assert.ok(md.includes('- **Events:** 2'))
+  assert.ok(md.includes('**Tasks done:** 1/1'))
+  assert.ok(md.includes('**claude** created task "build it"'))
+  assert.ok(/### \d{4}-\d{2}-\d{2}/.test(md))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
