@@ -3,6 +3,7 @@ import { useWorkspaceStore, type EditorTab } from '../store/workspace'
 import { FileExplorer, fileColor } from './FileExplorer'
 import { FileEditor } from './FileEditor'
 import { ImageViewer } from './ImageViewer'
+import { confirmDialog } from './ConfirmDialog'
 import { useT } from '../i18n'
 
 // Open editor tabs live in the store (see EditorTab) so unsaved edits survive
@@ -189,15 +190,22 @@ export function FilePanel() {
   }, [setOpenFiles])
 
   const closeTab = useCallback(
-    (path: string) => {
-      const tabs = useWorkspaceStore.getState().editorTabs
-      const file = tabs.find((f) => f.path === path)
+    async (path: string) => {
+      const file = useWorkspaceStore.getState().editorTabs.find((f) => f.path === path)
       if (!file) return
       if (file.dirty) {
-        const ok = window.confirm(t('file.discardConfirm'))
+        const ok = await confirmDialog({
+          title: file.name,
+          body: t('file.discardConfirm'),
+          confirmLabel: t('common.discard'),
+          danger: true,
+        })
         if (!ok) return
       }
+      // Re-read: the tab list may have changed while the dialog was open.
+      const tabs = useWorkspaceStore.getState().editorTabs
       const idx = tabs.findIndex((f) => f.path === path)
+      if (idx < 0) return
       const next = tabs.filter((f) => f.path !== path)
       setOpenFiles(next)
       if (path === useWorkspaceStore.getState().activeEditorPath) {

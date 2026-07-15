@@ -11,6 +11,7 @@ import {
 import { conductorControls } from '../hooks/useConductor'
 import { SWARM_RECIPES, buildRecipeLayout, type SwarmRecipe } from '../lib/recipes'
 import { AgentIcon } from '../data/agents'
+import { confirmDialog } from './ConfirmDialog'
 import { useT, type TranslationKey } from '../i18n'
 
 const AGENT_LABEL: Record<AgentId, string> = {
@@ -81,12 +82,12 @@ export function OrchestratorBar() {
     return () => window.removeEventListener('click', close)
   }, [recipesOpen])
 
-  const applyRecipe = (recipe: SwarmRecipe) => {
+  const applyRecipe = async (recipe: SwarmRecipe) => {
     const st = useWorkspaceStore.getState()
     if (!st.workspace) return
     // Replacing the layout drops the current panes — confirm if agents are live.
     const anyRunning = collectLeaves(st.rootPane).some(l => l.ptyStatus === 'running')
-    if (anyRunning && !window.confirm(t('recipes.replaceConfirm'))) return
+    if (anyRunning && !(await confirmDialog({ body: t('recipes.replaceConfirm'), danger: true }))) return
     const agentId: AgentId = st.defaultAgentId ?? 'claude'
     const { root, leadPaneId: leadId } = buildRecipeLayout(recipe, agentId, uuidv4)
     st.setLayout(root as PaneGroup)

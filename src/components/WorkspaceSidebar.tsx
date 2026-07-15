@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { confirmDialog } from './ConfirmDialog'
 import { useT } from '../i18n'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -536,68 +537,6 @@ function SectionHeader({ label, count, collapsed, onToggle, dropActive, onDragOv
   )
 }
 
-// ── Delete confirmation dialog ────────────────────────────────────────────────
-
-function ConfirmDeleteDialog({ name, onCancel, onConfirm }: { name: string; onCancel: () => void; onConfirm: () => void }) {
-  const t = useT()
-  const [hoverDelete, setHoverDelete] = useState(false)
-  const [hoverCancel, setHoverCancel] = useState(false)
-  return (
-    <div
-      onClick={onCancel}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 400,
-        background: 'rgba(0,0,0,0.55)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: 340, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
-          borderRadius: 10, padding: 20, boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
-          display: 'flex', flexDirection: 'column', gap: 14,
-        }}
-      >
-        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
-          {t('sidebar.deleteTitle')}
-        </div>
-        <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-          {t('sidebar.deleteBodyPrefix')} <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>&ldquo;{name}&rdquo;</span>{t('sidebar.deleteBodySuffix')}
-        </div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button
-            onClick={onCancel}
-            onMouseEnter={() => setHoverCancel(true)}
-            onMouseLeave={() => setHoverCancel(false)}
-            style={{
-              padding: '7px 14px', fontSize: 13, fontFamily: 'inherit', borderRadius: 6, cursor: 'pointer',
-              border: '1px solid var(--border)',
-              background: hoverCancel ? 'var(--bg-elevated-2)' : 'transparent',
-              color: 'var(--text-secondary)',
-            }}
-          >
-            {t('common.cancel')}
-          </button>
-          <button
-            onClick={onConfirm}
-            onMouseEnter={() => setHoverDelete(true)}
-            onMouseLeave={() => setHoverDelete(false)}
-            style={{
-              padding: '7px 14px', fontSize: 13, fontFamily: 'inherit', fontWeight: 600, borderRadius: 6, cursor: 'pointer',
-              border: '1px solid var(--error)',
-              background: hoverDelete ? 'var(--error)' : 'transparent',
-              color: hoverDelete ? '#fff' : 'var(--error)',
-            }}
-          >
-            {t('common.delete')}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarProps) {
@@ -614,7 +553,6 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
   const [searchQuery, setSearchQuery] = useState('')
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({})
   const [contextMenu, setContextMenu] = useState<{ wsId: string; x: number; y: number } | null>(null)
-  const [pendingDelete, setPendingDelete] = useState<RemoteWorkspace | null>(null)
   const [editRequestId, setEditRequestId] = useState<string | null>(null)
   const [draggedId, setDraggedId] = useState<string | null>(null)
   const [dragOverSection, setDragOverSection] = useState<string | null>(null)
@@ -877,6 +815,23 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
     persistFavorites(favorites.includes(wsId) ? favorites.filter(id => id !== wsId) : [...favorites, wsId])
   }
 
+  // Ask via the shared app-styled dialog, then delete on confirm.
+  const confirmDelete = async (ws: RemoteWorkspace) => {
+    const ok = await confirmDialog({
+      title: t('sidebar.deleteTitle'),
+      body: (
+        <>
+          {t('sidebar.deleteBodyPrefix')}{' '}
+          <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>&ldquo;{ws.name}&rdquo;</span>
+          {t('sidebar.deleteBodySuffix')}
+        </>
+      ),
+      confirmLabel: t('common.delete'),
+      danger: true,
+    })
+    if (ok) await handleDelete(ws.id)
+  }
+
   // Actual deletion — only invoked after the confirmation dialog is accepted.
   const handleDelete = async (wsId: string) => {
     try {
@@ -930,7 +885,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
       onColorPickerToggle={() => setColorPickerWsId(prev => (prev === ws.id ? null : ws.id))}
       onColorPickerClose={() => setColorPickerWsId(null)}
       onColorSelect={color => handleColorChange(ws.id, color)}
-      onDelete={() => setPendingDelete(ws)}
+      onDelete={() => void confirmDelete(ws)}
       onRename={name => handleRename(ws.id, name)}
       onToggleFavorite={() => handleToggleFavorite(ws.id)}
       onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setContextMenu({ wsId: ws.id, x: e.clientX, y: e.clientY }) }}
@@ -1032,16 +987,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
           onRename={() => { setEditRequestId(contextWs.id); setContextMenu(null) }}
           onToggleFavorite={() => { handleToggleFavorite(contextWs.id); setContextMenu(null) }}
           onMoveToGroup={name => handleMoveToGroup(contextWs.id, name)}
-          onDelete={() => { setPendingDelete(contextWs); setContextMenu(null) }}
-        />
-      )}
-
-      {/* Delete confirmation */}
-      {pendingDelete && (
-        <ConfirmDeleteDialog
-          name={pendingDelete.name}
-          onCancel={() => setPendingDelete(null)}
-          onConfirm={() => { handleDelete(pendingDelete.id); setPendingDelete(null) }}
+          onDelete={() => { void confirmDelete(contextWs); setContextMenu(null) }}
         />
       )}
     </aside>

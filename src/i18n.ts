@@ -27,12 +27,15 @@ const en = {
   'common.saving': 'Saving…',
   'common.saved': '✓ Saved',
   'common.cancel': 'Cancel',
+  'common.confirm': 'Confirm',
+  'common.discard': 'Discard',
   'common.close': 'Close',
   'common.apply': 'Apply',
   'common.reset': 'Reset',
   'common.none': 'None',
   'common.optional': '(optional)',
   'common.unsavedChanges': 'Unsaved changes',
+  'confirm.title': 'Please confirm',
 
   // ── TopBar ────────────────────────────────────────────────────────────────
   'topbar.showTerminals': 'Show terminals',
@@ -996,12 +999,15 @@ const de: Record<TranslationKey, string> = {
   'common.saving': 'Speichern…',
   'common.saved': '✓ Gespeichert',
   'common.cancel': 'Abbrechen',
+  'common.confirm': 'Bestätigen',
+  'common.discard': 'Verwerfen',
   'common.close': 'Schließen',
   'common.apply': 'Anwenden',
   'common.reset': 'Zurücksetzen',
   'common.none': 'Keiner',
   'common.optional': '(optional)',
   'common.unsavedChanges': 'Ungespeicherte Änderungen',
+  'confirm.title': 'Bitte bestätigen',
 
   // ── TopBar ────────────────────────────────────────────────────────────────
   'topbar.showTerminals': 'Terminals anzeigen',

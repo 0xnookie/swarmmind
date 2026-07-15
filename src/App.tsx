@@ -26,6 +26,7 @@ import { WorkspaceSetupModal } from './components/WorkspaceSetupModal'
 import { CommandPalette } from './components/CommandPalette'
 import { LoadingOverlay } from './components/LoadingOverlay'
 import { UpdateBanner } from './components/UpdateBanner'
+import { ConfirmDialogHost } from './components/ConfirmDialog'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { useConductor } from './hooks/useConductor'
 import { useLoops } from './hooks/useLoops'
@@ -372,6 +373,7 @@ export default function App() {
       <CommandPalette />
       <UpdateBanner />
       <LoadingOverlay />
+      <ConfirmDialogHost />
     </div>
   )
 }

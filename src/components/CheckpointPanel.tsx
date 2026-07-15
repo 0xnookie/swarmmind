@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { confirmDialog } from './ConfirmDialog'
 import { useT, type TFunction, type TranslationKey } from '../i18n'
 
 const TRIGGER_KEY: Record<string, TranslationKey> = {
@@ -55,9 +56,10 @@ export function CheckpointPanel() {
   }
 
   const restore = async (rec: CheckpointRecord) => {
-    const ok = window.confirm(
-      t('checkpoints.confirm', { label: rec.label, time: relTime(rec.ts, now, t) })
-    )
+    const ok = await confirmDialog({
+      body: t('checkpoints.confirm', { label: rec.label, time: relTime(rec.ts, now, t) }),
+      danger: true,
+    })
     if (!ok) return
     setBusy(rec.id); setError(null)
     const res = await window.swarmmind.checkpointRestore(rec.id)

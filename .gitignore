@@ -11,6 +11,9 @@ public/ort/
 # TypeScript incremental build cache
 *.tsbuildinfo
 
+# Screenshots produced by the Playwright verify scripts (regenerated each run)
+tests/*.png
+
 # Databases (app.db and per-workspace memory.db)
 *.db
 *.db-shm

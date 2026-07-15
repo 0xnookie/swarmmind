@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { confirmDialog } from './ConfirmDialog'
 import { useT, type TranslationKey } from '../i18n'
 
 // ─── Icon helpers ───────────────────────────────────────────────────────────
@@ -492,7 +493,11 @@ function PromptLibrary({ onPromote }: { onPromote: (skill: Skill) => void }) {
   }, [refresh, showFlash, t])
 
   const deleteSkill = useCallback(async (skill: Skill) => {
-    if (!window.confirm(t('skills.confirmDelete', { name: skill.name }))) return
+    if (!(await confirmDialog({
+      body: t('skills.confirmDelete', { name: skill.name }),
+      confirmLabel: t('common.delete'),
+      danger: true,
+    }))) return
     await window.swarmmind.skillDelete(skill.id)
     if (expandedId === skill.id) setExpandedId(null)
     if (editingId === skill.id) setEditingId(null)
@@ -892,7 +897,11 @@ function AgentSkillsPanel({ prefill, onPrefillConsumed }: {
     setEditingSlug(null); await refresh(); showFlash(t('skills.flash.saved'))
   }
   const del = async (skill: AgentSkillInfo) => {
-    if (!window.confirm(t('skills.agent.confirmDelete', { name: skill.name, slug: skill.slug }))) return
+    if (!(await confirmDialog({
+      body: t('skills.agent.confirmDelete', { name: skill.name, slug: skill.slug }),
+      confirmLabel: t('common.delete'),
+      danger: true,
+    }))) return
     await window.swarmmind.agentSkillDelete(rootPath ?? undefined, skill.slug)
     if (expandedSlug === skill.slug) setExpandedSlug(null)
     await refresh()

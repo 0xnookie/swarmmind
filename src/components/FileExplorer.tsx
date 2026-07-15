@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useT } from '../i18n'
 
 interface FileExplorerProps {
@@ -163,6 +163,67 @@ async function loadDir(dirPath: string): Promise<FsEntry[]> {
   return window.swarmmind.fsListDir(dirPath)
 }
 
+function sortEntries(entries: FsEntry[]): FsEntry[] {
+  return [...entries].sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
+    return a.name.localeCompare(b.name)
+  })
+}
+
+// ── Expanded-folder persistence ───────────────────────────────────────────────
+// The explorer unmounts whenever another center view replaces the FilePanel, so
+// which folders are open is remembered per workspace root in localStorage and
+// the tree is rebuilt (with fresh directory listings) on the next mount.
+
+const EXPANDED_KEY_PREFIX = 'swarmmind.fileTreeExpanded:'
+const MAX_REMEMBERED_DIRS = 500
+
+function loadExpanded(rootPath: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_KEY_PREFIX + rootPath)
+    const arr: unknown = raw ? JSON.parse(raw) : []
+    return new Set(Array.isArray(arr) ? arr.filter((p): p is string => typeof p === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function saveExpanded(rootPath: string, expanded: Set<string>): void {
+  try {
+    localStorage.setItem(
+      EXPANDED_KEY_PREFIX + rootPath,
+      JSON.stringify([...expanded].slice(0, MAX_REMEMBERED_DIRS))
+    )
+  } catch {
+    // localStorage full/unavailable — the tree still works, just isn't remembered
+  }
+}
+
+/**
+ * Load a directory and, depth-first, every remembered-expanded directory under
+ * it, returning the flattened row list the explorer renders. Directories that
+ * fail to load (deleted, permissions) are dropped from the remembered set.
+ */
+async function buildNodes(dirPath: string, depth: number, expanded: Set<string>): Promise<TreeNode[]> {
+  const entries = sortEntries(await loadDir(dirPath))
+  const out: TreeNode[] = []
+  for (const e of entries) {
+    const node: TreeNode = { entry: e, children: null, expanded: false, depth }
+    out.push(node)
+    if (e.type === 'dir' && expanded.has(e.path)) {
+      try {
+        const children = await buildNodes(e.path, depth + 1, expanded)
+        node.expanded = true
+        node.children = children
+        out.push(...children)
+      } catch {
+        expanded.delete(e.path)
+      }
+    }
+  }
+  return out
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplorerProps) {
@@ -170,25 +231,24 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
   const [nodes, setNodes] = useState<TreeNode[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // The remembered-expanded set for the current root; mutated by toggle() and
+  // written through to localStorage so a remount restores the open folders.
+  const expandedRef = useRef<Set<string>>(new Set())
 
-  // Load root on mount / rootPath change
+  // Load root on mount / rootPath change, re-expanding remembered folders
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setError(null)
-    loadDir(rootPath)
-      .then((entries) => {
+    const expanded = loadExpanded(rootPath)
+    expandedRef.current = expanded
+    buildNodes(rootPath, 1, expanded)
+      .then((built) => {
         if (cancelled) return
-        const sorted = sortEntries(entries)
-        setNodes(
-          sorted.map((e) => ({
-            entry: e,
-            children: e.type === 'dir' ? null : null,
-            expanded: false,
-            depth: 1,
-          }))
-        )
+        setNodes(built)
         setLoading(false)
+        // buildNodes pruned dirs that no longer load — persist the cleanup.
+        saveExpanded(rootPath, expanded)
       })
       .catch((err) => {
         if (cancelled) return
@@ -200,13 +260,6 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
     }
   }, [rootPath])
 
-  const sortEntries = (entries: FsEntry[]): FsEntry[] => {
-    return [...entries].sort((a, b) => {
-      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
-      return a.name.localeCompare(b.name)
-    })
-  }
-
   const toggle = useCallback(
     async (nodeIndex: number, node: TreeNode) => {
       if (node.entry.type === 'file') {
@@ -217,9 +270,13 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
       // Toggle dir
       if (node.expanded) {
         // Collapse: remove children from flat list
+        expandedRef.current.delete(node.entry.path)
+        saveExpanded(rootPath, expandedRef.current)
         setNodes((prev) => collapseNode(prev, nodeIndex))
       } else {
         // Expand: lazy load if needed
+        expandedRef.current.add(node.entry.path)
+        saveExpanded(rootPath, expandedRef.current)
         if (node.children === null) {
           // Load first
           try {
@@ -240,7 +297,7 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
         }
       }
     },
-    [onFileSelect]
+    [onFileSelect, rootPath]
   )
 
   if (loading) {

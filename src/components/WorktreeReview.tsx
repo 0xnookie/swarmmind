@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useWorkspaceStore, type PaneNode } from '../store/workspace'
 import { UnifiedDiff } from './UnifiedDiff'
+import { confirmDialog } from './ConfirmDialog'
 import { useT } from '../i18n'
 
 // ── Worktree Review ─────────────────────────────────────────────────────────
@@ -110,7 +111,7 @@ export function WorktreeReview() {
   const doMerge = async () => {
     if (!root || !selectedRow) return
     if (selectedStat?.hasUncommitted &&
-        !window.confirm(t('worktree.uncommittedConfirm'))) {
+        !(await confirmDialog({ body: t('worktree.uncommittedConfirm'), confirmLabel: t('worktree.mergeInto', { base }) }))) {
       return
     }
     setBusy(true)
@@ -150,7 +151,11 @@ export function WorktreeReview() {
 
   const doDiscard = async () => {
     if (!root || !selectedRow) return
-    if (!window.confirm(t('worktree.discardConfirm', { branch: selectedRow.branch }))) return
+    if (!(await confirmDialog({
+      body: t('worktree.discardConfirm', { branch: selectedRow.branch }),
+      confirmLabel: t('common.discard'),
+      danger: true,
+    }))) return
     setBusy(true)
     setNotice(null)
     const res = await window.swarmmind.gitRemoveWorktree(root, selectedRow.path, selectedRow.branch, true)
