@@ -6,6 +6,52 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.17.0]
+
+Deeper language intelligence, shareable swarm sessions, a conductor that reacts
+instead of polling — and the last native Windows dialogs are gone.
+
+### Added
+- **Find references — Shift+F12.** Every usage of the symbol under the cursor,
+  across files, in an in-editor drawer with definition/write badges. Click a
+  result to jump straight there. Same zero-setup TypeScript engine as
+  diagnostics and go-to-definition.
+- **Compiler-exact rename — F2.** On TS/JS files, F2 now uses the TypeScript
+  language service's own rename locations — the same edits your IDE would make,
+  never a substring guess — and hands them to the Composer as a ready-made
+  multi-file plan: per-file diffs, optional checkpoint, one-click apply. Other
+  languages keep the AI-assisted grep rename.
+- **Session export.** The Swarm Timeline's new **⬇ Export** button turns a
+  session's event log into a polished, self-contained HTML report (stat tiles,
+  agent legend, day-grouped timeline — opens anywhere, no app needed) or a
+  Markdown digest. Share what the swarm did without screen-sharing the app.
+
+### Changed
+- **The conductor is event-driven now.** Orchestration ticks fire when
+  something actually happens — a task changes, a message lands, a pane goes
+  idle — instead of on a polling loop. Reactions are faster and the app does
+  strictly less background work; a slow heartbeat remains only for the
+  stall/timeout watchdogs. Still zero model tokens: code does the wiring.
+
+### Fixed
+- **The file tree no longer forgets your open folders.** Switching from Code
+  view to any other view and back used to collapse the whole tree. Expanded
+  folders are now remembered per workspace — including across app restarts —
+  and re-opened with fresh directory listings on return.
+- **No more native Windows popups.** Every confirmation — closing an unsaved
+  tab, discarding a worktree, merging with uncommitted changes, applying a
+  recipe over running agents, deleting a skill, restoring a checkpoint,
+  deleting a workspace — now uses one app-styled dialog (with a red confirm
+  button where the action is destructive) instead of the operating system's
+  `window.confirm` box. Esc or clicking outside cancels. Fully translated
+  (EN/DE).
+
+### Notes for contributors
+- New shared `confirmDialog()` in `src/components/ConfirmDialog.tsx` — use it
+  for any future confirmation UI; `window.confirm` should not reappear.
+- Unit tests are up to 194 assertions; `npm run lsp-verify` now also drives
+  Shift+F12 references and an F2 rename to a two-file Composer plan.
+
 ## [0.16.0]
 
 Real language intelligence. The editor now understands your code the way a
