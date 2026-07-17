@@ -11,6 +11,10 @@ import {
   taskGet,
   taskAppendNote,
   taskList,
+  taskClaim,
+  taskRelease,
+  taskEdit,
+  taskDelete,
   messageSend,
   type MemoryType,
   type TaskStatus
@@ -124,13 +128,14 @@ export function registerTools(server: McpServer, getWorkspaceId: () => string | 
       title: z.string().describe('Short task title'),
       description: z.string().optional().describe('Detailed description'),
       assigned_agent: z.string().optional().describe('Which agent to assign (claude|codex|kilo|opencode)'),
-      depends_on: z.array(z.string()).optional().describe('Ids of tasks that must be done before this one can start (the orchestrator enforces this ordering)')
+      depends_on: z.array(z.string()).optional().describe('Ids of tasks that must be done before this one can start (the orchestrator enforces this ordering)'),
+      priority: z.number().optional().describe('Claim/dispatch ordering — higher is picked up first (default 0). Use for urgent work.')
     },
-    async ({ title, description, assigned_agent, depends_on }, extra) => {
+    async ({ title, description, assigned_agent, depends_on, priority }, extra) => {
       const workspaceId = getWorkspaceId()
       if (!workspaceId) return { content: [{ type: 'text', text: 'No workspace open' }], isError: true }
       const createdBy = agentOf(extra) ?? 'agent'
-      const task = taskCreate(workspaceId, title, description ?? null, assigned_agent ?? null, createdBy, depends_on ?? null)
+      const task = taskCreate(workspaceId, title, description ?? null, assigned_agent ?? null, createdBy, depends_on ?? null, priority ?? 0)
       eventEmit(workspaceId, 'task_create', {
         agentId: createdBy,
         payload: { taskId: task.id, title: task.title, assigned_agent: assigned_agent ?? null },
@@ -220,6 +225,108 @@ export function registerTools(server: McpServer, getWorkspaceId: () => string | 
       if (!tasks.length) return { content: [{ type: 'text', text: 'No tasks found' }] }
       const lines = tasks.map(t => `[${t.status}] ${t.id.slice(0, 8)} ${t.title}${t.assigned_agent ? ` → @${t.assigned_agent}` : ''}`)
       return { content: [{ type: 'text', text: lines.join('\n') }] }
+    }
+  )
+
+  server.tool(
+    'task_claim',
+    'Atomically check out the next available task for yourself (paperclip-style lock). Picks the highest-priority, then oldest, `pending` task whose dependencies are all done and that is unassigned or already assigned to you — flips it to in_progress under your name so no other agent can grab it. Pass task_id to claim a specific one. Prefer this over task_update for pulling work: it is race-safe.',
+    {
+      agent_id: z.string().optional().describe('Your agent id (defaults to the calling agent). The task is locked to this agent.'),
+      task_id: z.string().optional().describe('Claim this specific task instead of auto-picking the next available one')
+    },
+    async ({ agent_id, task_id }, extra) => {
+      const workspaceId = getWorkspaceId()
+      if (!workspaceId) return { content: [{ type: 'text', text: 'No workspace open' }], isError: true }
+      const who = agent_id ?? agentOf(extra) ?? 'agent'
+      const task = taskClaim(workspaceId, who, task_id ? { taskId: task_id } : {})
+      if (!task) return { content: [{ type: 'text', text: task_id ? `Task ${task_id} is not available to claim (not pending, blocked by dependencies, or held by another agent)` : 'No task available to claim' }] }
+      eventEmit(workspaceId, 'task_claim', {
+        agentId: who,
+        payload: { taskId: task.id, title: task.title },
+      })
+      const lines = [
+        `Claimed task ${task.id}: "${task.title}"`,
+        task.description ? `\ndescription:\n${task.description}` : null,
+        task.notes ? `\nnotes:\n${task.notes}` : null,
+      ].filter(Boolean)
+      return { content: [{ type: 'text', text: lines.join('\n') }] }
+    }
+  )
+
+  server.tool(
+    'task_release',
+    'Release a task you claimed back to the pool (status → pending, assignment cleared) so another agent can pick it up. Use this if you cannot finish the work. You can only release a task assigned to you.',
+    {
+      id: z.string().describe('Task ID to release'),
+      agent_id: z.string().optional().describe('Your agent id (must match the current assignee)'),
+      reason: z.string().optional().describe('Why you are releasing it (recorded as a task note)')
+    },
+    async ({ id, agent_id, reason }, extra) => {
+      const workspaceId = getWorkspaceId()
+      if (!workspaceId) return { content: [{ type: 'text', text: 'No workspace open' }], isError: true }
+      const who = agent_id ?? agentOf(extra) ?? 'agent'
+      const task = taskRelease(id, who, reason)
+      if (!task) return { content: [{ type: 'text', text: `Cannot release task ${id} (not found, or held by another agent)` }], isError: true }
+      eventEmit(workspaceId, 'task_release', {
+        agentId: who,
+        payload: { taskId: id, title: task.title, reason: reason ?? null },
+      })
+      return { content: [{ type: 'text', text: `Released task ${id} → pending` }] }
+    }
+  )
+
+  server.tool(
+    'task_edit',
+    'Edit a task\'s fields without changing its status: title, description, assignee, dependencies, or priority. Use task_update for status changes and task_claim to pick up work. Only the fields you pass are changed.',
+    {
+      id: z.string().describe('Task ID'),
+      title: z.string().optional().describe('New title'),
+      description: z.string().optional().describe('New description'),
+      assigned_agent: z.string().optional().describe('Reassign to this agent (empty string to unassign)'),
+      depends_on: z.array(z.string()).optional().describe('Replace the prerequisite task ids (empty array clears them)'),
+      priority: z.number().optional().describe('New priority — higher is claimed/dispatched first')
+    },
+    async ({ id, title, description, assigned_agent, depends_on, priority }, extra) => {
+      const workspaceId = getWorkspaceId()
+      if (!workspaceId) return { content: [{ type: 'text', text: 'No workspace open' }], isError: true }
+      const existing = taskGet(id)
+      if (!existing || existing.workspace_id !== workspaceId) return { content: [{ type: 'text', text: `Task ${id} not found` }], isError: true }
+      const task = taskEdit(id, {
+        ...(title !== undefined ? { title } : {}),
+        ...(description !== undefined ? { description } : {}),
+        ...(assigned_agent !== undefined ? { assigned_agent: assigned_agent === '' ? null : assigned_agent } : {}),
+        ...(depends_on !== undefined ? { depends_on } : {}),
+        ...(priority !== undefined ? { priority } : {}),
+      })
+      if (!task) return { content: [{ type: 'text', text: `Task ${id} not found` }], isError: true }
+      eventEmit(workspaceId, 'task_edit', {
+        agentId: agentOf(extra),
+        payload: { taskId: id, title: task.title },
+      })
+      return { content: [{ type: 'text', text: `Edited task ${id}` }] }
+    }
+  )
+
+  server.tool(
+    'task_delete',
+    'Delete a task from the board. Its id is also removed from any other task\'s dependencies so nothing stays blocked on a task that no longer exists. Use sparingly — prefer task_update to \'done\'/\'failed\' to preserve history.',
+    {
+      id: z.string().describe('Task ID to delete')
+    },
+    async ({ id }, extra) => {
+      const workspaceId = getWorkspaceId()
+      if (!workspaceId) return { content: [{ type: 'text', text: 'No workspace open' }], isError: true }
+      const existing = taskGet(id)
+      if (!existing || existing.workspace_id !== workspaceId) return { content: [{ type: 'text', text: `Task ${id} not found` }], isError: true }
+      const title = existing.title
+      const ok = taskDelete(id)
+      if (!ok) return { content: [{ type: 'text', text: `Task ${id} not found` }], isError: true }
+      eventEmit(workspaceId, 'task_delete', {
+        agentId: agentOf(extra),
+        payload: { taskId: id, title },
+      })
+      return { content: [{ type: 'text', text: `Deleted task ${id}` }] }
     }
   )
 

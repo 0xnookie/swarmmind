@@ -67,6 +67,10 @@ export function summarizeEvent(ev: ExportEvent): string {
     case 'task_create':    return `created task "${str(d, 'title')}"` + (d?.assigned_agent ? ` → @${str(d, 'assigned_agent')}` : '')
     case 'task_update':    return `task "${str(d, 'title')}" → ${str(d, 'status')}`
     case 'task_note':      return `noted progress on "${str(d, 'title')}"`
+    case 'task_claim':     return `claimed task "${str(d, 'title')}"`
+    case 'task_release':   return `released task "${str(d, 'title')}"`
+    case 'task_edit':      return `edited task "${str(d, 'title')}"`
+    case 'task_delete':    return `deleted task "${str(d, 'title')}"`
     case 'message':        return `message ${str(d, 'from')} → ${str(d, 'to')}: ${str(d, 'body', '').slice(0, 120)}`
     case 'agent_spawn':    return d?.resume ? 'resumed session' : 'spawned'
     case 'agent_exit':     return d?.exitCode !== undefined ? `exited (code ${str(d, 'exitCode')})` : 'exited'

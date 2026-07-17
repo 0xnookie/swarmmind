@@ -23,6 +23,10 @@ const TYPE_META: Record<string, { glyph: string; labelKey: TranslationKey }> = {
   task_create:    { glyph: '＋', labelKey: 'timeline.type.task' },
   task_update:    { glyph: '↻', labelKey: 'timeline.type.task' },
   task_note:      { glyph: '✎', labelKey: 'timeline.type.note' },
+  task_claim:     { glyph: '🔗', labelKey: 'timeline.type.task' },
+  task_release:   { glyph: '↩', labelKey: 'timeline.type.task' },
+  task_edit:      { glyph: '✐', labelKey: 'timeline.type.task' },
+  task_delete:    { glyph: '🗑', labelKey: 'timeline.type.task' },
   message:        { glyph: '✉', labelKey: 'timeline.type.message' },
   agent_spawn:    { glyph: '⏻', labelKey: 'timeline.type.spawn' },
   agent_exit:     { glyph: '⏹', labelKey: 'timeline.type.exit' },
@@ -48,6 +52,10 @@ function summarize(ev: SwarmEvent, t: TFunction): string {
     case 'task_create':    return t('timeline.sum.taskCreate', { title: s('title') }) + (d.assigned_agent ? ` → @${s('assigned_agent')}` : '')
     case 'task_update':    return t('timeline.sum.taskUpdate', { title: s('title'), status: s('status') })
     case 'task_note':      return t('timeline.sum.taskNote', { title: s('title') })
+    case 'task_claim':     return t('timeline.sum.taskClaim', { title: s('title') })
+    case 'task_release':   return t('timeline.sum.taskRelease', { title: s('title') })
+    case 'task_edit':      return t('timeline.sum.taskEdit', { title: s('title') })
+    case 'task_delete':    return t('timeline.sum.taskDelete', { title: s('title') })
     case 'message':        return t('timeline.sum.message', { from: s('from'), to: s('to'), body: s('body', '').slice(0, 80) })
     case 'agent_spawn':    return d.resume ? t('timeline.sum.spawnResumed') : t('timeline.sum.spawned')
     case 'agent_exit':     return d.exitCode !== undefined ? t('timeline.sum.exitedCode', { code: s('exitCode') }) : t('timeline.sum.exited')

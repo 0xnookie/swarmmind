@@ -14,6 +14,8 @@ export interface KanbanTask {
   assigned_agent: string | null
   // Comma-separated ids of prerequisite tasks (see memory/queries.ts Task).
   depends_on: string | null
+  // Claim/dispatch ordering — higher is picked up first (see memory/queries.ts).
+  priority: number
   created_by: string
   created_at: number
   updated_at: number
@@ -174,6 +176,12 @@ export function KanbanBoard() {
   const handleAppendNote = async (id: string, note: string) => {
     await window.swarmmind.taskAppendNote(id, note)
     setNoteInput(null)
+    onRefresh()
+  }
+
+  const handlePriority = async (task: KanbanTask, delta: number) => {
+    const next = (task.priority ?? 0) + delta
+    await window.swarmmind.taskEdit(task.id, { priority: next })
     onRefresh()
   }
 
@@ -383,6 +391,16 @@ export function KanbanBoard() {
                         onClick={() => setExpandedTask(isExpanded ? null : task.id)}
                       >
                         <span style={styles.cardTitle}>{task.title}</span>
+                        {(task.priority ?? 0) !== 0 && (
+                          <span style={styles.priorityChip} title={t('kanban.priority', { n: task.priority })}>
+                            ★ {task.priority}
+                          </span>
+                        )}
+                        {task.status === 'in_progress' && task.assigned_agent && (
+                          <span style={styles.claimedChip} title={t('kanban.claimed', { agent: agent?.label ?? task.assigned_agent })}>
+                            🔗
+                          </span>
+                        )}
                         {blocked && (
                           <span style={styles.blockedChip} title={t('kanban.dependsOn')}>
                             🔒 {t('kanban.blocked', { n: unmet })}
@@ -401,6 +419,25 @@ export function KanbanBoard() {
                           {task.description && (
                             <p style={styles.cardDesc}>{task.description}</p>
                           )}
+
+                          {/* Priority stepper — sets claim/dispatch order (paperclip). */}
+                          <div style={styles.priorityRow}>
+                            <span style={styles.notesLabel}>{t('kanban.priority', { n: task.priority ?? 0 })}</span>
+                            <button
+                              style={styles.priorityBtn}
+                              title={t('kanban.lowerPriority')}
+                              onClick={() => handlePriority(task, -1)}
+                            >
+                              ▼
+                            </button>
+                            <button
+                              style={styles.priorityBtn}
+                              title={t('kanban.raisePriority')}
+                              onClick={() => handlePriority(task, 1)}
+                            >
+                              ▲
+                            </button>
+                          </div>
 
                           {/* Dependencies — what this task waits on before dispatch */}
                           {deps.length > 0 && (
@@ -837,6 +874,36 @@ const styles: Record<string, React.CSSProperties> = {
   cardBlocked: {
     borderColor: 'var(--warning)',
     borderStyle: 'dashed'
+  },
+  priorityChip: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: 'var(--accent)',
+    background: 'var(--bg-base)',
+    border: '1px solid var(--accent)',
+    borderRadius: 10,
+    padding: '2px 7px',
+    whiteSpace: 'nowrap'
+  },
+  claimedChip: {
+    fontSize: 11,
+    whiteSpace: 'nowrap',
+    opacity: 0.9
+  },
+  priorityRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6
+  },
+  priorityBtn: {
+    background: 'var(--bg-base)',
+    border: '1px solid var(--border-mid)',
+    borderRadius: 'var(--radius)',
+    color: 'var(--text-secondary)',
+    padding: '2px 8px',
+    cursor: 'pointer',
+    fontSize: 11,
+    lineHeight: 1.2
   },
   blockedChip: {
     fontSize: 11,

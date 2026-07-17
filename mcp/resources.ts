@@ -21,7 +21,12 @@ export function registerResources(server: McpServer, getWorkspaceId: () => strin
       const workspaceId = getWorkspaceId()
       if (!workspaceId) return { contents: [{ uri: 'swarmmind://task_list', text: 'No workspace open', mimeType: 'text/plain' }] }
       const tasks = taskList(workspaceId)
-      const text = tasks.map(t => `[${t.status}] ${t.id.slice(0, 8)} — ${t.title}${t.description ? `\n  ${t.description}` : ''}${t.assigned_agent ? `\n  → @${t.assigned_agent}` : ''}`).join('\n\n')
+      const text = tasks.map(t => {
+        const prio = (t.priority ?? 0) !== 0 ? ` ★${t.priority}` : ''
+        const assignee = t.assigned_agent ? `\n  → @${t.assigned_agent}` : ''
+        const deps = t.depends_on ? `\n  depends_on: ${t.depends_on}` : ''
+        return `[${t.status}]${prio} ${t.id.slice(0, 8)} — ${t.title}${t.description ? `\n  ${t.description}` : ''}${assignee}${deps}`
+      }).join('\n\n')
       return { contents: [{ uri: 'swarmmind://task_list', text: text || '(no tasks)', mimeType: 'text/plain' }] }
     }
   )

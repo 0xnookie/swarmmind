@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { basename } from 'path'
 import { getAppDb, getWorkspaceDb } from './db'
+import { selectClaimable, doneIdSet, type ClaimOptions } from '../electron/lib/taskBoard'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,8 @@ export interface Task {
   // Comma-separated ids of prerequisite tasks; the orchestrator only dispatches
   // a task once all of these are `done`. Null/empty = no dependencies.
   depends_on: string | null
+  // Claim ordering: higher priority is checked out first, then FIFO. Default 0.
+  priority: number
   created_by: string
   created_at: number
   updated_at: number
@@ -232,16 +235,17 @@ export function taskCreate(
   description: string | null,
   assignedAgent: string | null,
   createdBy: string,
-  dependsOn: string[] | null = null
+  dependsOn: string[] | null = null,
+  priority = 0
 ): Task {
   const db = getWorkspaceDb()
   const now = Date.now()
   const id = uuidv4()
   const deps = dependsOn && dependsOn.length ? dependsOn.join(',') : null
   db.prepare(
-    'INSERT INTO tasks (id, workspace_id, title, description, notes, status, assigned_agent, depends_on, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)'
-  ).run(id, workspaceId, title, description, 'pending', assignedAgent, deps, createdBy, now, now)
-  return { id, workspace_id: workspaceId, title, description, notes: null, status: 'pending', assigned_agent: assignedAgent, depends_on: deps, created_by: createdBy, created_at: now, updated_at: now }
+    'INSERT INTO tasks (id, workspace_id, title, description, notes, status, assigned_agent, depends_on, priority, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(id, workspaceId, title, description, 'pending', assignedAgent, deps, priority, createdBy, now, now)
+  return { id, workspace_id: workspaceId, title, description, notes: null, status: 'pending', assigned_agent: assignedAgent, depends_on: deps, priority, created_by: createdBy, created_at: now, updated_at: now }
 }
 
 export function taskUpdate(id: string, status: TaskStatus, assignedAgent?: string | null, notes?: string): Task | null {
@@ -299,6 +303,79 @@ export function taskList(workspaceId: string, status?: TaskStatus, assignedAgent
   return db.prepare(
     'SELECT * FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC'
   ).all(workspaceId) as Task[]
+}
+
+// ── Atomic task checkout ("claim") ────────────────────────────────────────────
+// paperclip's signature "checkout lock": an agent atomically grabs the next
+// available task so no two agents work the same one. The whole select-then-flip
+// happens in one better-sqlite3 transaction — SQLite serialises writers, so the
+// selection a competing claim sees already reflects this one's assignment. The
+// eligibility/ordering policy is the pure, unit-tested `selectClaimable`; this
+// wrapper only reads the candidate set and commits the winner.
+//
+// On success the task is flipped to assigned_agent = agentId, status =
+// 'in_progress' (the pull-model counterpart to the conductor's push-model
+// dispatch, which lands at the same place). Returns the claimed Task, or null
+// when nothing is available.
+export function taskClaim(workspaceId: string, agentId: string, opts: ClaimOptions = {}): Task | null {
+  const db = getWorkspaceDb()
+  const now = Date.now()
+  const claimTx = db.transaction((): Task | null => {
+    const tasks = db.prepare('SELECT * FROM tasks WHERE workspace_id = ?').all(workspaceId) as Task[]
+    const pick = selectClaimable(tasks, agentId, doneIdSet(tasks), opts)
+    if (!pick) return null
+    const full = tasks.find(x => x.id === pick.id)!
+    db.prepare('UPDATE tasks SET status = ?, assigned_agent = ?, updated_at = ? WHERE id = ?')
+      .run('in_progress', agentId, now, full.id)
+    return { ...full, status: 'in_progress', assigned_agent: agentId, updated_at: now }
+  })
+  return claimTx()
+}
+
+// Release a claimed task back to the pool: status → pending, assignment cleared,
+// with a note for the audit trail. Only the holder (or an unheld task) can
+// release it, so one agent can't yank another's in-flight work. Returns the
+// updated Task, or null if not found / held by someone else.
+export function taskRelease(id: string, agentId: string, reason?: string): Task | null {
+  const db = getWorkspaceDb()
+  const now = Date.now()
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Task | undefined
+  if (!task) return null
+  if (task.assigned_agent && task.assigned_agent !== agentId) return null
+  const note = `[${new Date(now).toISOString()}] released by ${agentId}${reason ? `: ${reason}` : ''}`
+  const newNotes = task.notes ? `${task.notes}\n---\n${note}` : note
+  db.prepare('UPDATE tasks SET status = ?, assigned_agent = NULL, notes = ?, updated_at = ? WHERE id = ?')
+    .run('pending', newNotes, now, id)
+  return { ...task, status: 'pending', assigned_agent: null, notes: newNotes, updated_at: now }
+}
+
+// Partial field edit — the board-mutation counterpart to taskUpdate (which is
+// status-centric). Any subset of {title, description, assigned_agent, depends_on,
+// priority} may be given; undefined fields are left untouched. depends_on is a
+// clean array (stored comma-joined). Returns the updated Task, or null if absent.
+export interface TaskEditFields {
+  title?: string
+  description?: string | null
+  assigned_agent?: string | null
+  depends_on?: string[] | null
+  priority?: number
+}
+
+export function taskEdit(id: string, fields: TaskEditFields): Task | null {
+  const db = getWorkspaceDb()
+  const now = Date.now()
+  const task = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as Task | undefined
+  if (!task) return null
+  const title = fields.title !== undefined ? fields.title : task.title
+  const description = fields.description !== undefined ? fields.description : task.description
+  const assigned = fields.assigned_agent !== undefined ? fields.assigned_agent : task.assigned_agent
+  const deps = fields.depends_on !== undefined
+    ? (fields.depends_on && fields.depends_on.length ? fields.depends_on.join(',') : null)
+    : task.depends_on
+  const priority = fields.priority !== undefined ? fields.priority : task.priority
+  db.prepare('UPDATE tasks SET title = ?, description = ?, assigned_agent = ?, depends_on = ?, priority = ?, updated_at = ? WHERE id = ?')
+    .run(title, description, assigned, deps, priority, now, id)
+  return { ...task, title, description, assigned_agent: assigned, depends_on: deps, priority, updated_at: now }
 }
 
 // ── Agent-to-agent messages ─────────────────────────────────────────────────

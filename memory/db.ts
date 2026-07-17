@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   notes          TEXT,
   status         TEXT NOT NULL CHECK(status IN ('pending','in_progress','needs_review','done','failed')),
   assigned_agent TEXT,
+  priority       INTEGER NOT NULL DEFAULT 0,
   created_by     TEXT NOT NULL,
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL
@@ -327,6 +328,11 @@ function applyWorkspaceSchema(workspaceDb: Database.Database): void {
     ['id', 'workspace_id', 'title', 'description', 'notes', 'status', 'assigned_agent', 'depends_on', 'created_by', 'created_at', 'updated_at'],
     ['CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id);',
      'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(workspace_id, status);'])
+  // Migration: priority (higher = claimed first) for paperclip-style task
+  // checkout ordering. Added LAST so the recreations above (needs_review rebuild,
+  // FK strip) can't drop it — those run at most once, before priority ever holds
+  // data, so no values are lost. Absent on older DBs.
+  try { workspaceDb.exec('ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
   stripWorkspaceFk(workspaceDb, 'agent_configs',
     `CREATE TABLE IF NOT EXISTS agent_configs (
       workspace_id TEXT NOT NULL,

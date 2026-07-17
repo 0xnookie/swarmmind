@@ -23,6 +23,7 @@ import { tokenize, rankDocs, cosineSim, rankByEmbedding, fuseRankings, dedupeByP
 import { chunkText } from '../src/lib/chunk.ts'
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
 import { stripCodeFences, extractJsonObject } from '../electron/lib/aiParse.ts'
+import { selectClaimable, isClaimable, doneIdSet, type ClaimableTask } from '../electron/lib/taskBoard.ts'
 import {
   severityOf, flattenMessage, displayPartsToText, formatHover, isTsLike, samePath, chooseProject,
   applyTextEdits, offsetToLine, lineTextAt, isValidIdentifier,
@@ -1252,6 +1253,77 @@ t('sessionExport: markdown digest carries stats, day headers and timeline lines'
   assert.ok(md.includes('**Tasks done:** 1/1'))
   assert.ok(md.includes('**claude** created task "build it"'))
   assert.ok(/### \d{4}-\d{2}-\d{2}/.test(md))
+})
+
+// ---------- taskBoard (paperclip-style atomic claim selection) ----------
+const mkClaimTask = (o: Partial<ClaimableTask> & { id: string }): ClaimableTask => ({
+  status: 'pending', assigned_agent: null, depends_on: null, priority: 0, created_at: 1000, ...o,
+})
+t('taskBoard: claims the only pending task', () => {
+  const tasks = [mkClaimTask({ id: 'a' })]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks))?.id, 'a')
+})
+t('taskBoard: skips in_progress / done / needs_review / failed', () => {
+  const tasks = [
+    mkClaimTask({ id: 'a', status: 'in_progress' }),
+    mkClaimTask({ id: 'b', status: 'done' }),
+    mkClaimTask({ id: 'c', status: 'needs_review' }),
+    mkClaimTask({ id: 'd', status: 'failed' }),
+  ]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks)), null)
+})
+t('taskBoard: does not claim a task assigned to another agent', () => {
+  const tasks = [mkClaimTask({ id: 'a', assigned_agent: 'codex' })]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks)), null)
+})
+t('taskBoard: can claim a task pre-assigned to itself', () => {
+  const tasks = [mkClaimTask({ id: 'a', assigned_agent: 'claude' })]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks))?.id, 'a')
+})
+t('taskBoard: blocked task (unmet dependency) is not claimable', () => {
+  const tasks = [
+    mkClaimTask({ id: 'dep', status: 'pending' }),
+    mkClaimTask({ id: 'a', depends_on: 'dep' }),
+  ]
+  // only unblocked candidate is the dependency itself
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks))?.id, 'dep')
+})
+t('taskBoard: task becomes claimable once its dependency is done', () => {
+  const tasks = [
+    mkClaimTask({ id: 'dep', status: 'done' }),
+    mkClaimTask({ id: 'a', depends_on: 'dep' }),
+  ]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks))?.id, 'a')
+})
+t('taskBoard: higher priority wins over older FIFO', () => {
+  const tasks = [
+    mkClaimTask({ id: 'old', priority: 0, created_at: 100 }),
+    mkClaimTask({ id: 'urgent', priority: 5, created_at: 200 }),
+  ]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks))?.id, 'urgent')
+})
+t('taskBoard: equal priority falls back to FIFO (oldest first)', () => {
+  const tasks = [
+    mkClaimTask({ id: 'newer', priority: 1, created_at: 300 }),
+    mkClaimTask({ id: 'older', priority: 1, created_at: 100 }),
+  ]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks))?.id, 'older')
+})
+t('taskBoard: targeted claim returns the named task when eligible', () => {
+  const tasks = [mkClaimTask({ id: 'a' }), mkClaimTask({ id: 'b', priority: 9 })]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks), { taskId: 'a' })?.id, 'a')
+})
+t('taskBoard: targeted claim returns null when that task is ineligible', () => {
+  const tasks = [mkClaimTask({ id: 'a', status: 'in_progress' })]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks), { taskId: 'a' }), null)
+})
+t('taskBoard: targeted claim of a missing id is null', () => {
+  const tasks = [mkClaimTask({ id: 'a' })]
+  assert.equal(selectClaimable(tasks, 'claude', doneIdSet(tasks), { taskId: 'nope' }), null)
+})
+t('taskBoard: isClaimable matches the selection rules', () => {
+  assert.equal(isClaimable(mkClaimTask({ id: 'a' }), 'claude', new Set()), true)
+  assert.equal(isClaimable(mkClaimTask({ id: 'a', assigned_agent: 'codex' }), 'claude', new Set()), false)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

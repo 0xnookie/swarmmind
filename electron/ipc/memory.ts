@@ -10,6 +10,10 @@ import {
   taskAppendNote,
   taskDelete,
   taskList,
+  taskClaim,
+  taskRelease,
+  taskEdit,
+  type TaskEditFields,
   messagesUndelivered,
   messageMarkDelivered,
   saveLayout,
@@ -78,6 +82,20 @@ export function registerMemoryHandlers(getWorkspaceId: () => string | null): voi
 
   ipcMain.handle('task:delete', (_event, id: string) => {
     return taskDelete(id)
+  })
+
+  ipcMain.handle('task:claim', (_event, agentId: string, taskId?: string) => {
+    const wsId = getWorkspaceId()
+    if (!wsId) return null
+    return taskClaim(wsId, agentId, taskId ? { taskId } : {})
+  })
+
+  ipcMain.handle('task:release', (_event, id: string, agentId: string, reason?: string) => {
+    return taskRelease(id, agentId, reason)
+  })
+
+  ipcMain.handle('task:edit', (_event, id: string, fields: TaskEditFields) => {
+    return taskEdit(id, fields)
   })
 
   ipcMain.handle('messages:undelivered', () => {

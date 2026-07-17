@@ -48,6 +48,14 @@ declare global {
       taskUpdate: (id: string, status: string, assignedAgent?: string, notes?: string) => Promise<unknown>
       taskAppendNote: (id: string, note: string) => Promise<unknown>
       taskDelete: (id: string) => Promise<boolean>
+      // paperclip-style atomic checkout: claim the next available task (or a
+      // named one) for `agentId`; returns the claimed task or null.
+      taskClaim: (agentId: string, taskId?: string) => Promise<unknown>
+      taskRelease: (id: string, agentId: string, reason?: string) => Promise<unknown>
+      taskEdit: (id: string, fields: {
+        title?: string; description?: string | null; assigned_agent?: string | null
+        depends_on?: string[] | null; priority?: number
+      }) => Promise<unknown>
       // Agent-to-agent messages (delivery driven by the conductor)
       messagesUndelivered: () => Promise<AgentMessage[]>
       messageMarkDelivered: (id: string) => Promise<void>
@@ -302,6 +310,10 @@ declare global {
     | 'task_create'
     | 'task_update'
     | 'task_note'
+    | 'task_claim'
+    | 'task_release'
+    | 'task_edit'
+    | 'task_delete'
     | 'message'
     | 'agent_spawn'
     | 'agent_exit'

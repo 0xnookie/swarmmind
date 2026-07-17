@@ -6,6 +6,34 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.18.0]
+
+Agents can now run the board themselves. A paperclip-inspired **atomic task
+checkout** lets a worker pull the next available task without two agents ever
+grabbing the same one, plus a full set of board-mutation tools.
+
+### Added
+- **Atomic task claim (`task_claim`).** An agent atomically checks out the next
+  available task — highest priority, then oldest, with all dependencies done and
+  either unassigned or already its own — and it's locked to that agent as
+  in-progress so no one else can take it. The select-and-lock happens in a single
+  database transaction, so the checkout is race-safe by construction. Pass a
+  task id to claim a specific one.
+- **Board-mutation tools for agents.** `task_release` hands a claimed task back
+  to the pool (only the holder can), `task_edit` changes a task's title,
+  description, assignee, dependencies or priority without touching its status,
+  and `task_delete` removes a task and cleans it out of any other task's
+  dependencies. `task_create` gained a **priority** argument.
+- **Task priority.** Tasks now carry a priority (higher is claimed and
+  dispatched first, ties broken oldest-first). Set it from the Kanban card's new
+  ★ stepper, or let agents set it themselves. Claimed tasks show a 🔗 badge.
+
+### Changed
+- **The board is a first-class part of the swarm log.** Claims, releases, edits
+  and deletes appear on the Swarm Timeline and in session exports, and the
+  event-driven conductor reacts to them — so a released or re-prioritised task is
+  re-dispatched right away. Still zero model tokens.
+
 ## [0.17.0]
 
 Deeper language intelligence, shareable swarm sessions, a conductor that reacts
