@@ -65,6 +65,15 @@ function IconPanelRight() {
   )
 }
 
+function IconPanelLeft() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <path d="M9 3v18" />
+    </svg>
+  )
+}
+
 function IconGlobe() {
   return (
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -173,6 +182,19 @@ function IconLoop() {
       <path d="M3 11V9a4 4 0 0 1 4-4h14" />
       <path d="M7 21.9 3 18l4-3.9" />
       <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+    </svg>
+  )
+}
+
+function IconCanvas() {
+  // A creative board — a rounded frame with two overlapping shapes (circle +
+  // square) breaking its edge, reading as a free-form design canvas. Distinct
+  // from grid/bars/nodes/layers used elsewhere in the bar.
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="18" height="18" rx="4" />
+      <circle cx="9" cy="9" r="2.6" />
+      <path d="M13.5 13.5h4.2a1 1 0 0 1 1 1v4.2a1 1 0 0 1-1 1h-4.2a1 1 0 0 1-1-1v-4.2a1 1 0 0 1 1-1z" />
     </svg>
   )
 }
@@ -315,6 +337,10 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const workspace = useWorkspaceStore(s => s.workspace)
   const openSettings = useWorkspaceStore(s => s.openSettings)
   const showTerminals = useWorkspaceStore(s => s.showTerminals)
+  // Left workspace sidebar (WorkspaceSidebar). `kanbanOpen`/`toggleKanban` is a
+  // legacy name — it controls the workspace list, not the Kanban board.
+  const kanbanOpen = useWorkspaceStore(s => s.kanbanOpen)
+  const toggleKanban = useWorkspaceStore(s => s.toggleKanban)
   const filePanelOpen = useWorkspaceStore(s => s.filePanelOpen)
   const toggleFilePanel = useWorkspaceStore(s => s.toggleFilePanel)
   // Unsaved editor tabs — badge the code button so the user knows they have
@@ -342,6 +368,8 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const benchmarksOpen = useWorkspaceStore(s => s.benchmarksOpen)
   const toggleSwarmAgent = useWorkspaceStore(s => s.toggleSwarmAgent)
   const swarmAgentOpen = useWorkspaceStore(s => s.swarmAgentOpen)
+  const toggleCanvas = useWorkspaceStore(s => s.toggleCanvas)
+  const canvasOpen = useWorkspaceStore(s => s.canvasOpen)
   const toggleLoops = useWorkspaceStore(s => s.toggleLoops)
   const loopsOpen = useWorkspaceStore(s => s.loopsOpen)
   const runningLoops = useWorkspaceStore(s => s.loops.filter(l => l.enabled).length + s.cliLoops.length)
@@ -389,12 +417,19 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
         userSelect: 'none',
       }}
     >
+      {/* Workspace sidebar toggle */}
+      <div style={{ display: 'flex', alignItems: 'center', marginLeft: 8, WebkitAppRegion: 'no-drag' }}>
+        <IconBtn label={t('topbar.toggleSidebar')} onClick={toggleKanban} active={kanbanOpen}>
+          <IconPanelLeft />
+        </IconBtn>
+      </div>
+
       {/* Brand + workspace */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
-          marginLeft: 16,
+          marginLeft: 8,
           gap: 0,
         }}
       >
@@ -464,6 +499,10 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
       >
         <IconBtn label={t('topbar.showTerminals')} onClick={showTerminals} active={terminalsVisible}>
           <IconGrid />
+        </IconBtn>
+
+        <IconBtn label={t('topbar.canvas')} onClick={toggleCanvas} active={canvasOpen}>
+          <IconCanvas />
         </IconBtn>
 
         <IconBtn label={t('topbar.codeView')} onClick={toggleFilePanel} active={filePanelOpen}>

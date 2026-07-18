@@ -21,6 +21,7 @@ const CheckpointPanel = lazy(() => import('./components/CheckpointPanel').then((
 const BenchmarksPanel = lazy(() => import('./components/BenchmarksPanel').then((m) => ({ default: m.BenchmarksPanel })))
 const SwarmAgentChat = lazy(() => import('./components/SwarmAgentChat').then((m) => ({ default: m.SwarmAgentChat })))
 const LoopsPanel = lazy(() => import('./components/LoopsPanel').then((m) => ({ default: m.LoopsPanel })))
+const CanvasMode = lazy(() => import('./components/CanvasMode').then((m) => ({ default: m.CanvasMode })))
 import { SettingsModal } from './components/SettingsModal'
 import { WorkspaceSetupModal } from './components/WorkspaceSetupModal'
 import { CommandPalette } from './components/CommandPalette'
@@ -53,6 +54,7 @@ export default function App() {
   const checkpointsOpen = useWorkspaceStore(s => s.checkpointsOpen)
   const benchmarksOpen = useWorkspaceStore(s => s.benchmarksOpen)
   const swarmAgentOpen = useWorkspaceStore(s => s.swarmAgentOpen)
+  const canvasOpen = useWorkspaceStore(s => s.canvasOpen)
   const loopsOpen = useWorkspaceStore(s => s.loopsOpen)
   const toggleMemoryPanel = useWorkspaceStore(s => s.toggleMemoryPanel)
   const setupModalOpen = useWorkspaceStore(s => s.setupModalOpen)
@@ -334,6 +336,10 @@ export default function App() {
         ) : swarmAgentOpen ? (
           <ErrorBoundary label="SwarmAgentChat">
             <SwarmAgentChat />
+          </ErrorBoundary>
+        ) : canvasOpen ? (
+          <ErrorBoundary label="CanvasMode">
+            <CanvasMode />
           </ErrorBoundary>
         ) : loopsOpen ? (
           <ErrorBoundary label="LoopsPanel">

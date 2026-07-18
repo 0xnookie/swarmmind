@@ -266,6 +266,9 @@ interface WorkspaceState {
   checkpointsOpen: boolean
   benchmarksOpen: boolean
   swarmAgentOpen: boolean
+  // Canvas mode — a full-desktop, pannable/zoomable board where terminals,
+  // browsers, sticky notes and shapes float freely (Miro-style). See CanvasMode.
+  canvasOpen: boolean
   // Paths currently flagged as contended (≥2 active agents touched them recently),
   // driving the Changes-button warning dot. Cleared when the panel is opened.
   contendedPaths: string[]
@@ -392,6 +395,7 @@ interface WorkspaceState {
   toggleCheckpoints: () => void
   toggleBenchmarks: () => void
   toggleSwarmAgent: () => void
+  toggleCanvas: () => void
   addContendedPath: (path: string) => void
   updatePaneCost: (paneId: string, usd: number, tokens: number) => void
   showTerminals: () => void
@@ -552,6 +556,7 @@ const ALL_OVERLAYS_CLOSED = {
   checkpointsOpen: false,
   benchmarksOpen: false,
   swarmAgentOpen: false,
+  canvasOpen: false,
   loopsOpen: false,
 } as const
 
@@ -626,6 +631,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   checkpointsOpen: false,
   benchmarksOpen: false,
   swarmAgentOpen: false,
+  canvasOpen: false,
   contendedPaths: [],
   paneCost: {},
   orchestratorBarOpen: false,
@@ -950,6 +956,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   toggleCheckpoints: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, checkpointsOpen: !s.checkpointsOpen })),
   toggleBenchmarks: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, benchmarksOpen: !s.benchmarksOpen })),
   toggleSwarmAgent: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, swarmAgentOpen: !s.swarmAgentOpen })),
+  toggleCanvas: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, canvasOpen: !s.canvasOpen })),
   addContendedPath: (path) =>
     set(s => (s.contendedPaths.includes(path) ? s : { contendedPaths: [...s.contendedPaths, path].slice(-50) })),
   updatePaneCost: (paneId, usd, tokens) =>

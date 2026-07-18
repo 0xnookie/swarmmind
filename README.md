@@ -1,6 +1,6 @@
 # SwarmMind
 
-[![Version](https://img.shields.io/badge/Version-0.18.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
+[![Version](https://img.shields.io/badge/Version-0.19.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
 [![License](https://img.shields.io/badge/License-MIT-3fb950)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-32-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -34,6 +34,23 @@ Prebuilt executables for **Windows**, **macOS**, and **Linux** are attached to e
 - **Multiple accounts per agent** — connect several Claude / Codex / OpenCode accounts (via the CLI's own browser sign-in — *no API key needed*) and switch between them in a click when one hits a usage limit. Active account applies to every terminal, even ones you start by hand.
 - **Session resume** — reopening a workspace relaunches each pane's agent *and* restores its prior conversation automatically.
 - **Broadcast & pipe** — send one prompt to many panes at once (`Ctrl/⌘-B`), or pipe one pane's output into shared memory or other panes.
+
+### Canvas mode — a free-form spatial workspace
+
+Toggle **Canvas** for an infinite, pannable/zoomable board (cnvs.dev / Miro style) where your terminals stop being a rigid grid and become cards you arrange however you think.
+
+- **Live terminals, anywhere** — every terminal becomes a free-floating card you can drag, resize, and maximize; they're the *same* live agent panes (PTYs reconnect seamlessly), just laid out spatially. Double-click empty space to drop a new one.
+- **Drop in browsers, notes, text, shapes & images** — embed a live web browser, sticky notes, text labels, rectangles/ellipses/triangles, and images (paste, drag-drop a file, or the image tool) right onto the board.
+- **Freehand pen** — sketch with a colour/width picker; strokes are first-class objects you can move and delete.
+- **Connectors** — link any two cards with an arrow that follows them as they move — turn your board into a flow.
+- **Miro-style tool rail** — select, hand/pan, pen, connect, and every insert tool; plus **snap-to-grid**, **zoom-to-fit**, a **minimap** navigator, right-click menus, duplicate (`Ctrl/⌘-D`), and a **choosable background** (dots, grid, solid colour, or your own image).
+- **Per-workspace & persistent** — each workspace keeps its own board, saved automatically.
+
+![Canvas mode](./docs/canvas.png)
+
+The pen tool with its colour/width picker:
+
+![Canvas pen tool](./docs/canvas-draw.png)
 
 ### Shared brain (MCP)
 

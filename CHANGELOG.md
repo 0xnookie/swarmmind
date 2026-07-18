@@ -6,6 +6,46 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.19.0]
+
+**Canvas mode** — a free-form, infinite spatial workspace (cnvs.dev / Miro
+style). Your terminals stop being a rigid grid and become cards you arrange
+however you think, alongside browsers, notes, shapes, images, freehand drawings,
+and connectors.
+
+### Added
+- **Canvas mode.** Toggle a full-desktop, pannable/zoomable board from the top
+  bar (or the command palette). Terminals become free-floating cards you can
+  drag, resize, and maximize — they're the *same* live agent panes, just laid
+  out spatially (PTYs reconnect seamlessly). Scroll to pan, Ctrl/⌘ + scroll to
+  zoom to the cursor, Space to drag around; double-click empty space to drop a
+  new terminal.
+- **Insert anything.** A Miro-style tool rail adds live **browsers**, **sticky
+  notes**, **text** labels, **shapes** (rectangle / ellipse / triangle), and
+  **images** (paste from the clipboard, drag-drop an image file, or the image
+  tool).
+- **Freehand pen.** Draw with a colour / width picker; strokes are first-class
+  objects you can move, select, and delete.
+- **Connectors.** Link any two cards with an arrow that tracks them as they move,
+  turning the board into a flow.
+- **Board tooling.** Snap-to-grid, zoom-to-fit, a minimap navigator, a choosable
+  background (dots / grid / solid colour / your own image), right-click context
+  menus (add-here / duplicate / bring-to-front / send-to-back / delete),
+  duplicate (`Ctrl/⌘-D`), and arrow-key nudging.
+- **Per-workspace boards.** Each workspace keeps its own canvas, persisted and
+  restored automatically.
+- **Workspace sidebar toggle.** A new top-bar button (far left) shows/hides the
+  workspace list so you can reclaim that space.
+
+### Fixed
+- Canvas card drag/resize now reads the item's starting geometry from a live ref
+  (React state updaters don't run synchronously), so dragging actually moves
+  cards; a pointer shield during gestures keeps embedded browser `<webview>`s
+  from swallowing the pointer stream and stalling a drag.
+- The canvas board is now isolated per workspace — switching workspaces in-app
+  resets the board before loading the target's own, so items no longer leak
+  between workspaces.
+
 ## [0.18.0]
 
 Agents can now run the board themselves. A paperclip-inspired **atomic task
