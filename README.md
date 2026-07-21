@@ -1,6 +1,6 @@
 # SwarmMind
 
-[![Version](https://img.shields.io/badge/Version-0.19.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
+[![Version](https://img.shields.io/badge/Version-0.20.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
 [![License](https://img.shields.io/badge/License-MIT-3fb950)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-32-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -39,11 +39,14 @@ Prebuilt executables for **Windows**, **macOS**, and **Linux** are attached to e
 
 Toggle **Canvas** for an infinite, pannable/zoomable board (cnvs.dev / Miro style) where your terminals stop being a rigid grid and become cards you arrange however you think.
 
-- **Live terminals, anywhere** — every terminal becomes a free-floating card you can drag, resize, and maximize; they're the *same* live agent panes (PTYs reconnect seamlessly), just laid out spatially. Double-click empty space to drop a new one.
+- **Live terminals, anywhere** — every terminal becomes a free-floating card you can drag, resize from any of its 8 edges/corners, and maximize; they're the *same* live agent panes (PTYs reconnect seamlessly), just laid out spatially. Double-click empty space to drop a new one.
+- **See-through terminals** — fade a terminal card's *background* so the board shows through, while the text stays fully opaque and readable. Set it per card, or **apply it to all terminals** at once.
 - **Drop in browsers, notes, text, shapes & images** — embed a live web browser, sticky notes, text labels, rectangles/ellipses/triangles, and images (paste, drag-drop a file, or the image tool) right onto the board.
+- **Browser tabs** — a browser card holds as many pages as you like behind a tab strip, and **Stack all browsers into tabs** collapses a board full of them into one card (with **Split tabs** to undo). Inactive tabs stay loaded, so switching keeps scroll position and page state.
+- **Device mockups** — drop a phone or tablet frame (iPhone, Pixel, Galaxy, iPad, Surface Duo) that loads your dev server in a true device-sized viewport with a matching mobile user-agent, so your breakpoints respond exactly as they would on the real thing. Rotate between portrait and landscape.
 - **Freehand pen** — sketch with a colour/width picker; strokes are first-class objects you can move and delete.
 - **Connectors** — link any two cards with an arrow that follows them as they move — turn your board into a flow.
-- **Miro-style tool rail** — select, hand/pan, pen, connect, and every insert tool; plus **snap-to-grid**, **zoom-to-fit**, a **minimap** navigator, right-click menus, duplicate (`Ctrl/⌘-D`), and a **choosable background** (dots, grid, solid colour, or your own image).
+- **Movable tool rail** — select, hand/pan, pen, connect, and every insert tool; drag the rail anywhere or collapse it to a puck to reclaim the board. Plus **snap-to-grid**, **zoom-to-fit**, a **minimap** navigator, right-click menus, duplicate (`Ctrl/⌘-D`), and a **choosable background** (dots, grid, solid colour, or your own image).
 - **Per-workspace & persistent** — each workspace keeps its own board, saved automatically.
 
 ![Canvas mode](./docs/canvas.png)
@@ -79,7 +82,11 @@ The pen tool with its colour/width picker:
 
 ### Cursor-style AI editor
 
-A built-in CodeMirror editor (syntax highlighting for ~150 languages, image viewer, snippets) with a full in-editor AI suite:
+A built-in CodeMirror editor (syntax highlighting for ~150 languages, image viewer, snippets) with a full in-editor AI suite.
+
+**File management** — right-click the file tree to rename inline, move to the system trash (recoverable, not `rm`), edit permissions, or reveal in your OS file manager; open tabs follow renames and close on delete. Bulk-close tabs with **close all / others / saved**, confirming unsaved work once for the whole batch.
+
+The AI suite:
 
 - **Multi-file Composer** — describe a change in plain language and the AI proposes coordinated edits across several files; preview per-file diffs with a checkbox each, take a one-click **safety checkpoint**, then apply. **✦ Suggest relevant** auto-selects context files via hybrid BM25 + on-device semantic embeddings (key-free, offline-capable); **Build index** embeds the whole repo for repo-wide retrieval.
 - **Inline AI edit — `Ctrl/⌘-K`** — select code (or place the cursor) and describe a change; the result streams in as an accept / reject / regenerate preview. Supports **@-mention file context**.

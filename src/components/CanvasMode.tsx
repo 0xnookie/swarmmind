@@ -3,6 +3,10 @@ import { v4 as uuidv4 } from 'uuid'
 import { AgentPane } from './AgentPane'
 import { useWorkspaceStore, type PaneNode, type PaneLeaf, type AgentId, type PtyStatus } from '../store/workspace'
 import { useT } from '../i18n'
+import {
+  resizeRect, RESIZE_DIRS, RESIZE_CURSOR, type ResizeDir,
+  GRID, snapToGrid, gridBackgroundOffset,
+} from '../lib/canvasResize'
 
 // ── Canvas model ────────────────────────────────────────────────────────────
 // A "canvas" is a free-form, pannable/zoomable board (cnvs.dev / Miro style).
@@ -13,27 +17,49 @@ import { useT } from '../i18n'
 
 type CanvasTool =
   | 'select' | 'hand' | 'draw' | 'connect'
-  | 'terminal' | 'browser' | 'note' | 'text' | 'image'
+  | 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'image'
   | 'rect' | 'ellipse' | 'triangle'
 
 type BgType = 'dots' | 'grid' | 'solid' | 'image'
 
 interface CanvasItem {
   id: string
-  kind: 'terminal' | 'browser' | 'note' | 'text' | 'shape' | 'draw' | 'image'
+  kind: 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'shape' | 'draw' | 'image'
   x: number
   y: number
   w: number
   h: number
   z: number
   paneId?: string          // terminal
-  url?: string             // browser
+  url?: string             // browser / device — the single/legacy URL
+  tabs?: BrowserTab[]      // browser — when set, the card is a tab stack
+  activeTab?: string       // browser — id of the visible tab
+  device?: string          // device — preset id (see DEVICE_PRESETS)
+  orientation?: 'portrait' | 'landscape'  // device
   text?: string            // note / text
   color?: string           // note / text / shape fill / stroke colour
   shape?: 'rect' | 'ellipse' | 'triangle'
   points?: { x: number; y: number }[]  // draw — polyline relative to {x,y}
   strokeWidth?: number     // draw
   src?: string             // image — data URL
+  opacity?: number         // terminal — card opacity, 0.2…1 (default 1)
+}
+
+// One page inside a browser card. A card with several of these renders a tab
+// strip; every tab keeps its own <webview> mounted so switching tabs preserves
+// scroll position and page state, exactly like a real browser.
+interface BrowserTab { id: string; url: string }
+
+// Browser cards predate tabs, so a legacy item carries only `url`. Read every
+// browser through here and the two shapes stay interchangeable.
+function browserTabs(item: CanvasItem): BrowserTab[] {
+  if (item.tabs?.length) return item.tabs
+  return [{ id: item.id + ':0', url: item.url ?? '' }]
+}
+
+function activeBrowserTab(item: CanvasItem): BrowserTab {
+  const tabs = browserTabs(item)
+  return tabs.find(tb => tb.id === item.activeTab) ?? tabs[0]
 }
 
 // A connector links two items; it re-renders from their live positions, so it
@@ -50,20 +76,95 @@ interface PersistShape {
   connectors?: Connector[]
   camera: Camera
   background: Background
+  rail?: { x: number; y: number } | null
+  railCollapsed?: boolean
+  /** Board-wide terminal transparency; a card may override it per-item. */
+  terminalOpacity?: number
 }
 
-const GRID = 20
-const snapVal = (v: number, on: boolean) => on ? Math.round(v / GRID) * GRID : Math.round(v)
+// Effective transparency for a terminal card: its own override if set,
+// otherwise the board-wide default.
+function terminalAlpha(item: CanvasItem, global: number): number {
+  return item.opacity ?? global
+}
+
+const snapVal = snapToGrid
 
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 2.5
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
+
+const MIN_ITEM_W = 140
+const MIN_ITEM_H = 80
 
 const NOTE_COLORS = ['#f4c95d', '#e8956b', '#7fc8a0', '#7fb0e8', '#c89be0', '#e88ba5']
 const PEN_COLORS = ['#e8956b', '#f4c95d', '#7fc8a0', '#7fb0e8', '#c89be0', '#e88ba5', '#ece7e0', '#1a1512']
 const PEN_WIDTHS = [2, 4, 8]
 const DEFAULT_BG: Background = { type: 'dots', color: '#161412', image: null }
 const DEFAULT_CAMERA: Camera = { x: 120, y: 100, zoom: 1 }
+
+// ── Device mockups (responsive testing) ─────────────────────────────────────
+// Each device card embeds a real <webview> sized to the preset's *logical*
+// viewport (CSS px), so the loaded page's media queries / breakpoints react
+// exactly as they would on the physical device — Chrome/Firefox device-toolbar
+// style. The bezel around the screen is purely cosmetic; the whole frame is
+// scaled with a CSS transform to fit the card while the guest keeps rendering
+// at true device pixels.
+interface DevicePreset {
+  id: string
+  label: string
+  w: number            // logical viewport width (portrait), CSS px
+  h: number            // logical viewport height (portrait), CSS px
+  os: 'ios' | 'android'
+  type: 'phone' | 'tablet'
+}
+
+const DEVICE_PRESETS: DevicePreset[] = [
+  { id: 'iphone-se', label: 'iPhone SE', w: 375, h: 667, os: 'ios', type: 'phone' },
+  { id: 'iphone-14', label: 'iPhone 14 · 13', w: 390, h: 844, os: 'ios', type: 'phone' },
+  { id: 'iphone-15-pro-max', label: 'iPhone 15 Pro Max', w: 430, h: 932, os: 'ios', type: 'phone' },
+  { id: 'pixel-8', label: 'Pixel 8', w: 412, h: 915, os: 'android', type: 'phone' },
+  { id: 'galaxy-s22', label: 'Galaxy S22 Ultra', w: 384, h: 854, os: 'android', type: 'phone' },
+  { id: 'galaxy-fold', label: 'Galaxy Z Fold', w: 344, h: 882, os: 'android', type: 'phone' },
+  { id: 'ipad-mini', label: 'iPad mini', w: 768, h: 1024, os: 'ios', type: 'tablet' },
+  { id: 'ipad-air', label: 'iPad Air', w: 820, h: 1180, os: 'ios', type: 'tablet' },
+  { id: 'ipad-pro-11', label: 'iPad Pro 11″', w: 834, h: 1194, os: 'ios', type: 'tablet' },
+  { id: 'surface-duo', label: 'Surface Duo', w: 540, h: 720, os: 'android', type: 'tablet' },
+]
+const DEFAULT_DEVICE = 'iphone-14'
+
+const DEVICE_UA: Record<DevicePreset['os'], string> = {
+  ios: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+  android: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
+}
+
+const getPreset = (id?: string): DevicePreset =>
+  DEVICE_PRESETS.find(p => p.id === id) ?? DEVICE_PRESETS.find(p => p.id === DEFAULT_DEVICE)!
+
+// Logical viewport in the current orientation.
+function deviceViewport(preset: DevicePreset, orientation: 'portrait' | 'landscape') {
+  return orientation === 'landscape' ? { w: preset.h, h: preset.w } : { w: preset.w, h: preset.h }
+}
+
+// Cosmetic bezel geometry + the full frame (bezel + screen) size.
+function deviceFrame(preset: DevicePreset, orientation: 'portrait' | 'landscape') {
+  const vp = deviceViewport(preset, orientation)
+  const tablet = preset.type === 'tablet'
+  const side = tablet ? 16 : 13
+  const topB = tablet ? 16 : 14
+  const botB = tablet ? 16 : 16
+  const radius = tablet ? 26 : 48
+  return { vp, side, topB, botB, radius, w: vp.w + side * 2, h: vp.h + topB + botB }
+}
+
+const DEVICE_CTRL_H = 64  // two control rows above the frame
+
+// Card footprint that shows the frame at a comfortable default scale.
+function deviceCardSize(preset: DevicePreset, orientation: 'portrait' | 'landscape') {
+  const f = deviceFrame(preset, orientation)
+  const scale = Math.min(1, 560 / f.h, 560 / f.w)
+  return { w: Math.round(f.w * scale) + 28, h: Math.round(f.h * scale) + DEVICE_CTRL_H + 24 }
+}
 
 function getLeaves(node: PaneNode): PaneLeaf[] {
   if (node.type === 'leaf') return [node]
@@ -82,6 +183,7 @@ export function CanvasMode() {
   const showTerminals = useWorkspaceStore(s => s.showTerminals)
 
   const rootRef = useRef<HTMLDivElement>(null)
+  const railRef = useRef<HTMLDivElement>(null)
   const [tool, setTool] = useState<CanvasTool>('select')
   const [items, setItems] = useState<CanvasItem[]>([])
   const [camera, setCamera] = useState<Camera>(DEFAULT_CAMERA)
@@ -89,6 +191,13 @@ export function CanvasMode() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [maximizedId, setMaximizedId] = useState<string | null>(null)
   const [bgPickerOpen, setBgPickerOpen] = useState(false)
+  // Tool rail placement. `null` = the default left-centred spot; once dragged it
+  // becomes an explicit {x,y} in board coords. Collapsing shrinks it to a puck.
+  const [railPos, setRailPos] = useState<{ x: number; y: number } | null>(null)
+  const [railCollapsed, setRailCollapsed] = useState(false)
+  // Board-wide terminal transparency (1 = opaque). Individual cards can
+  // override it; "apply to all" writes here and clears the overrides.
+  const [terminalOpacity, setTerminalOpacity] = useState(1)
   const [spaceDown, setSpaceDown] = useState(false)
   const [snap, setSnap] = useState(false)
   const snapRef = useRef(snap)
@@ -112,7 +221,8 @@ export function CanvasMode() {
   // Mid-interaction pointer shield: covers the viewport during a drag/resize/pan
   // so embedded <webview>s (browser cards) can't swallow the pointermove stream
   // and stall the gesture. Value doubles as the cursor to show while active.
-  const [interacting, setInteracting] = useState<false | 'grabbing' | 'nwse-resize'>(false)
+  // Value doubles as the CSS cursor shown while the gesture is active.
+  const [interacting, setInteracting] = useState<false | string>(false)
   const [menu, setMenu] = useState<{ x: number; y: number; wx: number; wy: number; itemId: string | null } | null>(null)
   const cameraRef = useRef(camera)
   cameraRef.current = camera
@@ -140,6 +250,9 @@ export function CanvasMode() {
     setMaximizedId(null)
     setConnectFrom(null)
     setDraft(null)
+    setRailPos(null)
+    setRailCollapsed(false)
+    setTerminalOpacity(1)
     zTopRef.current = 1
     if (!workspace) return
     let cancelled = false
@@ -152,6 +265,9 @@ export function CanvasMode() {
           if (Array.isArray(parsed.connectors)) setConnectors(parsed.connectors)
           if (parsed.camera) setCamera(parsed.camera)
           if (parsed.background) setBackground({ ...DEFAULT_BG, ...parsed.background })
+          if (parsed.rail) setRailPos(parsed.rail)
+          if (parsed.railCollapsed) setRailCollapsed(true)
+          if (typeof parsed.terminalOpacity === 'number') setTerminalOpacity(parsed.terminalOpacity)
           zTopRef.current = Math.max(1, ...(parsed.items ?? []).map(i => i.z || 1))
         } catch { /* ignore malformed */ }
       }
@@ -188,11 +304,11 @@ export function CanvasMode() {
   useEffect(() => {
     if (!workspace || !loaded) return
     const id = setTimeout(() => {
-      const payload: PersistShape = { items, connectors, camera, background }
+      const payload: PersistShape = { items, connectors, camera, background, rail: railPos, railCollapsed, terminalOpacity }
       window.swarmmind.setAppSetting(`canvas:${workspace.id}`, JSON.stringify(payload)).catch(() => {})
     }, 600)
     return () => clearTimeout(id)
-  }, [items, connectors, camera, background, workspace?.id, loaded])
+  }, [items, connectors, camera, background, railPos, railCollapsed, terminalOpacity, workspace?.id, loaded])
 
   // Prune connectors whose endpoints no longer exist.
   useEffect(() => {
@@ -245,6 +361,13 @@ export function CanvasMode() {
     }])
   }, [addPane, getLeafIds])
 
+  // Drop a device mockup (defaults to the standard phone, portrait, localhost).
+  const addDevice = useCallback((wx: number, wy: number) => {
+    const preset = getPreset(DEFAULT_DEVICE)
+    const size = deviceCardSize(preset, 'portrait')
+    addItem({ kind: 'device', device: DEFAULT_DEVICE, orientation: 'portrait', url: 'http://localhost:3000', w: size.w, h: size.h }, wx, wy)
+  }, [addItem])
+
   // ── Canvas background pointer: pan or place ──
   const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.target !== e.currentTarget) return  // only when hitting empty canvas
@@ -275,6 +398,7 @@ export function CanvasMode() {
     const { x, y } = screenToWorld(e.clientX, e.clientY)
     if (tool === 'terminal') addTerminal(x, y)
     else if (tool === 'browser') addItem({ kind: 'browser', w: 640, h: 460, url: 'http://localhost:3000' }, x, y)
+    else if (tool === 'device') addDevice(x, y)
     else if (tool === 'note') addItem({ kind: 'note', w: 220, h: 200, text: '', color: NOTE_COLORS[0] }, x, y)
     else if (tool === 'text') addItem({ kind: 'text', w: 260, h: 60, text: '', color: 'var(--text-primary)' }, x, y)
     else if (tool === 'rect') addItem({ kind: 'shape', shape: 'rect', w: 220, h: 150, color: 'var(--accent)' }, x, y)
@@ -282,7 +406,7 @@ export function CanvasMode() {
     else if (tool === 'triangle') addItem({ kind: 'shape', shape: 'triangle', w: 220, h: 190, color: '#7fc8a0' }, x, y)
     else if (tool === 'image') { pendingImgPos.current = { x, y }; fileInputRef.current?.click() }
     setTool('select')
-  }, [tool, spaceDown, screenToWorld, addItem, addTerminal])
+  }, [tool, spaceDown, screenToWorld, addItem, addTerminal, addDevice])
 
   // ── Drag / resize an item ──
   const startDrag = useCallback((e: React.PointerEvent, id: string) => {
@@ -314,7 +438,11 @@ export function CanvasMode() {
     window.addEventListener('pointerup', up)
   }, [bringToFront])
 
-  const startResize = useCallback((e: React.PointerEvent, id: string) => {
+  // Resize from any of the 8 handles. The dragged edge(s) follow the pointer
+  // while the opposite edge stays pinned — so a west/north drag moves x/y as
+  // well as w/h. Minimums are enforced against that same anchor, otherwise
+  // shrinking past the limit from the west would keep sliding the card left.
+  const startResize = useCallback((e: React.PointerEvent, id: string, dir: ResizeDir) => {
     e.stopPropagation()
     e.preventDefault()
     if (e.button !== 0) return
@@ -325,13 +453,15 @@ export function CanvasMode() {
     const it = itemsRef.current.find(i => i.id === id)
     if (!it) return
     const startX = e.clientX, startY = e.clientY
-    const ow = it.w, oh = it.h
-    setInteracting('nwse-resize')
+    const orig = { x: it.x, y: it.y, w: it.w, h: it.h }
+    setInteracting(RESIZE_CURSOR[dir])
     const move = (ev: PointerEvent) => {
-      const sn = snapRef.current
-      setItems(prev => prev.map(i => i.id === id
-        ? { ...i, w: Math.max(140, snapVal(ow + (ev.clientX - startX) / zoom, sn)), h: Math.max(80, snapVal(oh + (ev.clientY - startY) / zoom, sn)) }
-        : i))
+      const next = resizeRect(orig, dir, (ev.clientX - startX) / zoom, (ev.clientY - startY) / zoom, {
+        minW: MIN_ITEM_W,
+        minH: MIN_ITEM_H,
+        grid: snapRef.current ? GRID : null,
+      })
+      setItems(prev => prev.map(i => i.id === id ? { ...i, ...next } : i))
     }
     const up = () => {
       setInteracting(false)
@@ -369,6 +499,74 @@ export function CanvasMode() {
     setSelectedId(copy.id)
   }, [addTerminal])
 
+  // Make one card's transparency the board default: store it globally and drop
+  // every per-card override, so existing AND future terminals all match.
+  const applyOpacityToAllTerminals = useCallback((alpha: number) => {
+    setTerminalOpacity(alpha)
+    setItems(prev => prev.map(i => i.kind === 'terminal' && i.opacity !== undefined
+      ? { ...i, opacity: undefined }
+      : i))
+  }, [])
+
+  // ── Browser tab stacking ──
+  // Collapse every browser card on the board into `targetId`, appending their
+  // tabs in board order (left-to-right, top-to-bottom) so the result matches
+  // what the user saw. The target keeps its geometry; the others are removed.
+  const stackBrowsers = useCallback((targetId: string) => {
+    setItems(prev => {
+      const target = prev.find(i => i.id === targetId)
+      if (!target || target.kind !== 'browser') return prev
+      const sources = prev
+        .filter(i => i.kind === 'browser' && i.id !== targetId)
+        .sort((a, b) => (a.y - b.y) || (a.x - b.x))
+      if (!sources.length) return prev
+      // Tab ids are only unique per card, so incoming ones are re-keyed to
+      // avoid collisions. The *target's* ids are kept as-is: they key the
+      // mounted webviews, and re-keying them would needlessly reload the page
+      // the user is stacking into.
+      const kept = browserTabs(target)
+      const incoming = sources.flatMap(browserTabs).map(tb => ({ ...tb, id: uuidv4() }))
+      const tabs = [...kept, ...incoming]
+      const gone = new Set(sources.map(i => i.id))
+      // Keep whichever tab was already showing selected.
+      const stillActive = activeBrowserTab(target).id
+      return prev
+        .filter(i => !gone.has(i.id))
+        .map(i => i.id === targetId
+          ? { ...i, tabs, activeTab: stillActive, url: tabs.find(tb => tb.id === stillActive)?.url ?? i.url }
+          : i)
+    })
+    setSelectedId(targetId)
+  }, [])
+
+  // Explode a stacked browser back into one card per tab, laid out in a row to
+  // the right of the original so none of them land on top of each other.
+  const unstackBrowser = useCallback((id: string) => {
+    setItems(prev => {
+      const src = prev.find(i => i.id === id)
+      if (!src || src.kind !== 'browser') return prev
+      const tabs = browserTabs(src)
+      if (tabs.length < 2) return prev
+      const rest = tabs.slice(1).map((tb, idx) => {
+        zTopRef.current += 1
+        return {
+          ...src,
+          id: uuidv4(),
+          x: src.x + (idx + 1) * (src.w + 24),
+          y: src.y,
+          z: zTopRef.current,
+          url: tb.url,
+          tabs: undefined,
+          activeTab: undefined,
+        } as CanvasItem
+      })
+      return [
+        ...prev.map(i => i.id === id ? { ...i, url: tabs[0].url, tabs: undefined, activeTab: undefined } : i),
+        ...rest,
+      ]
+    })
+  }, [])
+
   const sendToBack = useCallback((id: string) => {
     setItems(prev => {
       const minZ = Math.min(...prev.map(i => i.z))
@@ -393,13 +591,14 @@ export function CanvasMode() {
   const addFromMenu = useCallback((kind: CanvasTool, wx: number, wy: number) => {
     if (kind === 'terminal') addTerminal(wx, wy)
     else if (kind === 'browser') addItem({ kind: 'browser', w: 640, h: 460, url: 'http://localhost:3000' }, wx, wy)
+    else if (kind === 'device') addDevice(wx, wy)
     else if (kind === 'note') addItem({ kind: 'note', w: 220, h: 200, text: '', color: NOTE_COLORS[0] }, wx, wy)
     else if (kind === 'text') addItem({ kind: 'text', w: 260, h: 60, text: '', color: 'var(--text-primary)' }, wx, wy)
     else if (kind === 'rect') addItem({ kind: 'shape', shape: 'rect', w: 220, h: 150, color: 'var(--accent)' }, wx, wy)
     else if (kind === 'ellipse') addItem({ kind: 'shape', shape: 'ellipse', w: 200, h: 200, color: '#7fb0e8' }, wx, wy)
     else if (kind === 'triangle') addItem({ kind: 'shape', shape: 'triangle', w: 220, h: 190, color: '#7fc8a0' }, wx, wy)
     setMenu(null)
-  }, [addTerminal, addItem])
+  }, [addTerminal, addItem, addDevice])
 
   // ── Images (paste / drop / file picker) ──
   const addImageFromFile = useCallback((file: File, wx: number, wy: number) => {
@@ -559,6 +758,7 @@ export function CanvasMode() {
         case 'c': setTool('connect'); break
         case 't': setTool('terminal'); break
         case 'b': setTool('browser'); break
+        case 'm': setTool('device'); break
         case 'n': setTool('note'); break
         case 'i': openImagePicker(); break
         case 'r': setTool('rect'); break
@@ -609,6 +809,49 @@ export function CanvasMode() {
     const k = newZoom / cam.zoom
     setCamera({ zoom: newZoom, x: mx - (mx - cam.x) * k, y: my - (my - cam.y) * k })
   }, [])
+
+  // ── Tool rail: drag to reposition ──
+  // The rail floats above the board in *screen* space, so this is plain pixel
+  // math — no camera involved. The result is clamped to the board so the rail
+  // can never be dropped somewhere unreachable.
+  const startRailDrag = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    // Measure the rail itself, not the grip's wrapper — the grip sits one level
+    // deeper in the expanded layout, so walking parentElement would clamp
+    // against the wrong box.
+    const railEl = railRef.current
+    const board = rootRef.current
+    if (!railEl || !board) return
+    const rect = railEl.getBoundingClientRect()
+    const boardRect = board.getBoundingClientRect()
+    // Grab offset within the rail, so it doesn't jump to the cursor.
+    const grabX = e.clientX - rect.left
+    const grabY = e.clientY - rect.top
+    setInteracting('grabbing')
+    const move = (ev: PointerEvent) => {
+      const x = clamp(ev.clientX - boardRect.left - grabX, 4, Math.max(4, boardRect.width - rect.width - 4))
+      const y = clamp(ev.clientY - boardRect.top - grabY, 4, Math.max(4, boardRect.height - rect.height - 4))
+      setRailPos({ x, y })
+    }
+    const up = () => {
+      setInteracting(false)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }, [])
+
+  // Rail + pen bar placement: default (left, vertically centred) until dragged,
+  // then an explicit position. The pen bar rides alongside either way.
+  const railStyle: React.CSSProperties = railPos
+    ? { ...styles.rail, left: railPos.x, top: railPos.y, transform: 'none' }
+    : styles.rail
+  const penBarStyle: React.CSSProperties = railPos
+    ? { ...styles.penBar, left: railPos.x + 52, top: railPos.y, transform: 'none' }
+    : styles.penBar
 
   const cursor = tool === 'hand' || spaceDown ? 'grab'
     : tool === 'select' ? 'default'
@@ -723,6 +966,7 @@ export function CanvasMode() {
                 onUpdate={updateItem}
                 onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); setSelectedId(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
                 noteColors={NOTE_COLORS}
+                alpha={item.kind === 'terminal' ? terminalAlpha(item, terminalOpacity) : 1}
                 t={t}
               />
             )
@@ -771,8 +1015,36 @@ export function CanvasMode() {
         )}
       </div>
 
-      {/* ── Left tool rail (Miro-style) ── */}
-      <div style={styles.rail}>
+      {/* ── Tool rail (Miro-style) — draggable, collapsible ── */}
+      {railCollapsed ? (
+        <div ref={railRef} style={{ ...railStyle, padding: 4 }}>
+          <div
+            onPointerDown={startRailDrag}
+            title={t('canvas.rail.drag')}
+            style={{ ...styles.railGrip, cursor: 'grab' }}
+          ><GripDots /></div>
+          <ToolButton
+            active={false}
+            label={t('canvas.rail.expand')}
+            onClick={() => setRailCollapsed(false)}
+          ><IconChevronRight /></ToolButton>
+        </div>
+      ) : (
+      <div ref={railRef} style={railStyle}>
+        {/* Drag grip + collapse */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <div
+            onPointerDown={startRailDrag}
+            title={t('canvas.rail.drag')}
+            style={{ ...styles.railGrip, flex: 1, cursor: 'grab' }}
+          ><GripDots /></div>
+          <button
+            onClick={() => setRailCollapsed(true)}
+            title={t('canvas.rail.collapse')}
+            style={styles.railCollapseBtn}
+          ><IconChevronLeft /></button>
+        </div>
+        <div style={styles.railDivider} />
         <ToolButton active={tool === 'select'} label={t('canvas.tool.select')} onClick={() => setTool('select')}><IconCursor /></ToolButton>
         <ToolButton active={tool === 'hand'} label={t('canvas.tool.hand')} onClick={() => setTool('hand')}><IconHand /></ToolButton>
         <ToolButton active={tool === 'draw'} label={t('canvas.tool.pen')} onClick={() => setTool('draw')}><IconPen /></ToolButton>
@@ -780,6 +1052,7 @@ export function CanvasMode() {
         <div style={styles.railDivider} />
         <ToolButton active={tool === 'terminal'} label={t('canvas.tool.terminal')} onClick={() => setTool('terminal')}><IconTerminal /></ToolButton>
         <ToolButton active={tool === 'browser'} label={t('canvas.tool.browser')} onClick={() => setTool('browser')}><IconGlobe /></ToolButton>
+        <ToolButton active={tool === 'device'} label={t('canvas.tool.device')} onClick={() => setTool('device')}><IconDevice /></ToolButton>
         <ToolButton active={tool === 'note'} label={t('canvas.tool.note')} onClick={() => setTool('note')}><IconNote /></ToolButton>
         <ToolButton active={tool === 'text'} label={t('canvas.tool.text')} onClick={() => setTool('text')}><IconText /></ToolButton>
         <ToolButton active={tool === 'image'} label={t('canvas.tool.image')} onClick={openImagePicker}><IconImage /></ToolButton>
@@ -788,10 +1061,11 @@ export function CanvasMode() {
         <ToolButton active={tool === 'ellipse'} label={t('canvas.tool.ellipse')} onClick={() => setTool('ellipse')}><IconEllipse /></ToolButton>
         <ToolButton active={tool === 'triangle'} label={t('canvas.tool.triangle')} onClick={() => setTool('triangle')}><IconTriangle /></ToolButton>
       </div>
+      )}
 
       {/* ── Pen colour / width picker (draw mode only) ── */}
-      {tool === 'draw' && (
-        <div style={styles.penBar}>
+      {tool === 'draw' && !railCollapsed && (
+        <div style={penBarStyle}>
           <span style={styles.penBarLabel}>{t('canvas.pen.color')}</span>
           <div style={{ display: 'flex', gap: 5 }}>
             {PEN_COLORS.map(c => (
@@ -845,19 +1119,73 @@ export function CanvasMode() {
       {/* ── Context menu ── */}
       {menu && (
         <div style={{ ...styles.ctxMenu, left: Math.min(menu.x, window.innerWidth - 210), top: Math.min(menu.y, window.innerHeight - 260) }} onClick={e => e.stopPropagation()}>
-          {menu.itemId ? (
+          {menu.itemId ? (() => {
+            const target = items.find(i => i.id === menu.itemId)
+            const browserCount = items.filter(i => i.kind === 'browser').length
+            return (
             <>
               <button className="ctx-menu-item" onClick={() => { duplicateItem(menu.itemId!); setMenu(null) }}><span style={{ flex: 1 }}>{t('canvas.ctx.duplicate')}</span><span style={styles.ctxKey}>Ctrl+D</span></button>
               <button className="ctx-menu-item" onClick={() => { bringToFront(menu.itemId!); setMenu(null) }}>{t('canvas.ctx.front')}</button>
               <button className="ctx-menu-item" onClick={() => { sendToBack(menu.itemId!); setMenu(null) }}>{t('canvas.ctx.back')}</button>
+
+              {/* Terminal transparency — background only; text stays opaque. */}
+              {target?.kind === 'terminal' && (() => {
+                const pct = Math.round(terminalAlpha(target, terminalOpacity) * 100)
+                return (
+                  <>
+                    <div style={styles.ctxDivider} />
+                    <div style={styles.ctxLabel}>{t('canvas.ctx.opacity')}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 10px 4px' }}>
+                      <input
+                        type="range"
+                        min={20}
+                        max={100}
+                        step={5}
+                        value={pct}
+                        onChange={e => updateItem(target.id, { opacity: Number(e.target.value) / 100 })}
+                        style={{ flex: 1, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums', minWidth: 30, textAlign: 'right' }}>
+                        {pct}%
+                      </span>
+                    </div>
+                    <button
+                      className="ctx-menu-item"
+                      onClick={() => { applyOpacityToAllTerminals(pct / 100); setMenu(null) }}
+                    >
+                      {t('canvas.ctx.opacityAll')}
+                    </button>
+                  </>
+                )
+              })()}
+
+              {/* Browser tab stacking */}
+              {target?.kind === 'browser' && (
+                <>
+                  <div style={styles.ctxDivider} />
+                  {browserCount > 1 && (
+                    <button className="ctx-menu-item" onClick={() => { stackBrowsers(target.id); setMenu(null) }}>
+                      {t('canvas.ctx.stackBrowsers', { n: browserCount })}
+                    </button>
+                  )}
+                  {browserTabs(target).length > 1 && (
+                    <button className="ctx-menu-item" onClick={() => { unstackBrowser(target.id); setMenu(null) }}>
+                      {t('canvas.ctx.unstackBrowsers')}
+                    </button>
+                  )}
+                </>
+              )}
+
               <div style={styles.ctxDivider} />
               <button className="ctx-menu-item" data-variant="danger" onClick={() => { removeItem(menu.itemId!); setMenu(null) }}><span style={{ flex: 1 }}>{t('canvas.ctx.delete')}</span><span style={styles.ctxKey}>Del</span></button>
             </>
-          ) : (
+            )
+          })() : (
             <>
               <div style={styles.ctxLabel}>{t('canvas.ctx.addHere')}</div>
               <button className="ctx-menu-item" onClick={() => addFromMenu('terminal', menu.wx, menu.wy)}>{t('canvas.tool.terminal')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('browser', menu.wx, menu.wy)}>{t('canvas.tool.browser')}</button>
+              <button className="ctx-menu-item" onClick={() => addFromMenu('device', menu.wx, menu.wy)}>{t('canvas.tool.device')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('note', menu.wx, menu.wy)}>{t('canvas.tool.note')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('text', menu.wx, menu.wy)}>{t('canvas.tool.text')}</button>
               <div style={styles.ctxDivider} />
@@ -936,7 +1264,7 @@ function Minimap({ items, camera, rootRef, onJump }: {
   const toMini = (wx: number, wy: number) => ({ x: offX + (wx - minX) * scale, y: offY + (wy - minY) * scale })
 
   const kindColor = (k: CanvasItem['kind']) =>
-    k === 'terminal' ? '#7fc8a0' : k === 'browser' ? '#7fb0e8' : k === 'note' ? '#f4c95d'
+    k === 'terminal' ? '#7fc8a0' : k === 'browser' ? '#7fb0e8' : k === 'device' ? '#9db0e8' : k === 'note' ? '#f4c95d'
     : k === 'image' ? '#c89be0' : k === 'draw' ? '#e88ba5' : '#e8956b'
 
   const jump = (e: React.MouseEvent) => {
@@ -967,17 +1295,19 @@ interface CanvasCardProps {
   selected: boolean
   zoom: number
   onDragStart: (e: React.PointerEvent, id: string) => void
-  onResizeStart: (e: React.PointerEvent, id: string) => void
+  onResizeStart: (e: React.PointerEvent, id: string, dir: ResizeDir) => void
   onSelect: (id: string) => void
   onRemove: (id: string) => void
   onMaximize: (id: string) => void
   onUpdate: (id: string, patch: Partial<CanvasItem>) => void
   onContextMenu: (e: React.MouseEvent, id: string) => void
   noteColors: string[]
+  /** Background transparency for this card (1 = opaque). Content never fades. */
+  alpha: number
   t: (k: any, p?: any) => string
 }
 
-function CanvasCard({ item, selected, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, noteColors, t }: CanvasCardProps) {
+function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, noteColors, t }: CanvasCardProps) {
   const isShape = item.kind === 'shape'
   const frameless = isShape || item.kind === 'text'
 
@@ -993,16 +1323,42 @@ function CanvasCard({ item, selected, onDragStart, onResizeStart, onSelect, onRe
         outlineOffset: 2,
         display: 'flex', flexDirection: 'column',
         boxShadow: frameless ? 'none' : '0 8px 30px rgba(0,0,0,0.5)',
-        background: frameless ? 'transparent' : 'var(--bg-panel)',
+        // Transparency is NOT applied here as `opacity`: that would fade the
+        // terminal text along with the background and make it unreadable. The
+        // card paints nothing itself and a separate backdrop layer below
+        // carries the alpha, leaving all content at full opacity.
+        background: 'transparent',
         overflow: 'visible',
       }}
       onPointerDown={() => onSelect(item.id)}
       onContextMenu={(e) => onContextMenu(e, item.id)}
     >
+      {/* Backdrop — the ONLY thing transparency touches. Sits behind every
+          sibling (they're later in the flow and form the stacking order), so
+          the terminal's glyphs, the header and the buttons all stay fully
+          opaque and readable no matter how low the alpha goes. */}
+      {!frameless && (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute', inset: 0, borderRadius: 12,
+            background: 'var(--bg-panel)', opacity: alpha, pointerEvents: 'none',
+            // Explicit 0 against the content's 1: a positioned child would
+            // otherwise paint *over* its in-flow siblings and hide them.
+            zIndex: 0,
+          }}
+        />
+      )}
+
       {/* Header / drag handle — shapes & text drag from anywhere */}
       {!frameless && (
         <div
-          style={styles.cardHeader}
+          style={{
+            ...styles.cardHeader, position: 'relative', zIndex: 1,
+            // Let the faded backdrop show through the title bar too, so the
+            // whole card reads as translucent — its text stays fully opaque.
+            ...(alpha < 1 ? { background: 'transparent' } : null),
+          }}
           onPointerDown={(e) => { if (e.button === 0) onDragStart(e, item.id) }}
           onDoubleClick={() => onMaximize(item.id)}
         >
@@ -1018,11 +1374,11 @@ function CanvasCard({ item, selected, onDragStart, onResizeStart, onSelect, onRe
 
       {/* Body */}
       <div
-        style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', overflow: frameless ? 'visible' : 'hidden', position: 'relative' }}
+        style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', overflow: frameless ? 'visible' : 'hidden', position: 'relative', zIndex: 1 }}
         // Shapes/text are dragged by their body since they have no header.
         onPointerDown={frameless ? (e) => { if (e.button === 0 && item.kind !== 'text') onDragStart(e, item.id) } : undefined}
       >
-        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} noteColors={noteColors} t={t} />
+        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} noteColors={noteColors} alpha={alpha} t={t} />
         {/* frameless move/delete affordances when selected (text can't drag from
             its body — the textarea captures the pointer for editing). */}
         {frameless && selected && (
@@ -1042,24 +1398,79 @@ function CanvasCard({ item, selected, onDragStart, onResizeStart, onSelect, onRe
         )}
       </div>
 
-      {/* Resize handle */}
-      <div style={styles.resizeHandle} onPointerDown={(e) => onResizeStart(e, item.id)} />
+      {/* Resize handles — all 8 edges/corners. Sized in *screen* px (divided by
+          zoom) so they stay grabbable when zoomed far out, and only painted
+          while the card is selected so the board stays clean. */}
+      {RESIZE_DIRS.map(dir => (
+        <div
+          key={dir}
+          onPointerDown={(e) => onResizeStart(e, item.id, dir)}
+          style={{ ...resizeHandleStyle(dir, zoom), ...(selected ? selectedHandleSkin(dir, zoom) : null) }}
+        />
+      ))}
     </div>
   )
 }
 
+// Geometry for one resize handle. Corners are square grab targets pinned to the
+// corner; edges are thin strips spanning the side between them.
+function resizeHandleStyle(dir: ResizeDir, zoom: number): React.CSSProperties {
+  const grab = 14 / zoom      // corner hit box
+  const thick = 8 / zoom      // edge strip thickness
+  const inset = -thick / 2    // straddle the border so both sides are grabbable
+  const base: React.CSSProperties = {
+    position: 'absolute', zIndex: 6, cursor: RESIZE_CURSOR[dir], touchAction: 'none',
+  }
+  const corner = { width: grab, height: grab }
+  switch (dir) {
+    case 'nw': return { ...base, ...corner, left: -grab / 2, top: -grab / 2 }
+    case 'ne': return { ...base, ...corner, right: -grab / 2, top: -grab / 2 }
+    case 'sw': return { ...base, ...corner, left: -grab / 2, bottom: -grab / 2 }
+    case 'se': return { ...base, ...corner, right: -grab / 2, bottom: -grab / 2 }
+    // Edges stop short of the corners so the corner handles win the overlap.
+    case 'n': return { ...base, top: inset, left: grab / 2, right: grab / 2, height: thick }
+    case 's': return { ...base, bottom: inset, left: grab / 2, right: grab / 2, height: thick }
+    case 'w': return { ...base, left: inset, top: grab / 2, bottom: grab / 2, width: thick }
+    case 'e': return { ...base, right: inset, top: grab / 2, bottom: grab / 2, width: thick }
+  }
+}
+
+// Visible dot on the four corners when selected — the edges stay invisible
+// (their cursor is the affordance) so the card outline isn't cluttered.
+function selectedHandleSkin(dir: ResizeDir, zoom: number): React.CSSProperties | null {
+  if (dir.length !== 2) return null
+  const d = 8 / zoom
+  return {
+    background: 'var(--accent)',
+    border: `${1 / zoom}px solid var(--bg-panel)`,
+    borderRadius: d,
+    width: d, height: d,
+    // Re-centre on the corner now that the box shrank from `grab` to `d`.
+    marginLeft: dir.includes('w') ? (14 / zoom - d) / 2 : 0,
+    marginRight: dir.includes('e') ? (14 / zoom - d) / 2 : 0,
+    marginTop: dir.includes('n') ? (14 / zoom - d) / 2 : 0,
+    marginBottom: dir.includes('s') ? (14 / zoom - d) / 2 : 0,
+  }
+}
+
 // ── CardBody — the type-specific content ────────────────────────────────────
 
-function CardBody({ item, onUpdate, onDragStart, noteColors, t, maximized }: {
+function CardBody({ item, onUpdate, onDragStart, noteColors, alpha = 1, t, maximized }: {
   item: CanvasItem
   onUpdate: (id: string, patch: Partial<CanvasItem>) => void
   onDragStart?: (e: React.PointerEvent, id: string) => void
   noteColors: string[]
+  alpha?: number
   t: (k: any, p?: any) => string
   maximized?: boolean
 }) {
-  if (item.kind === 'terminal' && item.paneId) return <CanvasTerminal paneId={item.paneId} />
+  // Maximized fills the screen, so transparency there would just show the app
+  // behind it — always render the maximized view opaque.
+  if (item.kind === 'terminal' && item.paneId) {
+    return <CanvasTerminal paneId={item.paneId} alpha={maximized ? 1 : alpha} />
+  }
   if (item.kind === 'browser') return <CanvasBrowser item={item} onUpdate={onUpdate} t={t} />
+  if (item.kind === 'device') return <CanvasDevice item={item} onUpdate={onUpdate} t={t} />
   if (item.kind === 'note') return <CanvasNote item={item} onUpdate={onUpdate} noteColors={noteColors} />
   if (item.kind === 'text') return <CanvasText item={item} onUpdate={onUpdate} onDragStart={onDragStart} />
   if (item.kind === 'shape') return <CanvasShape item={item} onUpdate={onUpdate} />
@@ -1079,50 +1490,243 @@ function CanvasImage({ item }: { item: CanvasItem }) {
 }
 
 // Terminal — a real, live agent pane bound to a rootPane leaf.
-function CanvasTerminal({ paneId }: { paneId: string }) {
+//
+// Transparency is background-only: the terminal's own backdrop is a separate
+// faded layer and xterm is told to paint no background of its own
+// (`transparentBg`), so glyphs render at full opacity over it and stay readable
+// at any alpha.
+function CanvasTerminal({ paneId, alpha = 1 }: { paneId: string; alpha?: number }) {
   const splitPane = useWorkspaceStore(s => s.splitPane)
   const closePane = useWorkspaceStore(s => s.closePane)
   const agentId = useWorkspaceStore(s => findLeaf(s.rootPane, paneId)?.agentId ?? null) as AgentId | null
   const ptyStatus = useWorkspaceStore(s => findLeaf(s.rootPane, paneId)?.ptyStatus ?? 'idle') as PtyStatus
   const paneCwd = useWorkspaceStore(s => findLeaf(s.rootPane, paneId)?.cwd ?? null)
+  const translucent = alpha < 1
   return (
-    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', background: 'var(--bg-terminal)', borderRadius: '0 0 12px 12px', overflow: 'hidden' }}>
-      <AgentPane
-        paneId={paneId}
-        agentId={agentId}
-        ptyStatus={ptyStatus}
-        paneCwd={paneCwd}
-        onSplitH={() => splitPane(paneId, 'horizontal')}
-        onSplitV={() => splitPane(paneId, 'vertical')}
-        onClose={() => closePane(paneId)}
-      />
+    <div style={{
+      flex: 1, minWidth: 0, minHeight: 0, display: 'flex', position: 'relative',
+      background: translucent ? 'transparent' : 'var(--bg-terminal)',
+      borderRadius: '0 0 12px 12px', overflow: 'hidden',
+    }}>
+      {translucent && (
+        <div
+          aria-hidden
+          style={{
+            position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none',
+            background: 'var(--bg-terminal)', opacity: alpha,
+          }}
+        />
+      )}
+      {/* zIndex 1 keeps the pane above the positioned backdrop. */}
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', position: 'relative', zIndex: 1 }}>
+        <AgentPane
+          paneId={paneId}
+          agentId={agentId}
+          ptyStatus={ptyStatus}
+          paneCwd={paneCwd}
+          transparentBg={translucent}
+          onSplitH={() => splitPane(paneId, 'horizontal')}
+          onSplitV={() => splitPane(paneId, 'vertical')}
+          onClose={() => closePane(paneId)}
+        />
+      </div>
     </div>
   )
 }
 
-// Browser — an embedded webview with a compact URL bar.
-function CanvasBrowser({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id: string, patch: Partial<CanvasItem>) => void; t: (k: any, p?: any) => string }) {
-  const [input, setInput] = useState(item.url ?? '')
-  const webviewRef = useRef<any>(null)
-  const [loading, setLoading] = useState(false)
-  useEffect(() => { setInput(item.url ?? '') }, [item.url])
+const normalizeUrl = (raw: string): string => {
+  const s = raw.trim()
+  if (!s) return s
+  if (/^https?:\/\//i.test(s)) return s
+  if (/^:?\d{2,5}$/.test(s)) return 'http://localhost:' + s.replace(/^:/, '')
+  if (/^localhost(:\d+)?/i.test(s) || /^\d+\.\d+\.\d+\.\d+/.test(s)) return 'http://' + s
+  return 'http://' + s
+}
 
-  const normalize = (raw: string): string => {
-    const s = raw.trim()
-    if (!s) return s
-    if (/^https?:\/\//i.test(s)) return s
-    if (/^:?\d{2,5}$/.test(s)) return 'http://localhost:' + s.replace(/^:/, '')
-    if (/^localhost(:\d+)?/i.test(s) || /^\d+\.\d+\.\d+\.\d+/.test(s)) return 'http://' + s
-    return 'http://' + s
+const tabTitle = (url: string): string =>
+  url.replace(/^https?:\/\//, '').replace(/\/$/, '') || 'about:blank'
+
+// Browser — one or more pages behind a tab strip, each an embedded webview.
+// Every tab stays mounted and only the active one is visible, so switching
+// tabs preserves scroll position, form state and any running app in the page.
+function CanvasBrowser({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id: string, patch: Partial<CanvasItem>) => void; t: (k: any, p?: any) => string }) {
+  const tabs = browserTabs(item)
+  const active = activeBrowserTab(item)
+  const [input, setInput] = useState(active.url)
+  const [loading, setLoading] = useState(false)
+  // One webview handle per tab id, so nav buttons address the visible page.
+  const viewRefs = useRef<Record<string, any>>({})
+
+  // Follow the active tab's URL (tab switch, or an external update).
+  useEffect(() => { setInput(active.url) }, [active.id, active.url])
+
+  // Track load state of the *active* tab only; re-bound on every tab switch.
+  useEffect(() => {
+    const wv = viewRefs.current[active.id]
+    if (!wv) return
+    const on = () => setLoading(true)
+    const off = () => setLoading(false)
+    wv.addEventListener('did-start-loading', on)
+    wv.addEventListener('did-stop-loading', off)
+    return () => {
+      wv.removeEventListener('did-start-loading', on)
+      wv.removeEventListener('did-stop-loading', off)
+    }
+  }, [active.id])
+
+  // Write a patch to one tab, keeping the legacy single-URL field in sync with
+  // whichever tab is active so an un-stacked / older reader still sees a url.
+  const patchTab = (tabId: string, url: string) => {
+    const next = tabs.map(tb => tb.id === tabId ? { ...tb, url } : tb)
+    onUpdate(item.id, {
+      tabs: next,
+      activeTab: item.activeTab ?? tabs[0].id,
+      ...(tabId === active.id ? { url } : null),
+    })
   }
+
   const go = (raw: string) => {
-    const url = normalize(raw)
+    const url = normalizeUrl(raw)
     if (!url) return
     setInput(url)
-    onUpdate(item.id, { url })
-    const wv = webviewRef.current
+    patchTab(active.id, url)
+    const wv = viewRefs.current[active.id]
     try { if (wv?.loadURL) wv.loadURL(url); else if (wv) wv.src = url } catch { /* not ready */ }
   }
+
+  const selectTab = (id: string) => onUpdate(item.id, {
+    tabs, activeTab: id, url: tabs.find(tb => tb.id === id)?.url ?? item.url,
+  })
+
+  const addTab = () => {
+    const tb: BrowserTab = { id: uuidv4(), url: 'http://localhost:3000' }
+    onUpdate(item.id, { tabs: [...tabs, tb], activeTab: tb.id, url: tb.url })
+  }
+
+  const closeTab = (id: string) => {
+    if (tabs.length <= 1) return  // never leave a browser card with no page
+    const idx = tabs.findIndex(tb => tb.id === id)
+    const next = tabs.filter(tb => tb.id !== id)
+    delete viewRefs.current[id]
+    const nextActive = id === active.id ? next[Math.min(idx, next.length - 1)] : active
+    onUpdate(item.id, { tabs: next, activeTab: nextActive.id, url: nextActive.url })
+  }
+
+  const withActive = (fn: (wv: any) => void) => {
+    try { const wv = viewRefs.current[active.id]; if (wv) fn(wv) } catch { /* not ready */ }
+  }
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-base)', borderRadius: '0 0 12px 12px', overflow: 'hidden' }}>
+      {/* Tab strip — only once there's more than one page to choose between. */}
+      {tabs.length > 1 && (
+        <div style={styles.tabStrip} onPointerDown={e => e.stopPropagation()}>
+          {tabs.map(tb => {
+            const on = tb.id === active.id
+            return (
+              <div
+                key={tb.id}
+                onClick={() => selectTab(tb.id)}
+                title={tb.url}
+                style={{ ...styles.browserTab, ...(on ? styles.browserTabActive : null) }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tabTitle(tb.url)}</span>
+                <span
+                  onClick={e => { e.stopPropagation(); closeTab(tb.id) }}
+                  title={t('common.close')}
+                  style={styles.browserTabClose}
+                >×</span>
+              </div>
+            )
+          })}
+          <button style={styles.browserTabAdd} onClick={addTab} title={t('canvas.browser.newTab')}>+</button>
+        </div>
+      )}
+
+      <div style={styles.browserBar} onPointerDown={e => e.stopPropagation()}>
+        <button style={styles.browserBtn} title={t('preview.back')} onClick={() => withActive(wv => wv.goBack())}>‹</button>
+        <button style={styles.browserBtn} title={t('preview.forward')} onClick={() => withActive(wv => wv.goForward())}>›</button>
+        <button style={styles.browserBtn} title={t('preview.reload')} onClick={() => withActive(wv => wv.reload())}>⟳</button>
+        <input
+          style={styles.browserInput}
+          value={input}
+          spellCheck={false}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { (e.target as HTMLInputElement).blur(); go(input) } }}
+          placeholder="localhost:3000"
+        />
+        {loading && <span style={{ fontSize: 10, color: 'var(--accent)' }}>●</span>}
+        {tabs.length === 1 && (
+          <button style={styles.browserBtn} onClick={addTab} title={t('canvas.browser.newTab')}>+</button>
+        )}
+      </div>
+
+      {/* All tabs stay mounted; inactive ones are hidden rather than unmounted
+          so their pages keep running and keep their scroll position. */}
+      <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+        {tabs.map(tb => (
+          <div
+            key={tb.id}
+            style={{
+              position: 'absolute', inset: 0,
+              visibility: tb.id === active.id ? 'visible' : 'hidden',
+              zIndex: tb.id === active.id ? 1 : 0,
+            }}
+          >
+            {/* @ts-ignore webview is an Electron custom element */}
+            <webview
+              ref={(el: any) => { if (el) viewRefs.current[tb.id] = el; else delete viewRefs.current[tb.id] }}
+              src={tb.url || 'about:blank'}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Device mockup — an embedded webview sized to a device's *logical* viewport
+// inside a cosmetic bezel, for responsive testing (Chrome/Firefox device-bar
+// style). The guest renders at true device px; the frame is scaled to fit.
+function CanvasDevice({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id: string, patch: Partial<CanvasItem>) => void; t: (k: any, p?: any) => string }) {
+  const preset = getPreset(item.device)
+  const orientation = item.orientation ?? 'portrait'
+  const frame = deviceFrame(preset, orientation)
+  const ua = DEVICE_UA[preset.os]
+
+  const [input, setInput] = useState(item.url ?? '')
+  const [loading, setLoading] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [area, setArea] = useState({ w: 0, h: 0 })
+  const webviewRef = useRef<any>(null)
+  const areaRef = useRef<HTMLDivElement>(null)
+  const lastUa = useRef(ua)
+
+  useEffect(() => { setInput(item.url ?? '') }, [item.url])
+
+  // Measure the frame area so the fixed device-px frame can be scaled to fit.
+  useEffect(() => {
+    const el = areaRef.current
+    if (!el) return
+    const ro = new ResizeObserver(entries => {
+      const r = entries[0].contentRect
+      setArea({ w: r.width, h: r.height })
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // Switching device family changes the guest UA (iOS ⇄ Android) → reapply and
+  // reload so the page re-negotiates its mobile layout.
+  useEffect(() => {
+    const wv = webviewRef.current
+    if (!wv || lastUa.current === ua) return
+    lastUa.current = ua
+    try { wv.setUserAgent?.(ua) } catch { /* method may be unavailable */ }
+    try { wv.reload?.() } catch { /* not ready */ }
+  }, [ua])
+
   useEffect(() => {
     const wv = webviewRef.current
     if (!wv) return
@@ -1133,8 +1737,34 @@ function CanvasBrowser({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id:
     return () => { wv.removeEventListener('did-start-loading', on); wv.removeEventListener('did-stop-loading', off) }
   }, [])
 
+  const go = (raw: string) => {
+    const url = normalizeUrl(raw)
+    if (!url) return
+    setInput(url)
+    onUpdate(item.id, { url })
+    const wv = webviewRef.current
+    try { if (wv?.loadURL) wv.loadURL(url); else if (wv) wv.src = url } catch { /* not ready */ }
+  }
+
+  const pad = 14
+  const rawScale = Math.min((area.w - pad * 2) / frame.w, (area.h - pad * 2) / frame.h)
+  const k = clamp(Number.isFinite(rawScale) && rawScale > 0 ? rawScale : 0.001, 0.05, 2)
+
+  const chooseDevice = (id: string) => {
+    const p = getPreset(id)
+    const size = deviceCardSize(p, orientation)
+    onUpdate(item.id, { device: id, w: size.w, h: size.h })
+    setPickerOpen(false)
+  }
+  const rotate = () => {
+    const next = orientation === 'portrait' ? 'landscape' : 'portrait'
+    const size = deviceCardSize(preset, next)
+    onUpdate(item.id, { orientation: next, w: size.w, h: size.h })
+  }
+
   return (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-base)', borderRadius: '0 0 12px 12px', overflow: 'hidden' }}>
+      {/* URL row */}
       <div style={styles.browserBar} onPointerDown={e => e.stopPropagation()}>
         <button style={styles.browserBtn} title={t('preview.back')} onClick={() => { try { webviewRef.current?.goBack() } catch { /* */ } }}>‹</button>
         <button style={styles.browserBtn} title={t('preview.forward')} onClick={() => { try { webviewRef.current?.goForward() } catch { /* */ } }}>›</button>
@@ -1149,10 +1779,86 @@ function CanvasBrowser({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id:
         />
         {loading && <span style={{ fontSize: 10, color: 'var(--accent)' }}>●</span>}
       </div>
-      <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-        {/* @ts-ignore webview is an Electron custom element */}
-        <webview ref={webviewRef} src={item.url || 'about:blank'} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 'none' }} />
+      {/* Device row */}
+      <div style={styles.deviceBar} onPointerDown={e => e.stopPropagation()}>
+        <div style={{ position: 'relative', minWidth: 0 }}>
+          <button style={styles.deviceSelect} onClick={() => setPickerOpen(o => !o)} title={t('canvas.device.choose')}>
+            <IconDevice />
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{preset.label}</span>
+            <span style={{ opacity: 0.55, fontSize: 9 }}>▾</span>
+          </button>
+          {pickerOpen && <DevicePicker current={preset.id} onPick={chooseDevice} onClose={() => setPickerOpen(false)} t={t} />}
+        </div>
+        <button style={styles.deviceIconBtn} onClick={rotate} title={t('canvas.device.rotate')}><IconRotate /></button>
+        <div style={{ flex: 1 }} />
+        <span style={styles.deviceDims}>{frame.vp.w} × {frame.vp.h}</span>
       </div>
+      {/* Frame area (scaled to fit) */}
+      <div
+        ref={areaRef}
+        style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', background: 'var(--bg-elevated)' }}
+      >
+        <div style={{ width: frame.w * k, height: frame.h * k, flexShrink: 0 }}>
+          <div
+            style={{
+              width: frame.w, height: frame.h, boxSizing: 'border-box', position: 'relative',
+              transform: `scale(${k})`, transformOrigin: 'top left',
+              background: '#0a0a0c', borderRadius: frame.radius,
+              padding: `${frame.topB}px ${frame.side}px ${frame.botB}px`,
+              boxShadow: '0 12px 44px rgba(0,0,0,0.55), inset 0 0 0 2px #26262b',
+            }}
+          >
+            {/* notch (phone) / front camera (tablet) */}
+            {preset.type === 'phone' ? (
+              <div style={{ position: 'absolute', top: Math.max(3, frame.topB - 11), left: '50%', transform: 'translateX(-50%)', width: Math.min(130, frame.vp.w * 0.34), height: 22, background: '#0a0a0c', borderRadius: 13, zIndex: 2 }} />
+            ) : (
+              <div style={{ position: 'absolute', top: frame.topB / 2 - 2.5, left: '50%', transform: 'translateX(-50%)', width: 5, height: 5, background: '#2c2c32', borderRadius: '50%', zIndex: 2 }} />
+            )}
+            {/* screen */}
+            <div style={{ width: frame.vp.w, height: frame.vp.h, borderRadius: preset.type === 'tablet' ? 4 : 8, overflow: 'hidden', background: '#fff' }}>
+              {/* @ts-ignore webview is an Electron custom element */}
+              <webview ref={webviewRef} src={item.url || 'about:blank'} useragent={ua} style={{ width: frame.vp.w, height: frame.vp.h, border: 'none', display: 'flex' }} />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Device preset picker — grouped phone / tablet list (Chrome device-bar style).
+function DevicePicker({ current, onPick, onClose, t }: {
+  current: string
+  onPick: (id: string) => void
+  onClose: () => void
+  t: (k: any, p?: any) => string
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose() }
+    const id = setTimeout(() => document.addEventListener('mousedown', h), 0)
+    return () => { clearTimeout(id); document.removeEventListener('mousedown', h) }
+  }, [onClose])
+
+  const row = (p: DevicePreset) => (
+    <button
+      key={p.id}
+      className="ctx-menu-item"
+      onClick={() => onPick(p.id)}
+      style={{ display: 'flex', alignItems: 'center', gap: 8, ...(p.id === current ? { color: 'var(--accent)' } : {}) }}
+    >
+      <span style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.label}</span>
+      <span style={{ fontSize: 10.5, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>{p.w}×{p.h}</span>
+    </button>
+  )
+
+  return (
+    <div ref={ref} style={styles.devicePicker} onPointerDown={e => e.stopPropagation()}>
+      <div style={styles.ctxLabel}>{t('canvas.device.phones')}</div>
+      {DEVICE_PRESETS.filter(p => p.type === 'phone').map(row)}
+      <div style={styles.ctxDivider} />
+      <div style={styles.ctxLabel}>{t('canvas.device.tablets')}</div>
+      {DEVICE_PRESETS.filter(p => p.type === 'tablet').map(row)}
     </div>
   )
 }
@@ -1326,7 +2032,12 @@ function findLeaf(node: PaneNode, id: string): PaneLeaf | null {
 
 function cardLabel(item: CanvasItem, t: (k: any, p?: any) => string): string {
   if (item.kind === 'terminal') return t('canvas.label.terminal')
-  if (item.kind === 'browser') return item.url?.replace(/^https?:\/\//, '') || t('canvas.label.browser')
+  if (item.kind === 'browser') {
+    const tabs = browserTabs(item)
+    const head = tabTitle(activeBrowserTab(item).url) || t('canvas.label.browser')
+    return tabs.length > 1 ? `${head}  (${tabs.length})` : head
+  }
+  if (item.kind === 'device') return getPreset(item.device).label
   if (item.kind === 'note') return t('canvas.label.note')
   if (item.kind === 'image') return t('canvas.label.image')
   return ''
@@ -1350,12 +2061,19 @@ function backgroundLayerStyle(bg: Background, cam: Camera): React.CSSProperties 
   }
   if (bg.type === 'solid') return { ...base, background: bg.color }
   // dots / grid — tiled pattern that scrolls & scales with the camera so it
-  // reads as an infinite plane.
-  const size = 28 * cam.zoom
-  const ox = cam.x % size
-  const oy = cam.y % size
+  // reads as an infinite plane. Tiling at GRID (not a separate literal) is what
+  // makes the drawn cells land on exactly the world coordinates snap produces:
+  // the pattern is offset by cam.x % size, so lines fall on world multiples of
+  // size/zoom === GRID.
+  // Tile edges land on world multiples of GRID — exactly the coordinates
+  // snapToGrid() produces — so a snapped card corner sits on a drawn feature.
+  // gridBackgroundOffset applies the half-cell shift the dot pattern needs.
+  const size = GRID * cam.zoom
+  const kind = bg.type === 'grid' ? 'grid' : 'dots'
+  const ox = gridBackgroundOffset(cam.x, cam.zoom, kind)
+  const oy = gridBackgroundOffset(cam.y, cam.zoom, kind)
   const dot = 'rgba(255,255,255,0.10)'
-  if (bg.type === 'grid') {
+  if (kind === 'grid') {
     return {
       ...base, background: bg.color,
       backgroundImage: `linear-gradient(${dot} 1px, transparent 1px), linear-gradient(90deg, ${dot} 1px, transparent 1px)`,
@@ -1363,9 +2081,10 @@ function backgroundLayerStyle(bg: Background, cam: Camera): React.CSSProperties 
       backgroundPosition: `${ox}px ${oy}px`,
     }
   }
+  const r = Math.max(1, 1.4 * cam.zoom)
   return {
     ...base, background: bg.color,
-    backgroundImage: `radial-gradient(${dot} ${Math.max(1, 1.4 * cam.zoom)}px, transparent ${Math.max(1, 1.4 * cam.zoom)}px)`,
+    backgroundImage: `radial-gradient(${dot} ${r}px, transparent ${r}px)`,
     backgroundSize: `${size}px ${size}px`,
     backgroundPosition: `${ox}px ${oy}px`,
   }
@@ -1403,6 +2122,12 @@ const IconCursor = () => svg(<><path d="m4 3 7 17 2.5-7L20 10 4 3z" /></>)
 const IconHand = () => svg(<><path d="M18 11V6a2 2 0 0 0-4 0M14 10V4a2 2 0 0 0-4 0v2M10 10.5V6a2 2 0 0 0-4 0v8" /><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15" /></>)
 const IconTerminal = () => svg(<><rect x="2.5" y="4" width="19" height="16" rx="2" /><path d="m6 9 3 3-3 3M12.5 15h4" /></>)
 const IconGlobe = () => svg(<><circle cx="12" cy="12" r="9" /><path d="M3 12h18" /><path d="M12 3a15 15 0 0 1 4 9 15 15 0 0 1-4 9 15 15 0 0 1-4-9 15 15 0 0 1 4-9z" /></>)
+const IconDevice = () => svg(<><rect x="7" y="2.5" width="10" height="19" rx="2.5" /><path d="M10.5 5.5h3" /></>)
+const IconRotate = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M3 12a9 9 0 0 1 15-6.7L21 8" /><path d="M21 3v5h-5" />
+  </svg>
+)
 const IconNote = () => svg(<><path d="M4 4h16v11l-5 5H4z" /><path d="M15 20v-5h5" /></>)
 const IconText = () => svg(<><path d="M4 6V5h16v1M12 5v14M9 19h6" /></>)
 const IconRect = () => svg(<><rect x="3" y="5" width="18" height="14" rx="2" /></>)
@@ -1417,6 +2142,16 @@ const IconExit = () => svg(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /
 const IconFit = () => (
   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4" />
+  </svg>
+)
+const IconChevronLeft = () => (
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="m15 18-6-6 6-6" />
+  </svg>
+)
+const IconChevronRight = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="m9 18 6-6-6-6" />
   </svg>
 )
 const GripDots = () => (
@@ -1443,6 +2178,15 @@ const styles: Record<string, React.CSSProperties> = {
     boxShadow: '0 10px 34px rgba(0,0,0,0.55)', zIndex: 20,
   },
   railDivider: { height: 1, background: 'var(--border)', margin: '3px 6px' },
+  railGrip: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', height: 18,
+    color: 'var(--text-dim)', borderRadius: 6, touchAction: 'none',
+  },
+  railCollapseBtn: {
+    width: 20, height: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    border: 'none', background: 'transparent', color: 'var(--text-dim)',
+    cursor: 'pointer', borderRadius: 5, padding: 0,
+  },
   penBar: {
     position: 'absolute', left: 66, top: '50%', transform: 'translateY(-50%)',
     display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
@@ -1485,9 +2229,25 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
     borderRadius: 5, fontSize: 12,
   },
-  resizeHandle: {
-    position: 'absolute', right: -3, bottom: -3, width: 18, height: 18, cursor: 'nwse-resize',
-    background: 'transparent', zIndex: 5,
+  tabStrip: {
+    height: 26, flexShrink: 0, display: 'flex', alignItems: 'stretch', gap: 2, padding: '0 4px',
+    background: 'var(--bg-panel)', borderBottom: '1px solid var(--border-subtle)',
+    overflowX: 'auto', overflowY: 'hidden',
+  },
+  browserTab: {
+    display: 'flex', alignItems: 'center', gap: 4, padding: '0 4px 0 8px', marginTop: 3,
+    maxWidth: 150, minWidth: 60, flexShrink: 0, cursor: 'pointer',
+    borderRadius: '6px 6px 0 0', background: 'transparent',
+    color: 'var(--text-muted)', fontSize: 11, whiteSpace: 'nowrap',
+  },
+  browserTabActive: { background: 'var(--bg-base)', color: 'var(--text-primary)' },
+  browserTabClose: {
+    width: 14, height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    borderRadius: 3, flexShrink: 0, fontSize: 12, lineHeight: 1, color: 'var(--text-dim)',
+  },
+  browserTabAdd: {
+    width: 22, flexShrink: 0, marginTop: 3, border: 'none', background: 'transparent',
+    color: 'var(--text-muted)', cursor: 'pointer', fontSize: 14, lineHeight: 1, borderRadius: 5,
   },
   browserBar: {
     height: 30, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 3, padding: '0 6px',
@@ -1500,6 +2260,28 @@ const styles: Record<string, React.CSSProperties> = {
   browserInput: {
     flex: 1, minWidth: 0, background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 6,
     color: 'var(--text-primary)', fontSize: 11.5, padding: '3px 8px', outline: 'none', margin: '0 4px',
+  },
+  deviceBar: {
+    height: 30, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px',
+    background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border-subtle)',
+  },
+  deviceSelect: {
+    display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: 200, height: 22, padding: '0 8px',
+    background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 6,
+    color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 11.5, fontWeight: 500,
+  },
+  deviceIconBtn: {
+    width: 24, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+    background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 6,
+    color: 'var(--text-secondary)', cursor: 'pointer',
+  },
+  deviceDims: {
+    fontSize: 10.5, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', flexShrink: 0,
+  },
+  devicePicker: {
+    position: 'absolute', top: 'calc(100% + 6px)', left: 0, width: 210, maxHeight: 320, overflowY: 'auto', padding: 4,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 10,
+    boxShadow: '0 12px 40px rgba(0,0,0,0.6)', display: 'flex', flexDirection: 'column', gap: 1, zIndex: 50,
   },
   bgPicker: {
     position: 'absolute', top: 'calc(100% + 8px)', right: 0, width: 250, padding: 12,

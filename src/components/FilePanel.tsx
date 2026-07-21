@@ -60,6 +60,9 @@ export function FilePanel() {
   const setOpenFiles = useWorkspaceStore((s) => s.setEditorTabs)
   const setActivePath = useWorkspaceStore((s) => s.setActiveEditorPath)
   const [loading, setLoading] = useState(false)
+  // Tab bulk-actions menu. `path: null` = opened from the ⋯ button (whole bar);
+  // a path = right-clicked that specific tab, which unlocks "close others".
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; path: string | null } | null>(null)
 
   // Resizable file-tree width (drag the divider; persisted to localStorage).
   const [treeWidth, setTreeWidth] = useState(() => {
@@ -221,6 +224,84 @@ export function FilePanel() {
     [t, setOpenFiles, setActivePath]
   )
 
+  // Close a whole set of tabs in one action (close all / close others / close
+  // saved). Dirty tabs are confirmed *once* for the batch rather than one
+  // dialog per file — the whole point of a bulk close.
+  const closeTabs = useCallback(
+    async (victims: OpenFile[]) => {
+      if (!victims.length) return
+      const dirty = victims.filter((f) => f.dirty)
+      if (dirty.length) {
+        const ok = await confirmDialog({
+          title: t('file.closeAllTitle'),
+          body: t('file.discardManyConfirm', { n: dirty.length }) + '\n\n' +
+            dirty.map((f) => `• ${f.name}`).join('\n'),
+          confirmLabel: t('common.discard'),
+          danger: true,
+        })
+        if (!ok) return
+      }
+      const doomed = new Set(victims.map((f) => f.path))
+      // Re-read: the dialog was async, so the tab list may have moved on.
+      const tabs = useWorkspaceStore.getState().editorTabs
+      const next = tabs.filter((f) => !doomed.has(f.path))
+      setOpenFiles(next)
+      const activeNow = useWorkspaceStore.getState().activeEditorPath
+      if (activeNow && doomed.has(activeNow)) {
+        setActivePath(next.length ? next[next.length - 1].path : null)
+      }
+      // Same program-root rule as closeTab: only released once truly closed.
+      for (const p of doomed) void window.swarmmind.lspClose(p)
+    },
+    [t, setOpenFiles, setActivePath]
+  )
+
+  // ── React to file-tree mutations ────────────────────────────────────────────
+  // A rename/delete in the explorer must not leave a tab pointing at a path that
+  // no longer exists — saving such a tab would recreate the old file.
+
+  const handleFileRenamed = useCallback(
+    (oldPath: string, newPath: string, newName: string) => {
+      const sep = oldPath.includes('\\') ? '\\' : '/'
+      const dirPrefix = oldPath + sep
+      setOpenFiles(
+        useWorkspaceStore.getState().editorTabs.map((f) => {
+          if (f.path === oldPath) return { ...f, path: newPath, name: newName }
+          // A renamed *directory* moves every tab beneath it.
+          if (f.path.startsWith(dirPrefix)) {
+            return { ...f, path: newPath + sep + f.path.slice(dirPrefix.length) }
+          }
+          return f
+        })
+      )
+      const active = useWorkspaceStore.getState().activeEditorPath
+      if (active === oldPath) setActivePath(newPath)
+      else if (active?.startsWith(dirPrefix)) setActivePath(newPath + sep + active.slice(dirPrefix.length))
+      // The old path is gone from disk — drop it as a program root.
+      void window.swarmmind.lspClose(oldPath)
+    },
+    [setOpenFiles, setActivePath]
+  )
+
+  const handleFileDeleted = useCallback(
+    (deletedPath: string) => {
+      const sep = deletedPath.includes('\\') ? '\\' : '/'
+      const dirPrefix = deletedPath + sep
+      const tabs = useWorkspaceStore.getState().editorTabs
+      const gone = tabs.filter((f) => f.path === deletedPath || f.path.startsWith(dirPrefix))
+      if (!gone.length) return
+      const goneSet = new Set(gone.map((f) => f.path))
+      const next = tabs.filter((f) => !goneSet.has(f.path))
+      // No discard prompt: the file is already in the trash, so there is nothing
+      // left to save the buffer back to.
+      setOpenFiles(next)
+      const active = useWorkspaceStore.getState().activeEditorPath
+      if (active && goneSet.has(active)) setActivePath(next.length ? next[next.length - 1].path : null)
+      for (const p of goneSet) void window.swarmmind.lspClose(p)
+    },
+    [setOpenFiles, setActivePath]
+  )
+
   if (!workspace?.rootPath) {
     return (
       <div
@@ -265,6 +346,8 @@ export function FilePanel() {
           rootPath={workspace.rootPath}
           onFileSelect={handleFileSelect}
           selectedPath={activePath}
+          onFileRenamed={handleFileRenamed}
+          onFileDeleted={handleFileDeleted}
         />
         {/* Drag handle: widen the tree so deep paths stay readable */}
         <div
@@ -302,7 +385,6 @@ export function FilePanel() {
       >
         {openFiles.length > 0 && (
           <div
-            className="editor-tabbar"
             style={{
               height: 34,
               flexShrink: 0,
@@ -310,22 +392,76 @@ export function FilePanel() {
               alignItems: 'stretch',
               background: 'var(--bg-panel)',
               borderBottom: '1px solid var(--border-subtle)',
-              overflowX: 'auto',
-              overflowY: 'hidden',
               userSelect: 'none',
             }}
           >
-            {openFiles.map((f) => (
-              <EditorTab
-                key={f.path}
-                file={f}
-                isActive={f.path === activePath}
-                onActivate={() => setActivePath(f.path)}
-                onClose={() => closeTab(f.path)}
-                closeTitle={t('common.close')}
-              />
-            ))}
+            <div
+              className="editor-tabbar"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                display: 'flex',
+                alignItems: 'stretch',
+                overflowX: 'auto',
+                overflowY: 'hidden',
+              }}
+            >
+              {openFiles.map((f) => (
+                <EditorTab
+                  key={f.path}
+                  file={f}
+                  isActive={f.path === activePath}
+                  onActivate={() => setActivePath(f.path)}
+                  onClose={() => closeTab(f.path)}
+                  closeTitle={t('common.close')}
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    setTabMenu({ x: e.clientX, y: e.clientY, path: f.path })
+                  }}
+                />
+              ))}
+            </div>
+
+            {/* Bulk-close control — pinned right so it stays reachable no
+                matter how far the tab strip has scrolled. */}
+            <button
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect()
+                setTabMenu({ x: r.right, y: r.bottom, path: null })
+              }}
+              title={t('file.closeAll')}
+              style={{
+                flexShrink: 0,
+                width: 34,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                border: 'none',
+                borderLeft: '1px solid var(--border-subtle)',
+                background: 'transparent',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                fontSize: 13,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-elevated)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
+            >
+              ⋯
+            </button>
           </div>
+        )}
+
+        {tabMenu && (
+          <TabMenu
+            x={tabMenu.x}
+            y={tabMenu.y}
+            path={tabMenu.path}
+            tabs={openFiles}
+            onClose={() => setTabMenu(null)}
+            onCloseTabs={closeTabs}
+            onCloseOne={closeTab}
+            t={t}
+          />
         )}
 
         {loading ? (
@@ -372,6 +508,90 @@ export function FilePanel() {
   )
 }
 
+// ── Tab bulk-actions menu ─────────────────────────────────────────────────────
+
+function TabMenu({
+  x,
+  y,
+  path,
+  tabs,
+  onClose,
+  onCloseTabs,
+  onCloseOne,
+  t,
+}: {
+  x: number
+  y: number
+  path: string | null
+  tabs: OpenFile[]
+  onClose: () => void
+  onCloseTabs: (victims: OpenFile[]) => void
+  onCloseOne: (path: string) => void
+  t: (k: any, p?: any) => string
+}) {
+  useEffect(() => {
+    const close = () => onClose()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    // Deferred so the click that opened the menu doesn't immediately shut it.
+    const id = setTimeout(() => window.addEventListener('click', close), 0)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      clearTimeout(id)
+      window.removeEventListener('click', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
+
+  const others = path ? tabs.filter((f) => f.path !== path) : []
+  const saved = tabs.filter((f) => !f.dirty)
+
+  const run = (fn: () => void) => { fn(); onClose() }
+
+  return (
+    <div
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: 'fixed',
+        left: Math.min(x, window.innerWidth - 210),
+        top: Math.min(y, window.innerHeight - 160),
+        minWidth: 196, padding: 4, zIndex: 300,
+        background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+        borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+        display: 'flex', flexDirection: 'column', gap: 1,
+      }}
+    >
+      {path && (
+        <button className="ctx-menu-item" onClick={() => run(() => onCloseOne(path))}>
+          {t('common.close')}
+        </button>
+      )}
+      {path && (
+        <button
+          className="ctx-menu-item"
+          disabled={!others.length}
+          style={others.length ? undefined : { opacity: 0.45, cursor: 'default' }}
+          onClick={() => others.length && run(() => onCloseTabs(others))}
+        >
+          {t('file.closeOthers')}
+        </button>
+      )}
+      <button
+        className="ctx-menu-item"
+        disabled={!saved.length}
+        style={saved.length ? undefined : { opacity: 0.45, cursor: 'default' }}
+        onClick={() => saved.length && run(() => onCloseTabs(saved))}
+      >
+        {t('file.closeSaved')}
+      </button>
+      <div style={{ height: 1, background: 'var(--border)', margin: '3px 4px' }} />
+      <button className="ctx-menu-item" onClick={() => run(() => onCloseTabs(tabs))}>
+        <span style={{ flex: 1, textAlign: 'left' }}>{t('file.closeAll')}</span>
+        <span style={{ color: 'var(--text-dim)', fontSize: 10.5 }}>{tabs.length}</span>
+      </button>
+    </div>
+  )
+}
+
 // ── Tab ───────────────────────────────────────────────────────────────────────
 
 interface EditorTabProps {
@@ -380,15 +600,17 @@ interface EditorTabProps {
   onActivate: () => void
   onClose: () => void
   closeTitle: string
+  onContextMenu: (e: React.MouseEvent) => void
 }
 
-function EditorTab({ file, isActive, onActivate, onClose, closeTitle }: EditorTabProps) {
+function EditorTab({ file, isActive, onActivate, onClose, closeTitle, onContextMenu }: EditorTabProps) {
   const [hovered, setHovered] = useState(false)
   const [closeHovered, setCloseHovered] = useState(false)
 
   return (
     <div
       onClick={onActivate}
+      onContextMenu={onContextMenu}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onMouseDown={(e) => {

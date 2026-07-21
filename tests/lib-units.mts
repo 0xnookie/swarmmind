@@ -21,6 +21,7 @@ import { resolveNextEditTarget } from '../src/lib/nextEdit.ts'
 import { extractFileBlocks } from '../src/lib/codeBlocks.ts'
 import { tokenize, rankDocs, cosineSim, rankByEmbedding, fuseRankings, dedupeByPath } from '../src/lib/retrieval.ts'
 import { chunkText } from '../src/lib/chunk.ts'
+import { resizeRect, RESIZE_DIRS, RESIZE_CURSOR, GRID, snapToGrid, gridBackgroundOffset } from '../src/lib/canvasResize.ts'
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
 import { stripCodeFences, extractJsonObject } from '../electron/lib/aiParse.ts'
 import { selectClaimable, isClaimable, doneIdSet, type ClaimableTask } from '../electron/lib/taskBoard.ts'
@@ -1324,6 +1325,137 @@ t('taskBoard: targeted claim of a missing id is null', () => {
 t('taskBoard: isClaimable matches the selection rules', () => {
   assert.equal(isClaimable(mkClaimTask({ id: 'a' }), 'claude', new Set()), true)
   assert.equal(isClaimable(mkClaimTask({ id: 'a', assigned_agent: 'codex' }), 'claude', new Set()), false)
+})
+
+// ── canvasResize ──────────────────────────────────────────────────────────────
+// Canvas cards resize from all 8 handles. The invariant under test throughout:
+// the edge you are NOT dragging must not move.
+
+const BOX = { x: 100, y: 100, w: 400, h: 300 }
+const FREE = { minW: 140, minH: 80, grid: null }
+const SNAP = { minW: 140, minH: 80, grid: 20 }
+
+t('canvasResize: exposes 8 directions, each with a cursor', () => {
+  assert.equal(RESIZE_DIRS.length, 8)
+  for (const d of RESIZE_DIRS) assert.ok(RESIZE_CURSOR[d].endsWith('-resize'))
+})
+t('canvasResize: south-east grows w/h and pins the north-west corner', () => {
+  const r = resizeRect(BOX, 'se', 50, 30, FREE)
+  assert.deepEqual(r, { x: 100, y: 100, w: 450, h: 330 })
+})
+t('canvasResize: north-west moves x/y and pins the south-east corner', () => {
+  const r = resizeRect(BOX, 'nw', 40, 20, FREE)
+  assert.deepEqual(r, { x: 140, y: 120, w: 360, h: 280 })
+  assert.equal(r.x + r.w, BOX.x + BOX.w)  // east edge pinned
+  assert.equal(r.y + r.h, BOX.y + BOX.h)  // south edge pinned
+})
+t('canvasResize: edge handles only affect their own axis', () => {
+  const e = resizeRect(BOX, 'e', 60, 999, FREE)
+  assert.deepEqual(e, { x: 100, y: 100, w: 460, h: 300 })
+  const n = resizeRect(BOX, 'n', 999, -50, FREE)
+  assert.deepEqual(n, { x: 100, y: 50, w: 400, h: 350 })
+})
+t('canvasResize: west drag past the minimum pins the east edge (no leftward creep)', () => {
+  // Dragging the west handle far right would take w below minW.
+  const r = resizeRect(BOX, 'w', 900, 0, FREE)
+  assert.equal(r.w, 140)
+  assert.equal(r.x + r.w, BOX.x + BOX.w, 'east edge must stay put')
+})
+t('canvasResize: north drag past the minimum pins the south edge', () => {
+  const r = resizeRect(BOX, 'n', 0, 900, FREE)
+  assert.equal(r.h, 80)
+  assert.equal(r.y + r.h, BOX.y + BOX.h, 'south edge must stay put')
+})
+t('canvasResize: east/south minimums clamp without moving the origin', () => {
+  const r = resizeRect(BOX, 'se', -900, -900, FREE)
+  assert.deepEqual(r, { x: 100, y: 100, w: 140, h: 80 })
+})
+t('canvasResize: snapping the west edge leaves the east edge exactly pinned', () => {
+  // The regression this module exists for: snapping x and w independently
+  // moved the far edge too.
+  const r = resizeRect(BOX, 'w', 3, 0, SNAP)
+  assert.equal(r.x % 20, 0, 'dragged edge snaps to the grid')
+  assert.equal(r.x + r.w, BOX.x + BOX.w, 'east edge must not drift')
+})
+t('canvasResize: snapping the north edge leaves the south edge exactly pinned', () => {
+  const r = resizeRect(BOX, 'n', 0, 7, SNAP)
+  assert.equal(r.y % 20, 0)
+  assert.equal(r.y + r.h, BOX.y + BOX.h)
+})
+t('canvasResize: snapping a south-east drag lands both edges on the grid', () => {
+  const r = resizeRect(BOX, 'se', 7, 7, SNAP)
+  assert.equal((r.x + r.w) % 20, 0)
+  assert.equal((r.y + r.h) % 20, 0)
+  assert.equal(r.x, BOX.x)
+  assert.equal(r.y, BOX.y)
+})
+t('canvasResize: a zero delta is a no-op', () => {
+  assert.deepEqual(resizeRect(BOX, 'se', 0, 0, FREE), BOX)
+  assert.deepEqual(resizeRect(BOX, 'nw', 0, 0, FREE), BOX)
+})
+t('canvasResize: fractional deltas are rounded to whole pixels when not snapping', () => {
+  const r = resizeRect(BOX, 'se', 10.4, 10.6, FREE)
+  assert.deepEqual(r, { x: 100, y: 100, w: 410, h: 311 })
+})
+
+// ── canvas grid alignment ─────────────────────────────────────────────────────
+// The bug this guards: snapping quantised to 20 while the background drew cells
+// at 28, so snapped items never lined up with the visible grid. The invariant is
+// that every DRAWN grid feature sits on a coordinate snapToGrid() can produce.
+
+// Replicate how the browser tiles a CSS background, and return the world
+// coordinate of drawn feature `k`. `background-position` is the offset of the
+// first tile; a dot is centred in its tile, a line sits at the tile's start.
+function drawnFeatureWorld(cam: number, zoom: number, kind: 'dots' | 'grid', k: number): number {
+  const size = GRID * zoom
+  const offset = gridBackgroundOffset(cam, zoom, kind)
+  const boardPos = offset + k * size + (kind === 'dots' ? size / 2 : 0)
+  return (boardPos - cam) / zoom
+}
+
+const nearlyMultipleOfGrid = (v: number) => {
+  const m = Math.abs(v) % GRID
+  return Math.min(m, GRID - m) < 1e-9
+}
+
+t('canvasGrid: snapToGrid quantises to GRID and rounds when off', () => {
+  assert.equal(snapToGrid(GRID * 3 + 2, true), GRID * 3)
+  assert.equal(snapToGrid(GRID * 3 - 2, true), GRID * 3)
+  assert.equal(snapToGrid(10.4, false), 10)
+})
+t('canvasGrid: drawn grid LINES land on snap coordinates', () => {
+  for (const cam of [0, 120, -350, 17.5]) {
+    for (const zoom of [0.4, 1, 1.75, 2.5]) {
+      for (const k of [-3, 0, 5]) {
+        const w = drawnFeatureWorld(cam, zoom, 'grid', k)
+        assert.ok(nearlyMultipleOfGrid(w), `line off-lattice at cam=${cam} zoom=${zoom} k=${k} -> ${w}`)
+      }
+    }
+  }
+})
+t('canvasGrid: drawn DOTS land on snap coordinates (half-cell shift applied)', () => {
+  for (const cam of [0, 120, -350, 17.5]) {
+    for (const zoom of [0.4, 1, 1.75, 2.5]) {
+      for (const k of [-3, 0, 5]) {
+        const w = drawnFeatureWorld(cam, zoom, 'dots', k)
+        assert.ok(nearlyMultipleOfGrid(w), `dot off-lattice at cam=${cam} zoom=${zoom} k=${k} -> ${w}`)
+      }
+    }
+  }
+})
+t('canvasGrid: dots and lines differ by exactly half a cell', () => {
+  const size = GRID * 1.5
+  const d = gridBackgroundOffset(200, 1.5, 'dots')
+  const g = gridBackgroundOffset(200, 1.5, 'grid')
+  assert.ok(Math.abs((g - d) - size / 2) < 1e-9)
+})
+t('canvasGrid: a snapped card corner coincides with a drawn feature', () => {
+  const snapped = snapToGrid(437, true)
+  assert.ok(nearlyMultipleOfGrid(snapped))
+  // ...and the resize path snaps its dragged edge onto the same lattice.
+  const r = resizeRect({ x: 0, y: 0, w: 400, h: 300 }, 'se', 5, 5, { minW: 140, minH: 80, grid: GRID })
+  assert.ok(nearlyMultipleOfGrid(r.x + r.w))
+  assert.ok(nearlyMultipleOfGrid(r.y + r.h))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

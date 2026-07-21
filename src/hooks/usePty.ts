@@ -16,15 +16,22 @@ import { monoFontStack, ANSI_DEFAULT, TERM_ANSI_KEYS, termAnsiVar } from '../app
 // Both the foreground/background set and the 16-colour ANSI palette are theme
 // vars published by applyAppearance(), so themes (incl. light ones) restyle the
 // terminal without any hardcoded palette here.
-function readTermTheme(): Record<string, string> {
+// `transparentBg` makes the terminal paint no background of its own, so
+// whatever sits behind it shows through while glyphs stay fully opaque. Canvas
+// mode uses this for see-through terminal cards: the card supplies a faded
+// backdrop layer, the text on top is never dimmed. Requires `allowTransparency`
+// on the Terminal (set unconditionally below — xterm only honours it at open()).
+function readTermTheme(transparentBg = false): Record<string, string> {
   const cs = getComputedStyle(document.documentElement)
   const v = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback
   const ansi: Record<string, string> = {}
   for (const k of TERM_ANSI_KEYS) ansi[k] = v(termAnsiVar(k), ANSI_DEFAULT[k])
   return {
-    background: v('--bg-terminal', '#121110'),
+    background: transparentBg ? 'rgba(0,0,0,0)' : v('--bg-terminal', '#121110'),
     foreground: v('--text-primary', '#ece7e0'),
     cursor: v('--accent', '#d4845a'),
+    // Stays opaque: this is the glyph colour under a block cursor, so a
+    // transparent value would make the cursor cell unreadable.
     cursorAccent: v('--bg-terminal', '#121110'),
     selectionBackground: v('--accent-glow', 'rgba(212,132,90,0.28)'),
     ...ansi,
@@ -145,6 +152,9 @@ interface UsePtyOptions {
   // persisted scrollback replay. Lets the caller dismiss the boot loader as soon
   // as anything is actually drawn, instead of leaving a black pane.
   onOutput?: () => void
+  // Paint no terminal background, letting the container behind show through
+  // (canvas mode's translucent terminal cards). Text stays fully opaque.
+  transparentBg?: boolean
 }
 
 export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElement>, opts?: UsePtyOptions) {
@@ -158,6 +168,8 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
   const appearanceVersion = useWorkspaceStore(s => s.appearanceVersion)
   const optsRef = useRef(opts)
   useEffect(() => { optsRef.current = opts })
+  // Read off opts (not the ref) so it can drive the live-theme effect's deps.
+  const transparentBg = opts?.transparentBg ?? false
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -169,7 +181,7 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
       useWorkspaceStore.getState()
 
     const term = new Terminal({
-      theme: { ...ANSI_DEFAULT, ...readTermTheme() },
+      theme: { ...ANSI_DEFAULT, ...readTermTheme(optsRef.current?.transparentBg) },
       fontSize: initialFontSize,
       fontFamily: monoFontStack(initialMono),
       fontWeight: '400',
@@ -177,7 +189,12 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
       cursorBlink: initialBlink,
       cursorStyle: 'block',
       scrollback: 5000,
-      allowTransparency: false,
+      // xterm only reads this at open() and it cannot be toggled afterwards, so
+      // it is enabled for every terminal rather than only the translucent ones —
+      // otherwise turning transparency on in canvas mode would mean tearing down
+      // and rebuilding a live terminal. Panes stay visually identical because
+      // --bg-terminal is an opaque colour; only a theme with alpha shows through.
+      allowTransparency: true,
       overviewRulerWidth: 0
     })
 
@@ -365,7 +382,9 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
     term.options.fontFamily = monoFontStack(monoFont)
     // appearanceVersion is in the dep list so theme/accent changes re-read the
     // CSS variables; the read happens after the new vars are applied.
-    term.options.theme = { ...ANSI_DEFAULT, ...readTermTheme() }
+    // transparentBg is in the deps too, so toggling canvas transparency
+    // re-themes the live terminal instead of needing a rebuild.
+    term.options.theme = { ...ANSI_DEFAULT, ...readTermTheme(transparentBg) }
     const h = requestAnimationFrame(() => {
       try {
         fitAddonRef.current?.fit()
@@ -373,7 +392,7 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
       } catch { /* ignore if container not yet sized */ }
     })
     return () => cancelAnimationFrame(h)
-  }, [terminalFontSize, terminalCursorBlink, monoFont, appearanceVersion, paneId])
+  }, [terminalFontSize, terminalCursorBlink, monoFont, appearanceVersion, paneId, transparentBg])
 
   const findNext = useCallback((q: string) => { try { searchAddonRef.current?.findNext(q) } catch { /* ignore */ } }, [])
   const findPrevious = useCallback((q: string) => { try { searchAddonRef.current?.findPrevious(q) } catch { /* ignore */ } }, [])

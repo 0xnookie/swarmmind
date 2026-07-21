@@ -1,7 +1,8 @@
-import { ipcMain } from 'electron'
-import { readdir, readFile, writeFile, mkdir } from 'fs/promises'
+import { ipcMain, shell } from 'electron'
+import { readdir, readFile, writeFile, mkdir, rename, chmod, stat } from 'fs/promises'
 import { existsSync, statSync } from 'fs'
-import { join, extname, dirname } from 'path'
+import { join, extname, dirname, resolve, sep } from 'path'
+import { getCurrentRootPath } from './workspace'
 
 export interface FsEntry {
   name: string
@@ -43,6 +44,42 @@ async function walkFiles(rootPath: string, max: number): Promise<string[]> {
 }
 
 export interface CodeMatch { path: string; line: number; text: string }
+
+// ── Destructive-op containment ──────────────────────────────────────────────
+// rename / trash / chmod mutate the user's disk, so unlike the read handlers
+// they are confined to the open workspace. Everything is resolved to an
+// absolute real path first, then checked to be *strictly inside* the root — so
+// `..` traversal, and the root directory itself, are both rejected. Without
+// this an accidental (or agent-driven) call could rename or trash anything the
+// user account can reach.
+function assertInsideWorkspace(target: string): string {
+  const root = getCurrentRootPath()
+  if (!root) throw new Error('No workspace is open')
+  const abs = resolve(target)
+  const rootAbs = resolve(root)
+  const prefix = rootAbs.endsWith(sep) ? rootAbs : rootAbs + sep
+  // Case-insensitive on Windows/macOS; the compare mirrors the OS's own rules
+  // loosely enough to stay a guard rather than a correctness dependency.
+  const cmp = process.platform === 'linux'
+    ? (a: string, b: string) => a.startsWith(b)
+    : (a: string, b: string) => a.toLowerCase().startsWith(b.toLowerCase())
+  if (!cmp(abs, prefix)) throw new Error('Path is outside the workspace')
+  // Never touch SwarmMind's own per-workspace state directory.
+  const rel = abs.slice(prefix.length)
+  if (rel === '.swarmmind' || rel.startsWith('.swarmmind' + sep)) {
+    throw new Error('Path is inside .swarmmind')
+  }
+  return abs
+}
+
+export interface FsStat {
+  size: number
+  mtimeMs: number
+  isDir: boolean
+  mode: number      // full st_mode
+  octal: string     // permission bits as e.g. '644'
+  readonly: boolean // owner-write bit clear (the only bit Windows tracks)
+}
 
 export function registerFsHandlers(): void {
   // List directory contents — dirs first, then files, both alphabetical
@@ -136,6 +173,82 @@ export function registerFsHandlers(): void {
   ipcMain.handle('fs:writeFile', async (_e, filePath: string, content: string): Promise<void> => {
     await mkdir(dirname(filePath), { recursive: true })
     await writeFile(filePath, content, 'utf-8')
+  })
+
+  // ── Mutating file operations (editor context menu) ────────────────────────
+  // All three are workspace-confined via assertInsideWorkspace and return a
+  // {ok} / {error} shape rather than throwing across IPC, so the renderer can
+  // show the real reason (EACCES, ENOTEMPTY, name collision) in the UI.
+
+  // Stat a path — powers the permissions dialog and the rename pre-checks.
+  ipcMain.handle('fs:stat', async (_e, filePath: string): Promise<FsStat | null> => {
+    try {
+      const s = await stat(filePath)
+      return {
+        size: s.size,
+        mtimeMs: s.mtimeMs,
+        isDir: s.isDirectory(),
+        mode: s.mode,
+        octal: (s.mode & 0o777).toString(8).padStart(3, '0'),
+        readonly: (s.mode & 0o200) === 0,
+      }
+    } catch {
+      return null
+    }
+  })
+
+  // Rename (or move) a file/folder within the workspace. Refuses to clobber an
+  // existing target — fs.rename would silently overwrite a file otherwise.
+  ipcMain.handle('fs:rename', async (_e, fromPath: string, toName: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+    try {
+      const from = assertInsideWorkspace(fromPath)
+      // `toName` is a bare name, not a path — reject separators so a rename
+      // can't walk out of the containing directory.
+      if (!toName || /[\\/]/.test(toName) || toName === '.' || toName === '..') {
+        return { ok: false, error: 'Invalid name' }
+      }
+      const to = assertInsideWorkspace(join(dirname(from), toName))
+      if (from === to) return { ok: true, path: to }
+      if (existsSync(to)) return { ok: false, error: 'A file with that name already exists' }
+      await rename(from, to)
+      return { ok: true, path: to }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Delete a file/folder by moving it to the OS trash — recoverable, unlike
+  // rm -rf. Works for directories too (trashItem takes the whole subtree).
+  ipcMain.handle('fs:trash', async (_e, filePath: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      const abs = assertInsideWorkspace(filePath)
+      if (!existsSync(abs)) return { ok: false, error: 'Path no longer exists' }
+      await shell.trashItem(abs)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Change permission bits. NOTE: on Windows only the read-only flag is real —
+  // Node maps the owner-write bit onto it and ignores the rest — so the UI
+  // presents a read-only toggle there and the full octal grid elsewhere.
+  ipcMain.handle('fs:chmod', async (_e, filePath: string, mode: number): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      const abs = assertInsideWorkspace(filePath)
+      if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
+        return { ok: false, error: 'Invalid mode' }
+      }
+      await chmod(abs, mode)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Reveal a path in the OS file manager (Explorer / Finder).
+  ipcMain.handle('fs:reveal', async (_e, filePath: string): Promise<void> => {
+    try { shell.showItemInFolder(resolve(filePath)) } catch { /* best effort */ }
   })
 
   // Read an image file as a base64 data URL plus metadata (max 25MB)

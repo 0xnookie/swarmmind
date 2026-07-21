@@ -6,6 +6,63 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.20.0]
+
+**Canvas mode grows up, and the editor learns file management.** Canvas cards
+now resize from every edge, terminals can go see-through without becoming
+unreadable, the tool rail moves out of your way, and a screenful of browsers
+collapses into one tabbed card. In the editor, you can finally close every tab
+at once and rename, delete or re-permission files straight from the tree.
+
+### Added
+- **Device mockups on the canvas.** Drop a phone or tablet frame (`M`) that
+  loads your dev server inside a real device-sized viewport — iPhone SE / 14 /
+  15 Pro Max, Pixel 8, Galaxy S22 & Z Fold, iPad mini / Air / Pro, Surface Duo —
+  with a rotate button and a matching mobile user-agent, so media queries and
+  breakpoints respond exactly as they would on the device.
+- **Resize from any edge.** Canvas cards now have all 8 handles (4 corners +
+  4 edges) instead of just the bottom-right corner. The edge you aren't dragging
+  stays pinned, and handles keep a constant on-screen size so they stay
+  grabbable when zoomed out.
+- **See-through terminals.** A transparency slider on any terminal card fades
+  only the *background* — the terminal text, title bar and buttons stay fully
+  opaque and readable at every level. **Apply to all terminals** makes it the
+  board-wide default (and clears per-card overrides); it's saved per workspace.
+- **Movable, collapsible tool rail.** Drag the rail anywhere on the board by its
+  grip, or collapse it to a small puck when you want the whole canvas. Position
+  and collapsed state persist per workspace; the pen bar follows the rail.
+- **Browser tabs on the canvas.** Browser cards now hold multiple pages behind a
+  tab strip, with `+` to add and `×` to close. **Stack all N browsers into tabs**
+  collapses every browser on the board into one card — and **Split tabs** undoes
+  it. Inactive tabs stay loaded, so switching keeps scroll position and page
+  state.
+- **Close all editor tabs.** A `⋯` button pinned to the right of the tab strip
+  (and right-click on any tab) offers **close all**, **close others** and
+  **close saved**. Unsaved files are confirmed once for the whole batch instead
+  of one dialog per file.
+- **File management in the editor.** Right-click any file or folder in the tree
+  to **rename** (inline, with the extension preserved), **move to trash**, edit
+  **permissions**, or reveal it in your OS file manager. Deletes go to the
+  system trash, not an unrecoverable `rm`. Open tabs follow renames and close on
+  delete — including tabs nested under a renamed or deleted folder — so a tab
+  can never point at a path that no longer exists.
+
+### Fixed
+- **Snap-to-grid now actually snaps to the grid you can see.** Snapping
+  quantised to a 20px lattice while the board drew its dots and lines at 28px,
+  so snapped cards never lined up with the visible grid; and the dot pattern was
+  offset half a cell from the snap positions on top of that. Both the drawn grid
+  and snapping now derive from one constant, and a snapped card corner lands
+  exactly on a drawn grid feature.
+
+### Internal
+- Canvas resize geometry and grid alignment moved into a dependency-free
+  `src/lib/canvasResize.ts` with 17 new unit tests (223 total), following the
+  project's "risky pure logic lives in `lib/` and is asserted against" rule.
+- New workspace-confined `fs:stat` / `fs:rename` / `fs:trash` / `fs:chmod` IPC.
+  All resolve paths and refuse anything outside the open workspace (or inside
+  `.swarmmind`), so a rename or delete can't escape the repo.
+
 ## [0.19.0]
 
 **Canvas mode** — a free-form, infinite spatial workspace (cnvs.dev / Miro

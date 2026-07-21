@@ -1,10 +1,15 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useT } from '../i18n'
+import { confirmDialog } from './ConfirmDialog'
 
 interface FileExplorerProps {
   rootPath: string
   onFileSelect: (filePath: string, fileName: string) => void
   selectedPath?: string | null
+  /** A tree entry was renamed on disk — open tabs pointing at it must follow. */
+  onFileRenamed?: (oldPath: string, newPath: string, newName: string) => void
+  /** A tree entry was trashed — open tabs under it must close. */
+  onFileDeleted?: (path: string) => void
 }
 
 interface TreeNode {
@@ -226,7 +231,13 @@ async function buildNodes(dirPath: string, depth: number, expanded: Set<string>)
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplorerProps) {
+export function FileExplorer({
+  rootPath,
+  onFileSelect,
+  selectedPath,
+  onFileRenamed,
+  onFileDeleted,
+}: FileExplorerProps) {
   const t = useT()
   const [nodes, setNodes] = useState<TreeNode[]>([])
   const [loading, setLoading] = useState(true)
@@ -234,6 +245,26 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
   // The remembered-expanded set for the current root; mutated by toggle() and
   // written through to localStorage so a remount restores the open folders.
   const expandedRef = useRef<Set<string>>(new Set())
+
+  // File-operation UI: right-click menu, the row being inline-renamed, the
+  // entry whose permissions are open, and the last failure to surface.
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: FsEntry } | null>(null)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [permsFor, setPermsFor] = useState<FsEntry | null>(null)
+  const [opError, setOpError] = useState<string | null>(null)
+
+  // Rebuild the whole tree from disk, keeping the expanded set. Mutations
+  // (rename/delete) can change any level, so a full rebuild is simpler — and
+  // cheap, since only expanded directories are ever read.
+  const reload = useCallback(async () => {
+    try {
+      const built = await buildNodes(rootPath, 1, expandedRef.current)
+      setNodes(built)
+      saveExpanded(rootPath, expandedRef.current)
+    } catch (err) {
+      setError(String(err))
+    }
+  }, [rootPath])
 
   // Load root on mount / rootPath change, re-expanding remembered folders
   useEffect(() => {
@@ -259,6 +290,65 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
       cancelled = true
     }
   }, [rootPath])
+
+  // Dismiss the context menu on any outside click / Escape.
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenu(null) }
+    window.addEventListener('click', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
+
+  // Auto-clear a transient op error so it doesn't linger over the tree.
+  useEffect(() => {
+    if (!opError) return
+    const id = setTimeout(() => setOpError(null), 6000)
+    return () => clearTimeout(id)
+  }, [opError])
+
+  const commitRename = useCallback(
+    async (entry: FsEntry, newName: string) => {
+      setRenaming(null)
+      const trimmed = newName.trim()
+      if (!trimmed || trimmed === entry.name) return
+      const res = await window.swarmmind.fsRename(entry.path, trimmed)
+      if (!res.ok) { setOpError(res.error); return }
+      // A renamed directory invalidates every remembered path beneath it.
+      if (entry.type === 'dir') {
+        const oldPrefix = entry.path + (entry.path.includes('\\') ? '\\' : '/')
+        for (const p of [...expandedRef.current]) {
+          if (p === entry.path || p.startsWith(oldPrefix)) expandedRef.current.delete(p)
+        }
+      }
+      onFileRenamed?.(entry.path, res.path, trimmed)
+      await reload()
+    },
+    [onFileRenamed, reload]
+  )
+
+  const doDelete = useCallback(
+    async (entry: FsEntry) => {
+      setMenu(null)
+      const ok = await confirmDialog({
+        title: entry.name,
+        body: entry.type === 'dir' ? t('file.trashDirConfirm') : t('file.trashConfirm'),
+        confirmLabel: t('file.moveToTrash'),
+        danger: true,
+      })
+      if (!ok) return
+      const res = await window.swarmmind.fsTrash(entry.path)
+      if (!res.ok) { setOpError(res.error); return }
+      expandedRef.current.delete(entry.path)
+      onFileDeleted?.(entry.path)
+      await reload()
+    },
+    [t, onFileDeleted, reload]
+  )
 
   const toggle = useCallback(
     async (nodeIndex: number, node: TreeNode) => {
@@ -385,8 +475,249 @@ export function FileExplorer({ rootPath, onFileSelect, selectedPath }: FileExplo
           index={i}
           selectedPath={selectedPath ?? null}
           onToggle={toggle}
+          renaming={renaming === node.entry.path}
+          onRenameCommit={(name) => commitRename(node.entry, name)}
+          onRenameCancel={() => setRenaming(null)}
+          onContextMenu={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setMenu({ x: e.clientX, y: e.clientY, entry: node.entry })
+          }}
         />
       ))}
+
+      {/* Failure banner — permissions, name collisions, locked files */}
+      {opError && (
+        <div
+          onClick={() => setOpError(null)}
+          style={{
+            position: 'sticky', bottom: 0, margin: 8, padding: '7px 10px',
+            background: 'var(--bg-elevated)', border: '1px solid var(--error)',
+            borderRadius: 7, color: 'var(--error)', fontSize: 11.5,
+            cursor: 'pointer', whiteSpace: 'normal', wordBreak: 'break-word',
+          }}
+          title={t('common.close')}
+        >
+          {opError}
+        </div>
+      )}
+
+      {/* Right-click file operations */}
+      {menu && (
+        <div
+          style={{
+            position: 'fixed',
+            left: Math.min(menu.x, window.innerWidth - 200),
+            top: Math.min(menu.y, window.innerHeight - 180),
+            minWidth: 180, padding: 4, zIndex: 300,
+            background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+            borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+            display: 'flex', flexDirection: 'column', gap: 1,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="ctx-menu-item"
+            onClick={() => { setRenaming(menu.entry.path); setMenu(null) }}
+          >
+            {t('file.rename')}
+          </button>
+          <button
+            className="ctx-menu-item"
+            onClick={() => { setPermsFor(menu.entry); setMenu(null) }}
+          >
+            {t('file.permissions')}
+          </button>
+          <button
+            className="ctx-menu-item"
+            onClick={() => { void window.swarmmind.fsReveal(menu.entry.path); setMenu(null) }}
+          >
+            {t('file.revealInFolder')}
+          </button>
+          <div style={{ height: 1, background: 'var(--border)', margin: '3px 4px' }} />
+          <button
+            className="ctx-menu-item"
+            data-variant="danger"
+            onClick={() => doDelete(menu.entry)}
+          >
+            {t('file.moveToTrash')}
+          </button>
+        </div>
+      )}
+
+      {/* Permissions editor */}
+      {permsFor && (
+        <PermissionsDialog
+          entry={permsFor}
+          onClose={() => setPermsFor(null)}
+          onError={setOpError}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Permissions dialog ────────────────────────────────────────────────────────
+// POSIX shows the full owner/group/other grid. Windows only actually tracks the
+// read-only flag (Node maps the owner-write bit onto it and drops the rest), so
+// there we show a single honest toggle instead of a grid that would silently
+// not apply.
+
+const IS_WINDOWS = navigator.userAgent.includes('Windows')
+
+const PERM_BITS: { label: string; bit: number }[] = [
+  { label: 'r', bit: 4 },
+  { label: 'w', bit: 2 },
+  { label: 'x', bit: 1 },
+]
+
+function PermissionsDialog({
+  entry,
+  onClose,
+  onError,
+}: {
+  entry: FsEntry
+  onClose: () => void
+  onError: (msg: string) => void
+}) {
+  const t = useT()
+  const [stat, setStat] = useState<FsStat | null>(null)
+  const [mode, setMode] = useState(0)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    window.swarmmind.fsStat(entry.path).then((s) => {
+      if (cancelled) return
+      setStat(s)
+      setMode(s ? s.mode & 0o777 : 0)
+    })
+    return () => { cancelled = true }
+  }, [entry.path])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onClose])
+
+  const apply = async () => {
+    setSaving(true)
+    const res = await window.swarmmind.fsChmod(entry.path, mode)
+    setSaving(false)
+    if (!res.ok) { onError(res.error); return }
+    onClose()
+  }
+
+  const octal = (mode & 0o777).toString(8).padStart(3, '0')
+  const toggleBit = (shift: number, bit: number) => setMode((m) => m ^ (bit << shift))
+  // Windows: the read-only toggle is the owner-write bit, cleared across all
+  // three classes so the resulting mode reads sensibly if the repo moves to a
+  // POSIX box.
+  const winReadonly = (mode & 0o200) === 0
+  const setWinReadonly = (ro: boolean) => setMode((m) => (ro ? m & ~0o222 : m | 0o200))
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 400, background: 'rgba(0,0,0,0.55)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 360, maxWidth: 'calc(100vw - 48px)',
+          background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+          borderRadius: 10, padding: 20, boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+          display: 'flex', flexDirection: 'column', gap: 14,
+        }}
+      >
+        <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+          {t('file.permissions')}
+        </div>
+        <div
+          style={{
+            fontSize: 12, color: 'var(--text-muted)', wordBreak: 'break-all',
+            fontFamily: 'var(--font-mono, monospace)',
+          }}
+        >
+          {entry.name}
+        </div>
+
+        {!stat ? (
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{t('common.loading')}</div>
+        ) : IS_WINDOWS ? (
+          <>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={winReadonly}
+                onChange={(e) => setWinReadonly(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              {t('file.perm.readonly')}
+            </label>
+            <div style={{ fontSize: 11.5, color: 'var(--text-dim)', lineHeight: 1.5 }}>
+              {t('file.perm.windowsNote')}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {([
+                { label: t('file.perm.owner'), shift: 6 },
+                { label: t('file.perm.group'), shift: 3 },
+                { label: t('file.perm.others'), shift: 0 },
+              ] as const).map((cls) => (
+                <div key={cls.shift} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ width: 62, fontSize: 12.5, color: 'var(--text-secondary)' }}>{cls.label}</span>
+                  {PERM_BITS.map((p) => (
+                    <label key={p.label} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={(mode & (p.bit << cls.shift)) !== 0}
+                        onChange={() => toggleBit(cls.shift, p.bit)}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      {p.label}
+                    </label>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'var(--font-mono, monospace)' }}>
+              {t('file.perm.mode')}: {octal}
+            </div>
+          </>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button
+            onClick={onClose}
+            style={{
+              padding: '7px 14px', fontSize: 13, fontFamily: 'inherit', borderRadius: 6,
+              cursor: 'pointer', border: '1px solid var(--border)', background: 'transparent',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            onClick={apply}
+            disabled={!stat || saving}
+            style={{
+              padding: '7px 14px', fontSize: 13, fontFamily: 'inherit', fontWeight: 600,
+              borderRadius: 6, cursor: !stat || saving ? 'default' : 'pointer',
+              border: '1px solid var(--accent)', background: 'transparent',
+              color: 'var(--accent)', opacity: !stat || saving ? 0.5 : 1,
+            }}
+          >
+            {saving ? t('common.saving') : t('common.apply')}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
@@ -398,9 +729,22 @@ interface TreeRowProps {
   index: number
   selectedPath: string | null
   onToggle: (index: number, node: TreeNode) => void
+  renaming: boolean
+  onRenameCommit: (name: string) => void
+  onRenameCancel: () => void
+  onContextMenu: (e: React.MouseEvent) => void
 }
 
-function TreeRow({ node, index, selectedPath, onToggle }: TreeRowProps) {
+function TreeRow({
+  node,
+  index,
+  selectedPath,
+  onToggle,
+  renaming,
+  onRenameCommit,
+  onRenameCancel,
+  onContextMenu,
+}: TreeRowProps) {
   const [hovered, setHovered] = useState(false)
   const isSelected = node.entry.type === 'file' && node.entry.path === selectedPath
 
@@ -434,10 +778,11 @@ function TreeRow({ node, index, selectedPath, onToggle }: TreeRowProps) {
         boxSizing: 'border-box',
         transition: 'background 80ms',
       }}
-      onClick={() => onToggle(index, node)}
+      onClick={() => { if (!renaming) onToggle(index, node) }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      title={node.entry.path}
+      onContextMenu={onContextMenu}
+      title={renaming ? undefined : node.entry.path}
     >
       {node.entry.type === 'dir' ? (
         node.expanded ? (
@@ -448,8 +793,69 @@ function TreeRow({ node, index, selectedPath, onToggle }: TreeRowProps) {
       ) : (
         <FileIcon ext={node.entry.ext} />
       )}
-      <span>{node.entry.name}</span>
+      {renaming ? (
+        <RenameInput
+          initial={node.entry.name}
+          isDir={node.entry.type === 'dir'}
+          onCommit={onRenameCommit}
+          onCancel={onRenameCancel}
+        />
+      ) : (
+        <span>{node.entry.name}</span>
+      )}
     </div>
+  )
+}
+
+// Inline rename field. Mirrors VS Code: the basename is preselected (so the
+// extension survives a straight retype), Enter commits, Escape/blur cancels or
+// commits respectively.
+function RenameInput({
+  initial,
+  isDir,
+  onCommit,
+  onCancel,
+}: {
+  initial: string
+  isDir: boolean
+  onCommit: (name: string) => void
+  onCancel: () => void
+}) {
+  const ref = useRef<HTMLInputElement>(null)
+  const [value, setValue] = useState(initial)
+  // Escape must not also fire the blur-commit — this latch makes cancel win.
+  const cancelled = useRef(false)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.focus()
+    const dot = initial.lastIndexOf('.')
+    // Select just the stem for files with an extension; whole name otherwise.
+    if (!isDir && dot > 0) el.setSelectionRange(0, dot)
+    else el.select()
+  }, [initial, isDir])
+
+  return (
+    <input
+      ref={ref}
+      value={value}
+      spellCheck={false}
+      onChange={(e) => setValue(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation()
+        if (e.key === 'Enter') { e.preventDefault(); onCommit(value) }
+        else if (e.key === 'Escape') { e.preventDefault(); cancelled.current = true; onCancel() }
+      }}
+      onBlur={() => { if (!cancelled.current) onCommit(value) }}
+      style={{
+        flex: 1, minWidth: 0, background: 'var(--bg-base)',
+        border: '1px solid var(--accent)', borderRadius: 4,
+        color: 'var(--text-primary)', fontSize: 12.5, fontFamily: 'inherit',
+        padding: '1px 5px', outline: 'none',
+      }}
+    />
   )
 }
 

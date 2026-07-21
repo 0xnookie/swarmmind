@@ -217,6 +217,12 @@ contextBridge.exposeInMainWorld('swarmmind', {
   fsReadFile: (filePath: string) => ipcRenderer.invoke('fs:readFile', filePath),
   fsWriteFile: (filePath: string, content: string) => ipcRenderer.invoke('fs:writeFile', filePath, content),
   fsReadImage: (filePath: string) => ipcRenderer.invoke('fs:readImage', filePath),
+  // Mutating file ops — workspace-confined in main; delete goes to the OS trash.
+  fsStat: (filePath: string) => ipcRenderer.invoke('fs:stat', filePath),
+  fsRename: (fromPath: string, toName: string) => ipcRenderer.invoke('fs:rename', fromPath, toName),
+  fsTrash: (filePath: string) => ipcRenderer.invoke('fs:trash', filePath),
+  fsChmod: (filePath: string, mode: number) => ipcRenderer.invoke('fs:chmod', filePath, mode),
+  fsReveal: (filePath: string) => ipcRenderer.invoke('fs:reveal', filePath),
   // TypeScript language service (real diagnostics / hover / go-to-definition).
   // The live buffer travels with each request — unsaved text is the truth.
   lspDiagnostics: (filePath: string, content: string) => ipcRenderer.invoke('lsp:diagnostics', filePath, content),

@@ -169,6 +169,13 @@ declare global {
       fsReadFile: (filePath: string) => Promise<string>
       fsWriteFile: (filePath: string, content: string) => Promise<void>
       fsReadImage: (filePath: string) => Promise<ImageData>
+      // Mutating file ops. Confined to the open workspace in main and returning
+      // a result union instead of throwing, so callers can surface the reason.
+      fsStat: (filePath: string) => Promise<FsStat | null>
+      fsRename: (fromPath: string, toName: string) => Promise<FsResult<{ path: string }>>
+      fsTrash: (filePath: string) => Promise<FsResult>
+      fsChmod: (filePath: string, mode: number) => Promise<FsResult>
+      fsReveal: (filePath: string) => Promise<void>
       verifyScripts: (rootPath: string) => Promise<string[]>
       verifyRun: (rootPath: string, script: string) => Promise<{ code: number; stdout: string; stderr: string; error?: string }>
       // TypeScript language service — real diagnostics, hover, go-to-definition.
@@ -358,6 +365,18 @@ declare global {
     size: number
     mtimeMs: number
   }
+
+  interface FsStat {
+    size: number
+    mtimeMs: number
+    isDir: boolean
+    mode: number      // full st_mode
+    octal: string     // permission bits, e.g. '644'
+    readonly: boolean // owner-write bit clear — the only bit Windows tracks
+  }
+
+  // Mutating fs calls report failure in-band so the UI can show the OS reason.
+  type FsResult<T = {}> = ({ ok: true } & T) | { ok: false; error: string }
 
   interface AgentSkillInfo {
     slug: string

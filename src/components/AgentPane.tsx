@@ -131,9 +131,12 @@ interface AgentPaneProps {
   onToggleExpand?: () => void
   onPaneDragStart?: (e: React.DragEvent) => void
   onPaneDragEnd?: () => void
+  // Canvas mode: render the terminal with no background of its own so the
+  // card's faded backdrop shows through while the text stays fully readable.
+  transparentBg?: boolean
 }
 
-export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSplitV, onClose, isExpanded, isVisible = true, onToggleExpand, onPaneDragStart, onPaneDragEnd }: AgentPaneProps) {
+export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSplitV, onClose, isExpanded, isVisible = true, onToggleExpand, onPaneDragStart, onPaneDragEnd, transparentBg = false }: AgentPaneProps) {
   const t = useT()
   const containerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
@@ -330,7 +333,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
   const handleExitRef = useRef<(code: number) => void>(() => {})
 
   const { spawn, spawnShell, kill, clear, fit, focus, injectText, writeNotice, getSelection, copySelection, paste, getRecentOutput, findNext, findPrevious, clearSearch } =
-    usePty(paneId, containerRef, { onExit: code => handleExitRef.current(code), onOutput: handleOutput })
+    usePty(paneId, containerRef, { onExit: code => handleExitRef.current(code), onOutput: handleOutput, transparentBg })
 
   // When this pane becomes the visible fullscreen tab, it was just un-hidden
   // (display:none → flex). The ResizeObserver refits it on the size change, but
@@ -705,7 +708,12 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       <div
         style={{
           ...styles.titleBar,
-          background: isActive ? 'var(--bg-elevated)' : 'var(--bg-panel)',
+          // Transparent in canvas translucency mode so the card's faded backdrop
+          // shows through here too and the pane doesn't read as an opaque strip
+          // across an otherwise see-through card. Its contents stay opaque.
+          background: transparentBg
+            ? 'transparent'
+            : isActive ? 'var(--bg-elevated)' : 'var(--bg-panel)',
           cursor: onPaneDragStart ? 'grab' : undefined,
         }}
         draggable={!!onPaneDragStart}
@@ -878,7 +886,13 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
 
       {/* ── Terminal ── */}
       <div
-        style={{ ...styles.terminalWrap, ...(skillDragOver ? styles.terminalDragOver : {}) }}
+        style={{
+          ...styles.terminalWrap,
+          // In canvas transparency mode the card behind supplies the (faded)
+          // backdrop, so this wrapper must not paint an opaque one over it.
+          ...(transparentBg ? { background: 'transparent' } : null),
+          ...(skillDragOver ? styles.terminalDragOver : {}),
+        }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
