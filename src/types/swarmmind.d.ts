@@ -340,6 +340,7 @@ declare global {
     | 'agent_question'
     | 'dispatch'
     | 'synthesis'
+    | 'escalation'
     | 'cost'
     | 'file_changed'
     | 'contention'

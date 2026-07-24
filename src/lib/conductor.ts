@@ -90,7 +90,10 @@ export function isWakeEvent(type: string): boolean {
 // purpose: embedded newlines would submit prematurely in most CLI agents.
 // When `reviewable` is true (a distinct second agent is available to review), the
 // worker is told to report `needs_review` instead of `done` so the review gate
-// engages; otherwise it reports `done` directly.
+// engages; otherwise it reports `done` directly. The worker is also asked to post
+// periodic `task_note` progress pings — those are the heartbeat the conductor's
+// stuck-watchdog (sweepAction 'escalate') watches, so a long-but-alive task isn't
+// mistaken for a stall.
 export function buildDispatchPrompt(task: ConductorTask, reviewable: boolean): string {
   const deps = parseDeps(task.depends_on)
   const depHint = deps.length
@@ -102,7 +105,8 @@ export function buildDispatchPrompt(task: ConductorTask, reviewable: boolean): s
     : `When finished, call MCP task_update with id "${task.id}" and status "done", and memory_write with key "result:${task.id}", type "context", and a concise summary of what you did.`
   return (
     `[SwarmMind orchestrator] Please work on task ${shortId(task.id)} "${task.title}".${desc}${depHint} ` +
-    `${finish} If you cannot finish it, call task_update with status "failed".`
+    `${finish} For longer work, call task_note on "${task.id}" every major step so the orchestrator can see you are still progressing. ` +
+    `If you cannot finish it, call task_update with status "failed".`
   )
 }
 
@@ -140,6 +144,48 @@ export function buildNudgePrompt(taskId: string): string {
   return `[SwarmMind orchestrator] If task ${shortId(taskId)} is finished, call MCP task_update with status "done" and memory_write key "result:${taskId}". If you are blocked, call task_update with status "failed".`
 }
 
+// Why a task is being handed to the lead to re-plan (see buildEscalationPrompt):
+//   failed       — exhausted its automatic retries
+//   stalled      — a dispatched worker went silent (no progress heartbeat, never
+//                  reported done) past the stuck window
+//   unassignable — pending & ready but assigned to an agent with no running pane,
+//                  so no worker can ever pick it up (a swarm deadlock)
+export type EscalationReason = 'failed' | 'stalled' | 'unassignable'
+
+const ESCALATION_SITUATION: Record<EscalationReason, string> = {
+  failed: 'has failed and exhausted its automatic retries',
+  stalled: 'has stalled — its worker went silent without reporting progress or completion',
+  unassignable: 'is assigned to an agent that has no running pane, so no worker can pick it up',
+}
+
+// Prompt the LEAD to re-plan a task the deterministic loop can't resolve on its
+// own. This is the escalation brain: rather than silently giving up, the loop
+// asks the lead to reassign, re-split, or drop the task. The lead reasons and
+// acts via MCP; it must not implement the task itself.
+export function buildEscalationPrompt(task: ConductorTask, reason: EscalationReason): string {
+  const desc = task.description ? ` (${oneLine(task.description, 120)})` : ''
+  return (
+    `[SwarmMind orchestrator] Task ${shortId(task.id)} "${task.title}"${desc} ${ESCALATION_SITUATION[reason]}. ` +
+    `As the LEAD, decide how to unblock the goal — first read it with task_get id "${task.id}", then either: ` +
+    `reassign it (task_update id "${task.id}" with a different assigned_agent and status "pending"); ` +
+    `split it into smaller subtasks (task_create for each, then mark this one done or delete it); ` +
+    `or drop it if it is no longer needed (task_update status "done"). Do NOT implement the task yourself.`
+  )
+}
+
+// Optional per-completion report to the lead (feature-flagged): tell the lead a
+// task finished so it can course-correct mid-run — spawn a follow-up, reprioritise
+// — instead of only learning the outcome at the final synthesis.
+export function buildLeadReportPrompt(task: ConductorTask, result: string | null, remaining: number): string {
+  const summary = result ? oneLine(result, 240) : '(no result summary was written to shared memory)'
+  const left = remaining > 0 ? `${remaining} task(s) still remain.` : 'That was the last task.'
+  return (
+    `[SwarmMind orchestrator] Progress update — task ${shortId(task.id)} "${task.title}" is done: ${summary} ${left} ` +
+    `You are the LEAD: if this result changes the plan, adjust it now (create follow-up tasks with task_create, or reassign existing ones). ` +
+    `If nothing needs to change, take no action — do not re-implement completed work.`
+  )
+}
+
 // ── 1. Completion sweep ──────────────────────────────────────────────────────
 // What to do with one dispatched pane→task binding this tick. Every action
 // except 'nudge'/'none' frees the pane.
@@ -148,12 +194,20 @@ export type SweepAction =
   | 'free_vanished' //   task was deleted — just free the pane
   | 'free_done' //       worker reported done — collect the result, free
   | 'retry' //           worker reported failed, retries remain — reset to pending
-  | 'give_up' //         worker reported failed, retries exhausted — needs attention
+  | 'give_up' //         worker reported failed, retries exhausted — escalate/attention
   | 'free_for_review' // worker submitted for review — review routing takes over
   | 'free_pane_exited' // the agent process died mid-task
   | 'nudge' //           idle past the stall window without reporting — remind once
+  | 'escalate' //        no progress heartbeat for the stuck window — hand to lead
   | 'none'
 
+// `stallMs` is the short window after which a *waiting* worker gets one nudge;
+// `stuckMs` (much longer) is the progress-heartbeat window after which a worker
+// that has made no progress at all — whether it went silent while `waiting` or is
+// spinning `working` forever — is escalated. `lastProgressAt` is the epoch ms of
+// the last progress signal (dispatch time, advanced whenever the task's notes
+// change via task_note); its absence of movement is what "stuck" means, which is
+// why a genuinely-working task that keeps posting task_note is never escalated.
 export function sweepAction(i: {
   task: ConductorTask | undefined
   retries: number
@@ -162,8 +216,10 @@ export function sweepAction(i: {
   paneWaiting: boolean
   alreadyNudged: boolean
   dispatchedAt: number | undefined
+  lastProgressAt: number | undefined
   now: number
   stallMs: number
+  stuckMs: number
 }): SweepAction {
   if (!i.task) return 'free_vanished'
   if (i.task.status === 'done') return 'free_done'
@@ -171,6 +227,7 @@ export function sweepAction(i: {
   if (i.task.status === 'needs_review') return 'free_for_review'
   if (!i.paneRunning) return 'free_pane_exited'
   if (i.paneWaiting && !i.alreadyNudged && i.now - (i.dispatchedAt ?? i.now) > i.stallMs) return 'nudge'
+  if (i.now - (i.lastProgressAt ?? i.dispatchedAt ?? i.now) > i.stuckMs) return 'escalate'
   return 'none'
 }
 
@@ -247,6 +304,28 @@ export function planDispatches<W extends WorkerPane>(i: {
     out.push({ task, worker })
   }
   return out
+}
+
+// ── 3a. Deadlock detection ───────────────────────────────────────────────────
+// Ready-to-run tasks (pending, deps met, not skipped) that are pinned to an agent
+// which has no running worker pane — no dispatch can ever match them, so they'd
+// sit forever. Surfacing them lets the loop escalate to the lead to reassign or
+// re-split, rather than deadlocking silently. (Unassigned or busy-agent tasks are
+// NOT here — those just wait for a free worker and resolve on their own.)
+export function findUnassignable(i: {
+  tasks: readonly ConductorTask[]
+  workerAgentIds: ReadonlySet<string>
+  skippedTaskIds: ReadonlySet<string>
+}): ConductorTask[] {
+  const doneIds = new Set(i.tasks.filter(t => t.status === 'done').map(t => t.id))
+  return i.tasks.filter(
+    t =>
+      t.status === 'pending' &&
+      !i.skippedTaskIds.has(t.id) &&
+      !!t.assigned_agent &&
+      !i.workerAgentIds.has(t.assigned_agent) &&
+      depsMet(t, doneIds)
+  )
 }
 
 // ── 3b. Review routing ───────────────────────────────────────────────────────

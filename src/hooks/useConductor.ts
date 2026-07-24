@@ -9,6 +9,7 @@ import {
 } from '../store/workspace'
 import {
   type ConductorTask,
+  type EscalationReason,
   parseDeps,
   shortId,
   truncate,
@@ -19,11 +20,14 @@ import {
   buildDecomposePrompt,
   buildSynthesisPrompt,
   buildNudgePrompt,
+  buildEscalationPrompt,
+  buildLeadReportPrompt,
   sweepAction,
   decomposeAction,
   reviewSweepAction,
   planDispatches,
   planReviews,
+  findUnassignable,
   readyForSynthesis,
   planMessageDelivery,
   isWakeEvent,
@@ -178,6 +182,13 @@ export function useConductor(): void {
   const decomposeAtRef = useRef<number | null>(null)
   // 0 = not asked, 1 = asked once, 2 = re-prompted, 3 = gave up.
   const decomposeAttemptsRef = useRef(0)
+  // taskId → last observed progress: its notes text + when that last changed. A
+  // task_note (the worker's heartbeat) moves `at` forward; a task with no note
+  // movement for STUCK_MS is escalated. Seeded at dispatch time.
+  const lastProgressRef = useRef<Map<string, { notes: string | null; at: number }>>(new Map())
+  // taskIds already handed to the lead (or surfaced) once — so a task isn't
+  // escalated on every tick, and a re-failed task is surfaced rather than looped.
+  const escalatedRef = useRef<Set<string>>(new Set())
 
   // A failed task is retried up to this many times (re-dispatched, possibly to a
   // different free worker) before being surfaced as needing attention.
@@ -188,6 +199,12 @@ export function useConductor(): void {
   // If the lead produces no tasks within this window of being asked, re-prompt
   // once, then give up so the run doesn't hang forever.
   const DECOMPOSE_TIMEOUT_MS = 25_000
+  // Progress-heartbeat window: a dispatched task that shows no progress (never
+  // reports done, never posts a task_note) for this long — whether its worker is
+  // spinning `working` or has gone silent `waiting` — is escalated to the lead.
+  // Generous on purpose: real work posts task_note to keep it alive (see
+  // buildDispatchPrompt), so this only trips on genuine stalls / infinite loops.
+  const STUCK_MS = 180_000
 
   // Perform a dispatch: inject the prompt, move the task to in_progress, and
   // record the pane→task binding. Shared by auto mode and assisted approval.
@@ -261,6 +278,8 @@ export function useConductor(): void {
           reviewBindingRef.current.clear()
           decomposeAtRef.current = null
           decomposeAttemptsRef.current = 0
+          lastProgressRef.current.clear()
+          escalatedRef.current.clear()
         }
         prevPhaseRef.current = orchestratorPhase
 
@@ -280,9 +299,44 @@ export function useConductor(): void {
           leaves.filter(l => cur.paneAttention[l.id] === 'working').map(l => l.id)
         )
 
+        // The escalation brain: hand a task the deterministic loop can't resolve
+        // to the lead pane (reassign / re-split / drop). Falls back to surfacing
+        // it for the user when there's no usable lead, or when it's already been
+        // escalated once (so a re-failing task can't loop the lead forever).
+        const reportToLead = cur.orchestratorReportToLead
+        const escalateToLead = (task: ConductorTask, reason: EscalationReason, fromPaneId: string, baseLog: string) => {
+          const toLead =
+            !escalatedRef.current.has(task.id) &&
+            !!leadPaneId &&
+            runningPaneIds.has(leadPaneId) &&
+            leadPaneId !== fromPaneId
+          escalatedRef.current.add(task.id)
+          if (toLead) {
+            inject(leadPaneId!, buildEscalationPrompt(task, reason))
+            cur.pushOrchestratorLog(`${baseLog} — escalated to lead`)
+            window.swarmmind
+              .eventEmit('escalation', { taskId: task.id, title: task.title, reason }, leadPaneId!)
+              .catch(() => {})
+          } else {
+            cur.pushOrchestratorLog(`${baseLog} — needs attention`)
+          }
+        }
+
         // ── 1. Completion sweep ─────────────────────────────────────────────
         for (const [paneId, taskId] of Object.entries(cur.paneTask)) {
           const task = byId.get(taskId)
+          // Progress heartbeat: seed on first sight, then advance `at` whenever the
+          // task's notes change (a worker task_note). No movement for STUCK_MS ⇒
+          // the task is stalled, which is what sweepAction flags as 'escalate'.
+          const prog = lastProgressRef.current.get(taskId)
+          if (!prog) {
+            lastProgressRef.current.set(taskId, {
+              notes: task?.notes ?? null,
+              at: dispatchedAtRef.current.get(taskId) ?? Date.now(),
+            })
+          } else if (task && task.notes !== prog.notes) {
+            lastProgressRef.current.set(taskId, { notes: task.notes, at: Date.now() })
+          }
           const action = sweepAction({
             task,
             retries: retryCountRef.current.get(taskId) ?? 0,
@@ -291,8 +345,10 @@ export function useConductor(): void {
             paneWaiting: cur.paneAttention[paneId] === 'waiting',
             alreadyNudged: nudgedRef.current.has(taskId),
             dispatchedAt: dispatchedAtRef.current.get(taskId),
+            lastProgressAt: lastProgressRef.current.get(taskId)?.at,
             now: Date.now(),
             stallMs: STALL_MS,
+            stuckMs: STUCK_MS,
           })
           if (action === 'none') continue
 
@@ -309,6 +365,12 @@ export function useConductor(): void {
             cur.pushOrchestratorLog(
               `✓ "${task!.title}" done${result ? ` — ${truncate(result, 80)}` : ''}`
             )
+            // Feature: stream the completion to the lead mid-run so it can
+            // course-correct, when the user has opted in and a distinct lead runs.
+            if (reportToLead && leadPaneId && runningPaneIds.has(leadPaneId) && leadPaneId !== paneId) {
+              const remaining = tasks.filter(t => t.status !== 'done' && t.id !== taskId).length
+              inject(leadPaneId, buildLeadReportPrompt(task!, result, remaining))
+            }
           } else if (action === 'retry') {
             // Retry transient failures by resetting the task to pending so it can
             // be re-dispatched (to any matching free worker) on a later tick.
@@ -318,7 +380,12 @@ export function useConductor(): void {
             cur.pushOrchestratorLog(`↻ retrying "${task!.title}" (attempt ${attempts + 2})`)
           } else if (action === 'give_up') {
             const attempts = retryCountRef.current.get(taskId) ?? 0
-            cur.pushOrchestratorLog(`✗ "${task!.title}" failed after ${attempts + 1} attempt(s) — needs attention`)
+            escalateToLead(task!, 'failed', paneId, `✗ "${task!.title}" failed after ${attempts + 1} attempt(s)`)
+          } else if (action === 'escalate') {
+            // No progress heartbeat for the stuck window. Mark this attempt failed
+            // (so it isn't re-swept) and hand it to the lead to re-plan.
+            window.swarmmind.taskUpdate(taskId, 'failed').catch(() => {})
+            escalateToLead(task!, 'stalled', paneId, `⚑ "${task!.title}" stalled (no progress heartbeat)`)
           } else if (action === 'free_for_review') {
             // Author delivered the work and submitted it for review — free their
             // pane; the review-routing pass below assigns a different agent to it.
@@ -330,6 +397,7 @@ export function useConductor(): void {
           }
           cur.setPaneTask(paneId, null)
           dispatchedAtRef.current.delete(taskId)
+          lastProgressRef.current.delete(taskId)
         }
 
         // Worker panes = running agent panes that aren't the lead.
@@ -407,6 +475,7 @@ export function useConductor(): void {
         // review (no self-review); otherwise workers report done directly.
         const reviewable = canReview(workers)
 
+        let dispatchedThisTick = 0
         if (!(orchestrationMode === 'assisted' && proposalPending)) {
           const planned = planDispatches({
             tasks,
@@ -418,6 +487,7 @@ export function useConductor(): void {
             // assisted — surface one proposal at a time and wait for the user.
             limit: orchestrationMode === 'assisted' ? 1 : undefined,
           })
+          dispatchedThisTick = planned.length
           for (const { task, worker } of planned) {
             const proposal: DispatchProposal = {
               paneId: worker.id,
@@ -432,6 +502,25 @@ export function useConductor(): void {
             } else {
               useWorkspaceStore.getState().setOrchestratorProposal(proposal)
             }
+          }
+        }
+
+        // ── 3a. Deadlock escalation ─────────────────────────────────────────
+        // Nothing is in progress, nothing could be dispatched, and no proposal is
+        // pending — yet ready tasks exist that are pinned to an absent agent. That
+        // is a genuine deadlock (not just workers being busy), so hand each such
+        // task to the lead to reassign/re-split. Guarded by escalatedRef so it
+        // fires once per task, not on every idle tick.
+        if (
+          dispatchedThisTick === 0 &&
+          !proposalPending &&
+          Object.keys(useWorkspaceStore.getState().paneTask).length === 0 &&
+          reviewBindingRef.current.size === 0
+        ) {
+          const workerAgentIds = new Set(workers.map(w => w.agentId))
+          for (const task of findUnassignable({ tasks, workerAgentIds, skippedTaskIds: skippedRef.current })) {
+            if (escalatedRef.current.has(task.id)) continue
+            escalateToLead(task, 'unassignable', '', `⚑ "${task.title}" assigned to an absent agent`)
           }
         }
 

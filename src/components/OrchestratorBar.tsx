@@ -55,6 +55,8 @@ export function OrchestratorBar() {
   const proposal = useWorkspaceStore(s => s.orchestratorProposal)
   const log = useWorkspaceStore(s => s.orchestratorLog)
   const clearLog = useWorkspaceStore(s => s.clearOrchestratorLog)
+  const reportToLead = useWorkspaceStore(s => s.orchestratorReportToLead)
+  const setReportToLead = useWorkspaceStore(s => s.setOrchestratorReportToLead)
   const rootPane = useWorkspaceStore(s => s.rootPane)
 
   // Poll the task list so the worker-status rows can show task titles.
@@ -176,6 +178,15 @@ export function OrchestratorBar() {
           placeholder={t('orch.goalPlaceholder')}
           spellCheck={false}
         />
+        <label style={styles.reportToggle} title={t('orch.reportToLead.hint')}>
+          <input
+            type="checkbox"
+            checked={reportToLead}
+            onChange={e => setReportToLead(e.target.checked)}
+            style={{ accentColor: 'var(--accent)', cursor: 'pointer' }}
+          />
+          {t('orch.reportToLead')}
+        </label>
         {phase === 'running' ? (
           <button style={styles.stopBtn} onClick={stop}>{t('orch.stop')}</button>
         ) : (
@@ -291,6 +302,10 @@ const styles: Record<string, React.CSSProperties> = {
   close: { background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 13, padding: '0 2px 0 6px' },
   controlRow: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 },
   fieldLabel: { fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 },
+  reportToggle: {
+    display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-muted)',
+    fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none',
+  },
   select: {
     background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)',
     borderRadius: 'var(--radius)', padding: '5px 8px', fontSize: 12, outline: 'none', maxWidth: 200,

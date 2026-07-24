@@ -34,7 +34,7 @@ import { mergeDiagnostics, normalizeMessage, summarizeDiagnostics } from '../src
 import {
   parseDeps, depsMet, canReview, buildDispatchPrompt, sweepAction, decomposeAction,
   reviewSweepAction, planDispatches, planReviews, readyForSynthesis, planMessageDelivery,
-  isWakeEvent,
+  isWakeEvent, findUnassignable, buildEscalationPrompt, buildLeadReportPrompt,
   type ConductorTask,
 } from '../src/lib/conductor.ts'
 import { scoreVoice, rankVoices, pickVoice, cleanForSpeech, chunkForSpeech, type VoiceLike } from '../src/lib/voices.ts'
@@ -683,7 +683,8 @@ t('conductor: dispatch prompt routes to needs_review only when reviewable', () =
 
 const sweepBase = {
   retries: 0, maxRetries: 1, paneRunning: true, paneWaiting: false,
-  alreadyNudged: false, dispatchedAt: 0, now: 10_000, stallMs: 30_000,
+  alreadyNudged: false, dispatchedAt: 0, lastProgressAt: 0, now: 10_000,
+  stallMs: 30_000, stuckMs: 180_000,
 }
 t('conductor: sweep frees a vanished task', () => {
   assert.equal(sweepAction({ ...sweepBase, task: undefined }), 'free_vanished')
@@ -711,6 +712,55 @@ t('conductor: sweep nudges an idle worker only past the stall window, only once'
   assert.equal(sweepAction({ ...idle, alreadyNudged: true }), 'none') // one nudge max
   assert.equal(sweepAction({ ...idle, paneWaiting: false }), 'none') // still working
   assert.equal(sweepAction({ ...idle, dispatchedAt: undefined }), 'none') // unknown dispatch time
+})
+t('conductor: sweep escalates a stuck worker only after the heartbeat window', () => {
+  const inProgress = mkTask({ id: 't', status: 'in_progress' })
+  // No progress since dispatch (t=0), now past the stuck window → escalate,
+  // whether the worker is spinning (working) or silently waiting.
+  const stuck = { ...sweepBase, task: inProgress, lastProgressAt: 0, now: 200_000 }
+  assert.equal(sweepAction(stuck), 'escalate')
+  assert.equal(sweepAction({ ...stuck, paneWaiting: true, alreadyNudged: true }), 'escalate')
+  // A recent progress heartbeat (task_note) resets the window — not stuck.
+  assert.equal(sweepAction({ ...stuck, lastProgressAt: 190_000 }), 'none')
+  // Window not yet elapsed.
+  assert.equal(sweepAction({ ...stuck, now: 100_000 }), 'none')
+  // A dead pane is reported before stuck is ever considered.
+  assert.equal(sweepAction({ ...stuck, paneRunning: false }), 'free_pane_exited')
+  // Falls back to lastProgressAt=dispatchedAt when no note was ever seen.
+  assert.equal(sweepAction({ ...stuck, lastProgressAt: undefined, dispatchedAt: 0 }), 'escalate')
+})
+t('conductor: escalation prompt tells the lead to reassign/re-split/drop', () => {
+  const task = mkTask({ id: 'abcdef1234567890', title: 'Wire the API' })
+  const failed = buildEscalationPrompt(task, 'failed')
+  assert.ok(failed.includes('abcdef12')) // short id
+  assert.ok(failed.includes('failed and exhausted'))
+  assert.ok(failed.includes('task_create')) // re-split path offered
+  assert.ok(/reassign/i.test(failed))
+  assert.ok(buildEscalationPrompt(task, 'stalled').includes('stalled'))
+  assert.ok(buildEscalationPrompt(task, 'unassignable').includes('no running pane'))
+})
+t('conductor: lead report prompt summarises the result and remaining count', () => {
+  const task = mkTask({ id: 'abcdef1234567890', title: 'Build parser' })
+  const mid = buildLeadReportPrompt(task, 'added tokenizer', 3)
+  assert.ok(mid.includes('added tokenizer'))
+  assert.ok(mid.includes('3 task(s) still remain'))
+  const last = buildLeadReportPrompt(task, null, 0)
+  assert.ok(last.includes('last task'))
+  assert.ok(last.includes('no result summary')) // graceful when no result written
+})
+t('conductor: findUnassignable flags ready tasks pinned to an absent agent', () => {
+  const workerAgentIds = new Set(['claude'])
+  const tasks = [
+    mkTask({ id: 'a', assigned_agent: 'cursor' }),                          // absent agent → deadlocked
+    mkTask({ id: 'b', assigned_agent: 'claude' }),                          // agent present → fine
+    mkTask({ id: 'c' }),                                                    // unassigned → any worker
+    mkTask({ id: 'd', assigned_agent: 'cursor', status: 'in_progress' }),   // not pending
+    mkTask({ id: 'e', assigned_agent: 'cursor', depends_on: 'z' }),         // deps unmet
+  ]
+  const out = findUnassignable({ tasks, workerAgentIds, skippedTaskIds: new Set() })
+  assert.deepEqual(out.map(t => t.id), ['a'])
+  // A skipped task is not surfaced.
+  assert.equal(findUnassignable({ tasks, workerAgentIds, skippedTaskIds: new Set(['a']) }).length, 0)
 })
 
 const watchdogBase = { attempts: 1, askedAt: 0, now: 30_000, timeoutMs: 25_000, taskCount: 0, leadRunning: true }

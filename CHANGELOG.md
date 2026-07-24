@@ -6,6 +6,35 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.22.0]
+
+**The conductor grows a heartbeat and a brain.** Autonomous runs no longer stall
+silently: workers send progress pings, the loop notices when one goes quiet or
+spins forever, and instead of just giving up it hands the stuck work to the lead
+agent to reassign, re-split, or drop. The lead becomes a real supervisor — the
+part a deterministic loop can't do — while the free, token-less code keeps doing
+the boring dispatch wiring.
+
+### Added
+- **Progress heartbeat + stuck detection.** Dispatched workers are asked to post
+  periodic `task_note` pings, and the conductor tracks each task's last sign of
+  progress. A task that shows nothing new for a few minutes — whether its agent
+  went silent or is looping forever (the old idle-nudge's blind spot) — is now
+  caught instead of hanging the run.
+- **Lead as escalation brain.** When a task exhausts its retries, stalls, or is
+  pinned to an agent that isn't running (a deadlock), it's escalated to the lead
+  pane, which reads it and decides how to unblock the goal — reassign to a
+  different agent, split it into smaller subtasks, or drop it — rather than the
+  run silently giving up. Each task escalates once; with no lead available it's
+  surfaced for your attention as before.
+- **Report to lead (opt-in).** A new OrchestratorBar checkbox streams each task
+  completion to the lead mid-run, so it can course-correct — spawn follow-ups,
+  reprioritise — instead of only seeing results at the final synthesis. Off by
+  default, since it spends the lead's tokens.
+- **Draggable canvas minimap.** The minimap navigator can be picked up by its
+  grip and moved anywhere on the board (clamped so it can't be lost off-edge);
+  its position is remembered per workspace.
+
 ## [0.21.0]
 
 **The file tree becomes a real file manager, and the canvas becomes a real

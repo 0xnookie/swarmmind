@@ -291,6 +291,10 @@ interface WorkspaceState {
   orchestratorProposal: DispatchProposal | null
   // Newest-first activity log shown in the OrchestratorBar (session-only).
   orchestratorLog: OrchestratorLogEntry[]
+  // Opt-in: report each task completion to the lead pane mid-run so it can
+  // course-correct (spawn follow-ups, reprioritise) instead of only seeing
+  // results at the final synthesis. Costs lead tokens, so off by default.
+  orchestratorReportToLead: boolean
   // ── Loops ──────────────────────────────────────────────────────────────────
   // Recurring prompt schedules for the current workspace, and the Loops overlay.
   loops: SwarmLoop[]
@@ -410,6 +414,7 @@ interface WorkspaceState {
   setOrchestratorProposal: (p: DispatchProposal | null) => void
   pushOrchestratorLog: (text: string) => void
   clearOrchestratorLog: () => void
+  setOrchestratorReportToLead: (on: boolean) => void
   startOrchestration: () => void
   stopOrchestration: () => void
   // ── Loop actions ───────────────────────────────────────────────────────────
@@ -642,6 +647,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   paneTask: {},
   orchestratorProposal: null,
   orchestratorLog: [],
+  orchestratorReportToLead: false,
   loops: [],
   loopsOpen: false,
   cliLoops: [],
@@ -994,6 +1000,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     })),
 
   clearOrchestratorLog: () => set({ orchestratorLog: [] }),
+
+  setOrchestratorReportToLead: (on) => set({ orchestratorReportToLead: on }),
 
   // Begin a goal-driven run: phase → 'running'. The conductor hook reacts by
   // injecting the decomposition prompt into the lead pane. Plain queue dispatch

@@ -85,6 +85,8 @@ interface PersistShape {
   background: Background
   rail?: { x: number; y: number } | null
   railCollapsed?: boolean
+  /** Minimap placement; `null`/absent = the default bottom-right corner. */
+  minimap?: { x: number; y: number } | null
   /** Board-wide terminal transparency; a card may override it per-item. */
   terminalOpacity?: number
 }
@@ -249,6 +251,9 @@ export function CanvasMode() {
   // becomes an explicit {x,y} in board coords. Collapsing shrinks it to a puck.
   const [railPos, setRailPos] = useState<{ x: number; y: number } | null>(null)
   const [railCollapsed, setRailCollapsed] = useState(false)
+  // Minimap placement. `null` = the default bottom-right corner; once dragged by
+  // its grip it becomes an explicit {x,y} in board (screen) coords.
+  const [minimapPos, setMinimapPos] = useState<{ x: number; y: number } | null>(null)
   // Board-wide terminal transparency (1 = opaque). Individual cards can
   // override it; "apply to all" writes here and clears the overrides.
   const [terminalOpacity, setTerminalOpacity] = useState(1)
@@ -318,6 +323,7 @@ export function CanvasMode() {
     setDraft(null)
     setRailPos(null)
     setRailCollapsed(false)
+    setMinimapPos(null)
     setTerminalOpacity(1)
     zTopRef.current = 1
     if (!workspace) return
@@ -333,6 +339,7 @@ export function CanvasMode() {
           if (parsed.background) setBackground({ ...DEFAULT_BG, ...parsed.background })
           if (parsed.rail) setRailPos(parsed.rail)
           if (parsed.railCollapsed) setRailCollapsed(true)
+          if (parsed.minimap) setMinimapPos(parsed.minimap)
           if (typeof parsed.terminalOpacity === 'number') setTerminalOpacity(parsed.terminalOpacity)
           zTopRef.current = Math.max(1, ...(parsed.items ?? []).map(i => i.z || 1))
         } catch { /* ignore malformed */ }
@@ -370,11 +377,11 @@ export function CanvasMode() {
   useEffect(() => {
     if (!workspace || !loaded) return
     const id = setTimeout(() => {
-      const payload: PersistShape = { items, connectors, camera, background, rail: railPos, railCollapsed, terminalOpacity }
+      const payload: PersistShape = { items, connectors, camera, background, rail: railPos, railCollapsed, minimap: minimapPos, terminalOpacity }
       window.swarmmind.setAppSetting(`canvas:${workspace.id}`, JSON.stringify(payload)).catch(() => {})
     }, 600)
     return () => clearTimeout(id)
-  }, [items, connectors, camera, background, railPos, railCollapsed, terminalOpacity, workspace?.id, loaded])
+  }, [items, connectors, camera, background, railPos, railCollapsed, minimapPos, terminalOpacity, workspace?.id, loaded])
 
   // Prune connectors whose endpoints no longer exist.
   useEffect(() => {
@@ -1540,7 +1547,7 @@ export function CanvasMode() {
 
       {/* ── Minimap navigator (bottom-right) ── */}
       {items.length > 0 && (
-        <Minimap items={items} camera={camera} rootRef={rootRef} onJump={(wx, wy) => {
+        <Minimap items={items} camera={camera} rootRef={rootRef} pos={minimapPos} onMove={setMinimapPos} onInteract={setInteracting} t={t} onJump={(wx, wy) => {
           const rect = rootRef.current?.getBoundingClientRect()
           if (!rect) return
           const z = cameraRef.current.zoom
@@ -1587,13 +1594,52 @@ export function CanvasMode() {
 
 // ── Minimap ─────────────────────────────────────────────────────────────────
 
-function Minimap({ items, camera, rootRef, onJump }: {
+function Minimap({ items, camera, rootRef, pos, onMove, onInteract, onJump, t }: {
   items: CanvasItem[]
   camera: Camera
   rootRef: React.RefObject<HTMLDivElement>
+  /** Explicit board-coord placement, or null for the default bottom-right. */
+  pos: { x: number; y: number } | null
+  onMove: (pos: { x: number; y: number }) => void
+  onInteract: (state: false | string) => void
   onJump: (wx: number, wy: number) => void
+  t: (k: any, p?: any) => string
 }) {
   const MM_W = 190, MM_H = 130, PAD = 10
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  // Drag the minimap by its grip. Screen-space pixel math like the tool rail —
+  // no camera involved — clamped to the board so it can't be lost off-edge.
+  const startDrag = (e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    const box = boxRef.current, board = rootRef.current
+    if (!box || !board) return
+    const rect = box.getBoundingClientRect()
+    const boardRect = board.getBoundingClientRect()
+    const grabX = e.clientX - rect.left
+    const grabY = e.clientY - rect.top
+    onInteract('grabbing')
+    const move = (ev: PointerEvent) => {
+      const x = clamp(ev.clientX - boardRect.left - grabX, 4, Math.max(4, boardRect.width - rect.width - 4))
+      const y = clamp(ev.clientY - boardRect.top - grabY, 4, Math.max(4, boardRect.height - rect.height - 4))
+      onMove({ x, y })
+    }
+    const up = () => {
+      onInteract(false)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  // Default corner until dragged, then an explicit position (right/bottom cleared
+  // so left/top win).
+  const boxStyle: React.CSSProperties = pos
+    ? { ...styles.minimap, right: 'auto', bottom: 'auto', left: pos.x, top: pos.y }
+    : styles.minimap
   const rect = rootRef.current?.getBoundingClientRect()
   const vw = rect?.width ?? 1200, vh = rect?.height ?? 800
   // Current viewport rect in world coords.
@@ -1621,7 +1667,12 @@ function Minimap({ items, camera, rootRef, onJump }: {
   }
 
   return (
-    <div style={styles.minimap}>
+    <div ref={boxRef} style={boxStyle}>
+      {/* Drag grip — the map area still jumps the camera, so dragging lives on
+          this handle. */}
+      <div style={styles.minimapGrip} onPointerDown={startDrag} title={t('canvas.minimap.drag')}>
+        <span style={styles.minimapGripDots}>⠿</span>
+      </div>
       <svg width={MM_W} height={MM_H} style={{ display: 'block', cursor: 'pointer' }} onPointerDown={jump}>
         {items.map(i => {
           const p = toMini(i.x, i.y)
@@ -2818,6 +2869,12 @@ const styles: Record<string, React.CSSProperties> = {
     background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 10,
     boxShadow: '0 8px 26px rgba(0,0,0,0.5)', overflow: 'hidden', padding: 2,
   },
+  minimapGrip: {
+    height: 14, display: 'flex', alignItems: 'center', justifyContent: 'center',
+    cursor: 'grab', color: 'var(--text-dim)', touchAction: 'none',
+    borderBottom: '1px solid var(--border)', marginBottom: 2,
+  },
+  minimapGripDots: { fontSize: 11, lineHeight: 1, letterSpacing: 2, userSelect: 'none' },
   toast: {
     position: 'absolute', bottom: 22, left: '50%', transform: 'translateX(-50%)', zIndex: 40,
     padding: '8px 16px', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)',
