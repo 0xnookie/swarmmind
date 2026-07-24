@@ -6,6 +6,52 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.21.0]
+
+**The file tree becomes a real file manager, and the canvas becomes a real
+orchestrator.** The explorer gains the full IDE file-manager surface —
+multi-select, cut/copy/paste, drag-and-drop, undo — so you rarely need to leave
+the app to move things around. On the canvas, task cards are now backed by the
+live tasks table (drag to assign, wire up dependencies), and you can screenshot
+a card, scribble on it, and hand it straight to an agent.
+
+### Added
+- **Full file management in the explorer.** The file tree is now a proper
+  IDE file manager: multi-select (Ctrl/⌘-click, Shift-range, Ctrl+A),
+  cut/copy/paste (Ctrl+X/C/V — cut rows dim until you paste), drag-and-drop
+  move (hold Ctrl/Alt to copy instead), and drag-in from Explorer/Finder to
+  import files. Plus inline New File / New Folder rows, F2 rename, Ctrl+D
+  duplicate, Delete → OS trash, copy absolute/relative path, and open-with the
+  default app. Collisions never clobber — a paste or move onto an existing name
+  gets a Finder-style free name (`x copy.ts`, `x copy 2.ts`) — and open editor
+  tabs follow files that move underneath them.
+- **Undo for file operations.** Rename, move, copy, duplicate, create and
+  import can each be undone (Ctrl/⌘-Z in the explorer), with a toast confirming
+  what was reverted.
+- **Canvas task cards — a visual orchestrator.** Drop a task card (`K`) that is
+  backed by the real tasks table: drag a card onto an agent terminal to assign
+  it, draw a connector between two cards to set a `depends_on` dependency
+  (cycles are refused), and edit title/status inline. Card colour tracks task
+  status, so the board doubles as an at-a-glance orchestration view.
+- **Capture → annotate → hand off on the canvas.** Screenshot any canvas card
+  (a terminal, a browser, a device mockup), scribble annotations over it with
+  the pen, then send it to an agent as a single prompt — the screenshot is
+  saved into the workspace and its path is injected into the chosen terminal,
+  so "make it look like this" becomes one gesture.
+
+### Fixed
+- **Loops no longer slip an interval when a pane is a moment late.** A recurring
+  prompt loop that was due but whose target pane hadn't finished spawning used
+  to get pushed a full interval into the future; it now retries promptly the
+  instant the pane comes online. A loop armed to run immediately (creating,
+  resuming, or restoring one) now actually runs immediately.
+- **No more doomed WASM worker spawns in packaged builds.** On-device models
+  (Whisper voice, MiniLM embeddings) requested multi-threaded ONNX Runtime even
+  under the packaged `file://` origin, where the pthread blob workers can't load
+  and ORT silently falls back to single-thread anyway — wasting a failed worker
+  spawn and spewing console errors per model load. They now request a single
+  thread under `file://`, skipping the doomed spawn entirely.
+
 ## [0.20.0]
 
 **Canvas mode grows up, and the editor learns file management.** Canvas cards

@@ -174,8 +174,20 @@ try {
 
   // ── 6. Compiler-exact rename (F2): renaming `double` at a call site must land
   //       in the Composer with a pre-built two-file plan — no model round-trip.
+  // The reference-row click above remounted the editor (peek-style), so let it
+  // settle, then put the cursor *firmly* on the `double` call site before F2 —
+  // a bare click can race the remount and fire F2 with the whole import line
+  // selected (no identifier under the cursor → no popover). Double-click selects
+  // the word and we verify it landed, retrying if the remount ate the gesture.
+  await win.waitForTimeout(500)
   const renameSite = win.locator('.cm-line').filter({ hasText: 'const ok' }).getByText('double', { exact: true })
-  await renameSite.click()
+  let onWord = false
+  for (let i = 0; i < 6 && !onWord; i++) {
+    await renameSite.dblclick().catch(() => {})
+    await win.waitForTimeout(200)
+    onWord = await win.evaluate(() => (window.getSelection()?.toString() || '').trim() === 'double')
+  }
+  if (!onWord) throw new Error('could not place the cursor on the "double" call site (editor remount race)')
   await win.keyboard.press('F2')
   await win.waitForSelector('text=/Rename symbol|Symbol umbenennen/', { timeout: 10_000 }).catch(async (err) => {
     const state = await win.evaluate(() => ({

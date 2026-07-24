@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import type { Language } from '../i18n'
 import type { VoiceModel } from '../hooks/useVoice'
 import { addSnippet as addSnippetTo, removeSnippet as removeSnippetFrom, type Snippet } from '../lib/snippets'
+import { nextRunAfter } from '../lib/loopSchedule'
 import {
   applyAppearance,
   clampEditorFontSize,
@@ -418,7 +419,6 @@ interface WorkspaceState {
   removeLoop: (id: string) => void
   setLoopEnabled: (id: string, enabled: boolean) => void
   markLoopRun: (id: string, at: number) => void
-  deferLoop: (id: string, at: number) => void
   setLoops: (loops: SwarmLoop[]) => void
   addCliLoop: (paneId: string, command: string, interval: string | null) => void
   removeCliLoop: (id: string) => void
@@ -1053,20 +1053,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       ),
     })),
 
+  // Record a run and schedule the next one exactly one interval out. A loop
+  // that's due-but-target-less is NOT rescheduled here (the runner leaves it
+  // due and retries next tick), so a slow-to-spawn pane never costs a full
+  // interval — see hooks/useLoops.ts and lib/loopSchedule.ts.
   markLoopRun: (id, at) =>
     set(s => ({
       loops: s.loops.map(l =>
         l.id === id
-          ? { ...l, lastRunAt: at, nextRunAt: at + l.intervalSec * 1000, runCount: l.runCount + 1 }
+          ? { ...l, lastRunAt: at, nextRunAt: nextRunAfter(at, l.intervalSec), runCount: l.runCount + 1 }
           : l
       ),
-    })),
-
-  // Push the next attempt forward without counting it as a run — used when the
-  // target pane isn't running yet, so the loop quietly retries next interval.
-  deferLoop: (id, at) =>
-    set(s => ({
-      loops: s.loops.map(l => (l.id === id ? { ...l, nextRunAt: at + l.intervalSec * 1000 } : l)),
     })),
 
   setLoops: (loops) => set({ loops }),

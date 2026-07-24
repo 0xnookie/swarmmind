@@ -3,10 +3,16 @@ import { v4 as uuidv4 } from 'uuid'
 import { AgentPane } from './AgentPane'
 import { useWorkspaceStore, type PaneNode, type PaneLeaf, type AgentId, type PtyStatus } from '../store/workspace'
 import { useT } from '../i18n'
+import { confirmDialog } from './ConfirmDialog'
 import {
   resizeRect, RESIZE_DIRS, RESIZE_CURSOR, type ResizeDir,
   GRID, snapToGrid, gridBackgroundOffset,
 } from '../lib/canvasResize'
+import {
+  fitBox, rectsIntersect, projectPointToImage, strokeScale, buildHandoffPrompt,
+} from '../lib/canvasHandoff'
+import type { KanbanTask } from './KanbanBoard'
+import { addDep, removeDep, wouldCycle, parseDeps, taskStatusColor } from '../lib/canvasTasks'
 
 // ── Canvas model ────────────────────────────────────────────────────────────
 // A "canvas" is a free-form, pannable/zoomable board (cnvs.dev / Miro style).
@@ -17,14 +23,14 @@ import {
 
 type CanvasTool =
   | 'select' | 'hand' | 'draw' | 'connect'
-  | 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'image'
+  | 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'image' | 'task'
   | 'rect' | 'ellipse' | 'triangle'
 
 type BgType = 'dots' | 'grid' | 'solid' | 'image'
 
 interface CanvasItem {
   id: string
-  kind: 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'shape' | 'draw' | 'image'
+  kind: 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'shape' | 'draw' | 'image' | 'task'
   x: number
   y: number
   w: number
@@ -43,6 +49,7 @@ interface CanvasItem {
   strokeWidth?: number     // draw
   src?: string             // image — data URL
   opacity?: number         // terminal — card opacity, 0.2…1 (default 1)
+  taskId?: string          // task — row id in the tasks table (see KanbanTask)
 }
 
 // One page inside a browser card. A card with several of these renders a tab
@@ -173,6 +180,53 @@ function getLeaves(node: PaneNode): PaneLeaf[] {
 
 // ── CanvasMode ──────────────────────────────────────────────────────────────
 
+// Bake an image item together with any freehand strokes drawn over it into a
+// single PNG data URL, at the image's *native* resolution — so the annotations
+// the user scribbled (circles, arrows) are part of the screenshot handed to the
+// agent. Strokes are the same `kind:'draw'` items the pen tool already makes;
+// only those whose bounding box overlaps the image are baked in. Falls back to
+// the untouched source if the image can't be loaded or nothing overlaps.
+function compositeCapture(image: CanvasItem, draws: CanvasItem[]): Promise<string> {
+  return new Promise(resolve => {
+    const src = image.src ?? ''
+    if (!src) { resolve(''); return }
+    const imgBox = { x: image.x, y: image.y, w: image.w, h: image.h }
+    const overlaps = draws.filter(d =>
+      d.kind === 'draw' && (d.points?.length ?? 0) > 1 &&
+      rectsIntersect(imgBox, { x: d.x, y: d.y, w: d.w, h: d.h }))
+    if (!overlaps.length) { resolve(src); return }
+
+    const img = new Image()
+    img.onload = () => {
+      const natW = img.naturalWidth || image.w
+      const natH = img.naturalHeight || image.h
+      const cv = document.createElement('canvas')
+      cv.width = natW
+      cv.height = natH
+      const ctx = cv.getContext('2d')
+      if (!ctx) { resolve(src); return }
+      ctx.drawImage(img, 0, 0, natW, natH)
+      const scale = strokeScale(imgBox, natW, natH)
+      for (const d of overlaps) {
+        ctx.strokeStyle = d.color || '#e8956b'
+        ctx.lineWidth = Math.max(1, (d.strokeWidth ?? 3) * scale)
+        ctx.lineJoin = 'round'
+        ctx.lineCap = 'round'
+        ctx.beginPath()
+        d.points!.forEach((p, i) => {
+          const px = projectPointToImage(imgBox, natW, natH, d.x + p.x, d.y + p.y)
+          if (i === 0) ctx.moveTo(px.x, px.y)
+          else ctx.lineTo(px.x, px.y)
+        })
+        ctx.stroke()
+      }
+      try { resolve(cv.toDataURL('image/png')) } catch { resolve(src) }
+    }
+    img.onerror = () => resolve(src)
+    img.src = src
+  })
+}
+
 export function CanvasMode() {
   const t = useT()
   const workspace = useWorkspaceStore(s => s.workspace)
@@ -224,12 +278,24 @@ export function CanvasMode() {
   // Value doubles as the CSS cursor shown while the gesture is active.
   const [interacting, setInteracting] = useState<false | string>(false)
   const [menu, setMenu] = useState<{ x: number; y: number; wx: number; wy: number; itemId: string | null } | null>(null)
+  // Transient status toast (capture failed, sent to agent, …), bottom-centre.
+  const [toast, setToast] = useState<string | null>(null)
+  // The "send screenshot to agent" composer: which image, which pane, its label.
+  const [sendTarget, setSendTarget] = useState<{ imageId: string; paneId: string; agent: string } | null>(null)
+  // Live tasks (the visual-orchestrator layer): task cards are backed by real
+  // rows in the tasks table, polled here so status/assignment stay fresh.
+  const [tasks, setTasks] = useState<KanbanTask[]>([])
+  const tasksById = useMemo(() => new Map(tasks.map(tk => [tk.id, tk])), [tasks])
+  const tasksRef = useRef(tasks)
+  tasksRef.current = tasks
   const cameraRef = useRef(camera)
   cameraRef.current = camera
   // A live mirror of items — drag/resize read the starting geometry from here
   // because React state updater callbacks don't run synchronously.
   const itemsRef = useRef(items)
   itemsRef.current = items
+  const connectorsRef = useRef(connectors)
+  connectorsRef.current = connectors
   const zTopRef = useRef(1)
 
   const leaves = useMemo(() => getLeaves(rootPane), [rootPane])
@@ -368,6 +434,88 @@ export function CanvasMode() {
     addItem({ kind: 'device', device: DEFAULT_DEVICE, orientation: 'portrait', url: 'http://localhost:3000', w: size.w, h: size.h }, wx, wy)
   }, [addItem])
 
+  // ── Task cards (visual orchestrator) ──
+  // Task cards are the board's live window onto the tasks table: creating one
+  // inserts a real row, dragging it onto a terminal sets assigned_agent, and an
+  // arrow between two of them writes depends_on — all fields the conductor
+  // already dispatches on. Handlers live here (above the pointer/drag handlers
+  // that call them) so the closures resolve in lexical order.
+  const refreshTasks = useCallback(async () => {
+    try {
+      const list = await window.swarmmind.taskList() as KanbanTask[]
+      setTasks(list ?? [])
+    } catch { /* best-effort */ }
+  }, [])
+
+  // Poll while the canvas is open so status/assignment injected by the swarm
+  // (or the Kanban board) show live on the cards.
+  useEffect(() => {
+    if (!loaded) return
+    refreshTasks()
+    const id = setInterval(refreshTasks, 2000)
+    return () => clearInterval(id)
+  }, [loaded, refreshTasks, workspace?.id])
+
+  // Prune task cards whose backing row was deleted elsewhere (Kanban, an agent).
+  useEffect(() => {
+    if (!loaded || !tasks.length) return
+    const live = new Set(tasks.map(tk => tk.id))
+    setItems(prev => {
+      const next = prev.filter(it => it.kind !== 'task' || (it.taskId && live.has(it.taskId)))
+      return next.length === prev.length ? prev : next
+    })
+  }, [tasks, loaded])
+
+  const addTask = useCallback(async (wx: number, wy: number) => {
+    const created = await window.swarmmind.taskCreate(t('canvas.task.newTitle')) as KanbanTask | null
+    if (!created?.id) { setToast(t('canvas.task.createFailed')); return }
+    await refreshTasks()
+    zTopRef.current += 1
+    const w = 240, h = 132
+    const cardId = uuidv4()
+    setItems(prev => [...prev, {
+      id: cardId, kind: 'task', taskId: created.id,
+      x: Math.round(wx - w / 2), y: Math.round(wy - h / 2), w, h, z: zTopRef.current,
+    }])
+    setSelectedId(cardId)
+  }, [t, refreshTasks])
+
+  const assignTask = useCallback(async (taskId: string, agentId: string | null, agentLabel: string) => {
+    await window.swarmmind.taskEdit(taskId, { assigned_agent: agentId })
+    await refreshTasks()
+    if (agentId) setToast(t('canvas.task.assigned', { agent: agentLabel }))
+  }, [t, refreshTasks])
+
+  const setTaskStatus = useCallback(async (taskId: string, status: string) => {
+    await window.swarmmind.taskUpdate(taskId, status)
+    await refreshTasks()
+  }, [refreshTasks])
+
+  const renameTask = useCallback(async (taskId: string, title: string) => {
+    const clean = title.trim()
+    if (!clean) return
+    // Optimistic: reflect the new title immediately, then persist.
+    setTasks(prev => prev.map(tk => tk.id === taskId ? { ...tk, title: clean } : tk))
+    await window.swarmmind.taskEdit(taskId, { title: clean })
+    await refreshTasks()
+  }, [refreshTasks])
+
+  const deleteTask = useCallback(async (item: CanvasItem) => {
+    setMenu(null)
+    if (item.taskId) {
+      const ok = await confirmDialog({
+        title: tasksRef.current.find(tk => tk.id === item.taskId)?.title || t('canvas.task.newTitle'),
+        body: t('canvas.task.deleteConfirm'),
+        confirmLabel: t('canvas.ctx.delete'),
+        danger: true,
+      })
+      if (!ok) return
+      await window.swarmmind.taskDelete(item.taskId)
+      await refreshTasks()
+    }
+    setItems(prev => prev.filter(i => i.id !== item.id))
+  }, [t, refreshTasks])
+
   // ── Canvas background pointer: pan or place ──
   const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.target !== e.currentTarget) return  // only when hitting empty canvas
@@ -401,12 +549,13 @@ export function CanvasMode() {
     else if (tool === 'device') addDevice(x, y)
     else if (tool === 'note') addItem({ kind: 'note', w: 220, h: 200, text: '', color: NOTE_COLORS[0] }, x, y)
     else if (tool === 'text') addItem({ kind: 'text', w: 260, h: 60, text: '', color: 'var(--text-primary)' }, x, y)
+    else if (tool === 'task') void addTask(x, y)
     else if (tool === 'rect') addItem({ kind: 'shape', shape: 'rect', w: 220, h: 150, color: 'var(--accent)' }, x, y)
     else if (tool === 'ellipse') addItem({ kind: 'shape', shape: 'ellipse', w: 200, h: 200, color: '#7fb0e8' }, x, y)
     else if (tool === 'triangle') addItem({ kind: 'shape', shape: 'triangle', w: 220, h: 190, color: '#7fc8a0' }, x, y)
     else if (tool === 'image') { pendingImgPos.current = { x, y }; fileInputRef.current?.click() }
     setTool('select')
-  }, [tool, spaceDown, screenToWorld, addItem, addTerminal, addDevice])
+  }, [tool, spaceDown, screenToWorld, addItem, addTerminal, addDevice, addTask])
 
   // ── Drag / resize an item ──
   const startDrag = useCallback((e: React.PointerEvent, id: string) => {
@@ -422,21 +571,35 @@ export function CanvasMode() {
     if (!it) return
     const startX = e.clientX, startY = e.clientY
     const ox = it.x, oy = it.y
+    let moved = false
     setInteracting('grabbing')
     const move = (ev: PointerEvent) => {
+      moved = true
       const sn = snapRef.current
       setItems(prev => prev.map(i => i.id === id
         ? { ...i, x: snapVal(ox + (ev.clientX - startX) / zoom, sn), y: snapVal(oy + (ev.clientY - startY) / zoom, sn) }
         : i))
     }
-    const up = () => {
+    const up = (ev: PointerEvent) => {
       setInteracting(false)
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      // Drop a task card onto a terminal → assign it to that pane's agent.
+      // The delightful path; the context menu is the discoverable one.
+      if (moved && it.kind === 'task' && it.taskId) {
+        const wp = screenToWorld(ev.clientX, ev.clientY)
+        const under = itemsRef.current.find(i =>
+          i.id !== id && i.kind === 'terminal' && i.paneId &&
+          wp.x >= i.x && wp.x <= i.x + i.w && wp.y >= i.y && wp.y <= i.y + i.h)
+        if (under?.paneId) {
+          const leaf = findLeaf(useWorkspaceStore.getState().rootPane, under.paneId)
+          if (leaf?.agentId) void assignTask(it.taskId, leaf.agentId, leaf.title?.trim() || leaf.agentId)
+        }
+      }
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
-  }, [bringToFront])
+  }, [bringToFront, screenToWorld, assignTask])
 
   // Resize from any of the 8 handles. The dragged edge(s) follow the pointer
   // while the opposite edge stays pinned — so a west/north drag moves x/y as
@@ -493,11 +656,14 @@ export function CanvasMode() {
     const it = itemsRef.current.find(i => i.id === id)
     if (!it) return
     if (it.kind === 'terminal') { addTerminal(it.x + 260, it.y + 200); return }
+    // A task card is a window onto one DB row — "duplicating" means a *new*
+    // task, not a second card pointing at the same row.
+    if (it.kind === 'task') { void addTask(it.x + it.w / 2 + 24, it.y + it.h / 2 + 24); return }
     zTopRef.current += 1
     const copy: CanvasItem = { ...it, id: uuidv4(), x: it.x + 24, y: it.y + 24, z: zTopRef.current }
     setItems(prev => [...prev, copy])
     setSelectedId(copy.id)
-  }, [addTerminal])
+  }, [addTerminal, addTask])
 
   // Make one card's transparency the board default: store it globally and drop
   // every per-card override, so existing AND future terminals all match.
@@ -594,35 +760,60 @@ export function CanvasMode() {
     else if (kind === 'device') addDevice(wx, wy)
     else if (kind === 'note') addItem({ kind: 'note', w: 220, h: 200, text: '', color: NOTE_COLORS[0] }, wx, wy)
     else if (kind === 'text') addItem({ kind: 'text', w: 260, h: 60, text: '', color: 'var(--text-primary)' }, wx, wy)
+    else if (kind === 'task') void addTask(wx, wy)
     else if (kind === 'rect') addItem({ kind: 'shape', shape: 'rect', w: 220, h: 150, color: 'var(--accent)' }, wx, wy)
     else if (kind === 'ellipse') addItem({ kind: 'shape', shape: 'ellipse', w: 200, h: 200, color: '#7fb0e8' }, wx, wy)
     else if (kind === 'triangle') addItem({ kind: 'shape', shape: 'triangle', w: 220, h: 190, color: '#7fc8a0' }, wx, wy)
     setMenu(null)
-  }, [addTerminal, addItem, addDevice])
+  }, [addTerminal, addItem, addDevice, addTask])
 
-  // ── Images (paste / drop / file picker) ──
+  // ── Images (paste / drop / file picker / screenshot capture) ──
+  // Insert an image data URL as a canvas item, fitted to a sensible box. When
+  // `anchorTop` is set the item's *top* lands at wy (used to drop a capture just
+  // below the card it came from); otherwise it's centred on (wx, wy).
+  const placeImageSrc = useCallback((src: string, wx: number, wy: number, anchorTop = false) => {
+    const img = new Image()
+    img.onload = () => {
+      const { w, h } = fitBox(img.width, img.height, 420, 360)
+      zTopRef.current += 1
+      const id = uuidv4()
+      setItems(prev => [...prev, {
+        id, kind: 'image', src,
+        x: Math.round(wx - w / 2), y: Math.round(anchorTop ? wy : wy - h / 2), w, h, z: zTopRef.current,
+      }])
+      setSelectedId(id)
+    }
+    img.src = src
+  }, [])
+
   const addImageFromFile = useCallback((file: File, wx: number, wy: number) => {
     if (!file.type.startsWith('image/')) return
     const reader = new FileReader()
-    reader.onload = () => {
-      const src = String(reader.result)
-      const img = new Image()
-      img.onload = () => {
-        // Fit within a sensible box, preserving aspect ratio.
-        const maxW = 420, maxH = 360
-        const scale = Math.min(1, maxW / img.width, maxH / img.height)
-        const w = Math.max(80, Math.round(img.width * scale))
-        const h = Math.max(60, Math.round(img.height * scale))
-        zTopRef.current += 1
-        setItems(prev => [...prev, {
-          id: uuidv4(), kind: 'image', src,
-          x: Math.round(wx - w / 2), y: Math.round(wy - h / 2), w, h, z: zTopRef.current,
-        }])
-      }
-      img.src = src
-    }
+    reader.onload = () => placeImageSrc(String(reader.result), wx, wy)
     reader.readAsDataURL(file)
-  }, [])
+  }, [placeImageSrc])
+
+  // A browser/device card was screenshotted → drop the picture just below it so
+  // the "capture → scribble → hand off" flow reads top-to-bottom.
+  const handleCapture = useCallback((source: CanvasItem, dataUrl: string | null) => {
+    if (!dataUrl) { setToast(t('canvas.captureFailed')); return }
+    placeImageSrc(dataUrl, source.x + source.w / 2, source.y + source.h + 24, true)
+  }, [placeImageSrc, t])
+
+  // Composite the image (+ overlapping annotations), save it under the
+  // workspace, then inject a one-line prompt referencing the saved path into the
+  // target agent pane — the same PTY-injection the loops/conductor use.
+  const sendCaptureToAgent = useCallback(async (imageId: string, paneId: string, agent: string, note: string) => {
+    const image = itemsRef.current.find(i => i.id === imageId)
+    if (!image?.src) { setToast(t('canvas.captureFailed')); return }
+    const composed = await compositeCapture(image, itemsRef.current.filter(i => i.kind === 'draw'))
+    const res = await window.swarmmind.canvasSaveCapture(composed)
+    if (!res.ok) { setToast(res.error); return }
+    const prompt = buildHandoffPrompt(note, res.rel, t('canvas.send.default'))
+    window.swarmmind.ptyInput(paneId, prompt)
+    window.swarmmind.ptyInput(paneId, '\r')
+    setToast(t('canvas.send.sent', { agent }))
+  }, [t])
 
   const viewportCenterWorld = useCallback(() => {
     const rect = rootRef.current?.getBoundingClientRect()
@@ -642,6 +833,24 @@ export function CanvasMode() {
     return hits.reduce((a, b) => (b.z > a.z ? b : a))
   }, [])
 
+  // A connector between two *task* cards is a real dependency: source → target
+  // means "target depends_on source", which is exactly what the conductor
+  // dispatches on. So drawing the arrow writes to the tasks table.
+  const wireDependency = useCallback(async (fromItemId: string, toItemId: string) => {
+    const its = itemsRef.current
+    const from = its.find(i => i.id === fromItemId)
+    const to = its.find(i => i.id === toItemId)
+    if (from?.kind !== 'task' || to?.kind !== 'task' || !from.taskId || !to.taskId) return
+    const depsOf = (id: string) => parseDeps(tasksRef.current.find(tk => tk.id === id)?.depends_on)
+    if (wouldCycle(to.taskId, from.taskId, depsOf)) { setToast(t('canvas.task.cycle')); return }
+    const current = tasksRef.current.find(tk => tk.id === to.taskId)?.depends_on ?? null
+    const next = addDep(current, from.taskId, to.taskId)
+    if (next === current) return
+    await window.swarmmind.taskEdit(to.taskId, { depends_on: next ? next.split(',') : [] })
+    await refreshTasks()
+    setToast(t('canvas.task.depAdded'))
+  }, [t, refreshTasks])
+
   const onConnectPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return
     const wp = screenToWorld(e.clientX, e.clientY)
@@ -651,15 +860,30 @@ export function CanvasMode() {
       if (!prev) return hit.id
       if (prev === hit.id) return prev
       setConnectors(cs => [...cs, { id: uuidv4(), from: prev, to: hit.id }])
+      void wireDependency(prev, hit.id)
       return null
     })
     setConnectPointer(null)
-  }, [screenToWorld, hitTestItem])
+  }, [screenToWorld, hitTestItem, wireDependency])
 
   const removeConnector = useCallback((id: string) => {
+    // If this arrow encoded a task dependency, drop it from the DB too.
+    const conn = connectorsRef.current.find(c => c.id === id)
     setConnectors(prev => prev.filter(c => c.id !== id))
     setSelectedConnectorId(sel => (sel === id ? null : sel))
-  }, [])
+    if (conn) {
+      const its = itemsRef.current
+      const from = its.find(i => i.id === conn.from)
+      const to = its.find(i => i.id === conn.to)
+      if (from?.kind === 'task' && to?.kind === 'task' && from.taskId && to.taskId) {
+        const current = tasksRef.current.find(tk => tk.id === to.taskId)?.depends_on ?? null
+        const next = removeDep(current, from.taskId)
+        if (next !== current) {
+          void window.swarmmind.taskEdit(to.taskId, { depends_on: next ? next.split(',') : [] }).then(refreshTasks)
+        }
+      }
+    }
+  }, [refreshTasks])
 
   // ── Freehand pen ──
   // A full-canvas capture layer (only mounted while the pen tool is active) feeds
@@ -760,6 +984,7 @@ export function CanvasMode() {
         case 'b': setTool('browser'); break
         case 'm': setTool('device'); break
         case 'n': setTool('note'); break
+        case 'k': setTool('task'); break
         case 'i': openImagePicker(); break
         case 'r': setTool('rect'); break
         case 'o': setTool('ellipse'); break
@@ -779,6 +1004,13 @@ export function CanvasMode() {
     window.addEventListener('click', close)
     return () => window.removeEventListener('click', close)
   }, [menu])
+
+  // Auto-dismiss the status toast so it doesn't linger over the board.
+  useEffect(() => {
+    if (!toast) return
+    const id = setTimeout(() => setToast(null), 3200)
+    return () => clearTimeout(id)
+  }, [toast])
 
   // Paste an image from the clipboard → drop it at the viewport centre.
   useEffect(() => {
@@ -965,6 +1197,9 @@ export function CanvasMode() {
                 onMaximize={(id) => setMaximizedId(id)}
                 onUpdate={updateItem}
                 onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); setSelectedId(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
+                onCapture={(dataUrl) => handleCapture(item, dataUrl)}
+                task={item.kind === 'task' && item.taskId ? tasksById.get(item.taskId) : undefined}
+                onTaskRename={renameTask}
                 noteColors={NOTE_COLORS}
                 alpha={item.kind === 'terminal' ? terminalAlpha(item, terminalOpacity) : 1}
                 t={t}
@@ -1055,6 +1290,7 @@ export function CanvasMode() {
         <ToolButton active={tool === 'device'} label={t('canvas.tool.device')} onClick={() => setTool('device')}><IconDevice /></ToolButton>
         <ToolButton active={tool === 'note'} label={t('canvas.tool.note')} onClick={() => setTool('note')}><IconNote /></ToolButton>
         <ToolButton active={tool === 'text'} label={t('canvas.tool.text')} onClick={() => setTool('text')}><IconText /></ToolButton>
+        <ToolButton active={tool === 'task'} label={t('canvas.tool.task')} onClick={() => setTool('task')}><IconTask /></ToolButton>
         <ToolButton active={tool === 'image'} label={t('canvas.tool.image')} onClick={openImagePicker}><IconImage /></ToolButton>
         <div style={styles.railDivider} />
         <ToolButton active={tool === 'rect'} label={t('canvas.tool.rect')} onClick={() => setTool('rect')}><IconRect /></ToolButton>
@@ -1159,6 +1395,97 @@ export function CanvasMode() {
                 )
               })()}
 
+              {/* Hand a screenshot off to a running agent. Terminals connected
+                  to this image (an arrow drawn from it) are listed first — the
+                  arrow is the pitch, but the menu also works without one. */}
+              {target?.kind === 'image' && (() => {
+                const connectedPanes = new Set(
+                  connectors.filter(c => c.from === target.id)
+                    .map(c => items.find(i => i.id === c.to)?.paneId)
+                    .filter((p): p is string => !!p)
+                )
+                const agents = items
+                  .filter(i => i.kind === 'terminal' && i.paneId)
+                  .map(i => {
+                    const leaf = findLeaf(rootPane, i.paneId!)
+                    if (!leaf || leaf.ptyStatus !== 'running') return null
+                    return { paneId: leaf.id, label: leaf.title?.trim() || leaf.agentId || t('pane.noAgent') }
+                  })
+                  .filter((a): a is { paneId: string; label: string } => !!a)
+                  .sort((a, b) => Number(connectedPanes.has(b.paneId)) - Number(connectedPanes.has(a.paneId)))
+                return (
+                  <>
+                    <div style={styles.ctxDivider} />
+                    <div style={styles.ctxLabel}>{t('canvas.ctx.sendToAgent')}</div>
+                    {agents.length === 0 ? (
+                      <div style={{ ...styles.ctxLabel, opacity: 0.6, fontStyle: 'italic' }}>{t('canvas.ctx.noAgents')}</div>
+                    ) : agents.map(a => (
+                      <button
+                        key={a.paneId}
+                        className="ctx-menu-item"
+                        onClick={() => { setSendTarget({ imageId: target.id, paneId: a.paneId, agent: a.label }); setMenu(null) }}
+                      >
+                        {connectedPanes.has(a.paneId) ? '▶ ' : ''}{a.label}
+                      </button>
+                    ))}
+                  </>
+                )
+              })()}
+
+              {/* Task card — assign to an agent, set status, delete the row.
+                  Assigning writes tasks.assigned_agent, which is exactly what
+                  the conductor matches a free worker pane against. */}
+              {target?.kind === 'task' && target.taskId && (() => {
+                const tk = tasksById.get(target.taskId)
+                const agents = items
+                  .filter(i => i.kind === 'terminal' && i.paneId)
+                  .map(i => {
+                    const leaf = findLeaf(rootPane, i.paneId!)
+                    return leaf?.agentId ? { agentId: leaf.agentId as string, label: leaf.title?.trim() || leaf.agentId } : null
+                  })
+                  .filter((a): a is { agentId: string; label: string } => !!a)
+                // De-dupe by agent id (several panes may run the same agent).
+                const seen = new Set<string>()
+                const uniq = agents.filter(a => (seen.has(a.agentId) ? false : (seen.add(a.agentId), true)))
+                const STATUSES = ['pending', 'in_progress', 'done'] as const
+                return (
+                  <>
+                    <div style={styles.ctxDivider} />
+                    <div style={styles.ctxLabel}>{t('canvas.task.assignTo')}</div>
+                    {uniq.length === 0 ? (
+                      <div style={{ ...styles.ctxLabel, opacity: 0.6, fontStyle: 'italic' }}>{t('canvas.ctx.noAgents')}</div>
+                    ) : uniq.map(a => (
+                      <button
+                        key={a.agentId}
+                        className="ctx-menu-item"
+                        onClick={() => { void assignTask(target.taskId!, a.agentId, a.label); setMenu(null) }}
+                      >
+                        {tk?.assigned_agent === a.agentId ? '✓ ' : ''}@{a.label}
+                      </button>
+                    ))}
+                    {tk?.assigned_agent && (
+                      <button className="ctx-menu-item" onClick={() => { void assignTask(target.taskId!, null, ''); setMenu(null) }}>
+                        {t('canvas.task.unassign')}
+                      </button>
+                    )}
+                    <div style={styles.ctxLabel}>{t('canvas.task.status')}</div>
+                    {STATUSES.map(s => (
+                      <button
+                        key={s}
+                        className="ctx-menu-item"
+                        onClick={() => { void setTaskStatus(target.taskId!, s); setMenu(null) }}
+                      >
+                        {tk?.status === s ? '✓ ' : ''}{t(`kanban.col.${s}` as any)}
+                      </button>
+                    ))}
+                    <div style={styles.ctxDivider} />
+                    <button className="ctx-menu-item" data-variant="danger" onClick={() => { void deleteTask(target) }}>
+                      {t('canvas.task.delete')}
+                    </button>
+                  </>
+                )
+              })()}
+
               {/* Browser tab stacking */}
               {target?.kind === 'browser' && (
                 <>
@@ -1188,6 +1515,7 @@ export function CanvasMode() {
               <button className="ctx-menu-item" onClick={() => addFromMenu('device', menu.wx, menu.wy)}>{t('canvas.tool.device')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('note', menu.wx, menu.wy)}>{t('canvas.tool.note')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('text', menu.wx, menu.wy)}>{t('canvas.tool.text')}</button>
+              <button className="ctx-menu-item" onClick={() => addFromMenu('task', menu.wx, menu.wy)}>{t('canvas.tool.task')}</button>
               <div style={styles.ctxDivider} />
               <button className="ctx-menu-item" onClick={() => addFromMenu('rect', menu.wx, menu.wy)}>{t('canvas.tool.rect')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('ellipse', menu.wx, menu.wy)}>{t('canvas.tool.ellipse')}</button>
@@ -1218,6 +1546,25 @@ export function CanvasMode() {
           const z = cameraRef.current.zoom
           setCamera({ zoom: z, x: rect.width / 2 - wx * z, y: rect.height / 2 - wy * z })
         }} />
+      )}
+
+      {/* Send-screenshot-to-agent composer */}
+      {sendTarget && (
+        <SendToAgentPanel
+          agent={sendTarget.agent}
+          t={t}
+          onCancel={() => setSendTarget(null)}
+          onSend={(note) => {
+            const tgt = sendTarget
+            setSendTarget(null)
+            void sendCaptureToAgent(tgt.imageId, tgt.paneId, tgt.agent, note)
+          }}
+        />
+      )}
+
+      {/* Transient status toast (bottom-centre) */}
+      {toast && (
+        <div style={styles.toast} onClick={() => setToast(null)}>{toast}</div>
       )}
 
       {/* Hidden file input for image insertion */}
@@ -1301,15 +1648,23 @@ interface CanvasCardProps {
   onMaximize: (id: string) => void
   onUpdate: (id: string, patch: Partial<CanvasItem>) => void
   onContextMenu: (e: React.MouseEvent, id: string) => void
+  /** A browser/device card was screenshotted (null = capture failed). */
+  onCapture: (dataUrl: string | null) => void
+  /** The backing task row for a task card (live-polled), and its title editor. */
+  task?: KanbanTask
+  onTaskRename?: (taskId: string, title: string) => void
   noteColors: string[]
   /** Background transparency for this card (1 = opaque). Content never fades. */
   alpha: number
   t: (k: any, p?: any) => string
 }
 
-function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, noteColors, t }: CanvasCardProps) {
+function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, onCapture, task, onTaskRename, noteColors, t }: CanvasCardProps) {
   const isShape = item.kind === 'shape'
   const frameless = isShape || item.kind === 'text'
+  // Task cards wear their status as a coloured ring so the board reads as a
+  // pipeline at a glance, even zoomed out.
+  const statusRing = item.kind === 'task' && task && !selected ? taskStatusColor(task.status) : null
 
   return (
     <div
@@ -1319,7 +1674,7 @@ function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, o
         left: item.x, top: item.y, width: item.w, height: item.h,
         zIndex: item.z,
         borderRadius: frameless ? 0 : 12,
-        outline: selected ? '2px solid var(--accent)' : 'none',
+        outline: selected ? '2px solid var(--accent)' : statusRing ? `2px solid ${statusRing}` : 'none',
         outlineOffset: 2,
         display: 'flex', flexDirection: 'column',
         boxShadow: frameless ? 'none' : '0 8px 30px rgba(0,0,0,0.5)',
@@ -1378,7 +1733,7 @@ function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, o
         // Shapes/text are dragged by their body since they have no header.
         onPointerDown={frameless ? (e) => { if (e.button === 0 && item.kind !== 'text') onDragStart(e, item.id) } : undefined}
       >
-        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} noteColors={noteColors} alpha={alpha} t={t} />
+        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} onCapture={onCapture} task={task} onTaskRename={onTaskRename} noteColors={noteColors} alpha={alpha} t={t} />
         {/* frameless move/delete affordances when selected (text can't drag from
             its body — the textarea captures the pointer for editing). */}
         {frameless && selected && (
@@ -1455,10 +1810,13 @@ function selectedHandleSkin(dir: ResizeDir, zoom: number): React.CSSProperties |
 
 // ── CardBody — the type-specific content ────────────────────────────────────
 
-function CardBody({ item, onUpdate, onDragStart, noteColors, alpha = 1, t, maximized }: {
+function CardBody({ item, onUpdate, onDragStart, onCapture, task, onTaskRename, noteColors, alpha = 1, t, maximized }: {
   item: CanvasItem
   onUpdate: (id: string, patch: Partial<CanvasItem>) => void
   onDragStart?: (e: React.PointerEvent, id: string) => void
+  onCapture?: (dataUrl: string | null) => void
+  task?: KanbanTask
+  onTaskRename?: (taskId: string, title: string) => void
   noteColors: string[]
   alpha?: number
   t: (k: any, p?: any) => string
@@ -1469,13 +1827,70 @@ function CardBody({ item, onUpdate, onDragStart, noteColors, alpha = 1, t, maxim
   if (item.kind === 'terminal' && item.paneId) {
     return <CanvasTerminal paneId={item.paneId} alpha={maximized ? 1 : alpha} />
   }
-  if (item.kind === 'browser') return <CanvasBrowser item={item} onUpdate={onUpdate} t={t} />
-  if (item.kind === 'device') return <CanvasDevice item={item} onUpdate={onUpdate} t={t} />
+  if (item.kind === 'browser') return <CanvasBrowser item={item} onUpdate={onUpdate} onCapture={onCapture} t={t} />
+  if (item.kind === 'device') return <CanvasDevice item={item} onUpdate={onUpdate} onCapture={onCapture} t={t} />
   if (item.kind === 'note') return <CanvasNote item={item} onUpdate={onUpdate} noteColors={noteColors} />
   if (item.kind === 'text') return <CanvasText item={item} onUpdate={onUpdate} onDragStart={onDragStart} />
   if (item.kind === 'shape') return <CanvasShape item={item} onUpdate={onUpdate} />
   if (item.kind === 'image') return <CanvasImage item={item} />
+  if (item.kind === 'task') return <CanvasTask task={task} onRename={(title) => item.taskId && onTaskRename?.(item.taskId, title)} t={t} />
   return null
+}
+
+// Task card — the board's window onto a real row in the tasks table. Shows the
+// (inline-editable) title, a live status badge, and the assigned agent; the
+// coloured ring around the whole card (in CanvasCard) carries the status at a
+// glance. Assignment / status / dependencies are driven from the context menu
+// and connectors — this is just the display + title editor.
+function CanvasTask({ task, onRename, t }: { task?: KanbanTask; onRename: (title: string) => void; t: (k: any, p?: any) => string }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  if (!task) {
+    return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: 11 }}>…</div>
+  }
+  const color = taskStatusColor(task.status)
+  const deps = parseDeps(task.depends_on).length
+  return (
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 8, padding: 12, background: 'var(--bg-panel)', borderRadius: '0 0 12px 12px', overflow: 'hidden' }}>
+      {editing ? (
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onPointerDown={e => e.stopPropagation()}
+          onKeyDown={e => {
+            e.stopPropagation()
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onRename(draft); setEditing(false) }
+            else if (e.key === 'Escape') { e.preventDefault(); setEditing(false) }
+          }}
+          onBlur={() => { onRename(draft); setEditing(false) }}
+          style={{ resize: 'none', flex: 1, minHeight: 0, background: 'var(--bg-base)', border: '1px solid var(--accent)', borderRadius: 6, color: 'var(--text-primary)', fontSize: 13, fontFamily: 'inherit', lineHeight: 1.4, padding: '5px 7px', outline: 'none' }}
+        />
+      ) : (
+        <div
+          onDoubleClick={() => { setDraft(task.title); setEditing(true) }}
+          title={t('canvas.task.editHint')}
+          style={{ flex: 1, minHeight: 0, overflow: 'auto', fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.35, cursor: 'text', wordBreak: 'break-word' }}
+        >
+          {task.title}
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color, padding: '2px 8px', borderRadius: 999, background: 'color-mix(in srgb, currentColor 14%, transparent)' }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+          {t(`kanban.col.${task.status}` as any)}
+        </span>
+        {task.assigned_agent && (
+          <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text-secondary)', padding: '2px 8px', borderRadius: 999, background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)' }}>
+            @{task.assigned_agent}
+          </span>
+        )}
+        {deps > 0 && (
+          <span title={t('canvas.task.deps', { n: deps })} style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text-dim)' }}>⟝ {deps}</span>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // Image card — a pasted / dropped / picked picture.
@@ -1549,7 +1964,7 @@ const tabTitle = (url: string): string =>
 // Browser — one or more pages behind a tab strip, each an embedded webview.
 // Every tab stays mounted and only the active one is visible, so switching
 // tabs preserves scroll position, form state and any running app in the page.
-function CanvasBrowser({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id: string, patch: Partial<CanvasItem>) => void; t: (k: any, p?: any) => string }) {
+function CanvasBrowser({ item, onUpdate, onCapture, t }: { item: CanvasItem; onUpdate: (id: string, patch: Partial<CanvasItem>) => void; onCapture?: (dataUrl: string | null) => void; t: (k: any, p?: any) => string }) {
   const tabs = browserTabs(item)
   const active = activeBrowserTab(item)
   const [input, setInput] = useState(active.url)
@@ -1616,6 +2031,16 @@ function CanvasBrowser({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id:
     try { const wv = viewRefs.current[active.id]; if (wv) fn(wv) } catch { /* not ready */ }
   }
 
+  // Screenshot the visible page → a canvas image item (see handleCapture).
+  const capture = async () => {
+    const wv = viewRefs.current[active.id]
+    try {
+      const img = wv?.capturePage ? await wv.capturePage() : null
+      const url = img?.toDataURL?.()
+      onCapture?.(url && url.length > 200 ? url : null)
+    } catch { onCapture?.(null) }
+  }
+
   return (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-base)', borderRadius: '0 0 12px 12px', overflow: 'hidden' }}>
       {/* Tab strip — only once there's more than one page to choose between. */}
@@ -1656,6 +2081,7 @@ function CanvasBrowser({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id:
           placeholder="localhost:3000"
         />
         {loading && <span style={{ fontSize: 10, color: 'var(--accent)' }}>●</span>}
+        <button style={styles.browserBtn} title={t('canvas.capture')} onClick={capture}><IconCapture /></button>
         {tabs.length === 1 && (
           <button style={styles.browserBtn} onClick={addTab} title={t('canvas.browser.newTab')}>+</button>
         )}
@@ -1689,7 +2115,7 @@ function CanvasBrowser({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id:
 // Device mockup — an embedded webview sized to a device's *logical* viewport
 // inside a cosmetic bezel, for responsive testing (Chrome/Firefox device-bar
 // style). The guest renders at true device px; the frame is scaled to fit.
-function CanvasDevice({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id: string, patch: Partial<CanvasItem>) => void; t: (k: any, p?: any) => string }) {
+function CanvasDevice({ item, onUpdate, onCapture, t }: { item: CanvasItem; onUpdate: (id: string, patch: Partial<CanvasItem>) => void; onCapture?: (dataUrl: string | null) => void; t: (k: any, p?: any) => string }) {
   const preset = getPreset(item.device)
   const orientation = item.orientation ?? 'portrait'
   const frame = deviceFrame(preset, orientation)
@@ -1778,6 +2204,18 @@ function CanvasDevice({ item, onUpdate, t }: { item: CanvasItem; onUpdate: (id: 
           placeholder="localhost:3000"
         />
         {loading && <span style={{ fontSize: 10, color: 'var(--accent)' }}>●</span>}
+        <button
+          style={styles.browserBtn}
+          title={t('canvas.capture')}
+          onClick={async () => {
+            const wv = webviewRef.current
+            try {
+              const img = wv?.capturePage ? await wv.capturePage() : null
+              const url = img?.toDataURL?.()
+              onCapture?.(url && url.length > 200 ? url : null)
+            } catch { onCapture?.(null) }
+          }}
+        ><IconCapture /></button>
       </div>
       {/* Device row */}
       <div style={styles.deviceBar} onPointerDown={e => e.stopPropagation()}>
@@ -2040,6 +2478,7 @@ function cardLabel(item: CanvasItem, t: (k: any, p?: any) => string): string {
   if (item.kind === 'device') return getPreset(item.device).label
   if (item.kind === 'note') return t('canvas.label.note')
   if (item.kind === 'image') return t('canvas.label.image')
+  if (item.kind === 'task') return t('canvas.label.task')
   return ''
 }
 
@@ -2113,6 +2552,51 @@ function ToolButton({ active, label, onClick, children }: { active: boolean; lab
   )
 }
 
+// ── Send-to-agent composer ──────────────────────────────────────────────────
+// A small modal for handing a captured (and possibly annotated) screenshot to a
+// running agent: the note becomes the prompt, and the image is saved and
+// referenced by path. Enter (without Shift) sends; Escape cancels.
+function SendToAgentPanel({ agent, t, onCancel, onSend }: {
+  agent: string
+  t: (k: any, p?: any) => string
+  onCancel: () => void
+  onSend: (note: string) => void
+}) {
+  const [note, setNote] = useState('')
+  const ref = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => { ref.current?.focus() }, [])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onCancel])
+
+  return (
+    <div style={styles.sendOverlay} onPointerDown={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div style={styles.sendDialog} onPointerDown={e => e.stopPropagation()}>
+        <div style={styles.sendTitle}>{t('canvas.send.title', { agent })}</div>
+        <textarea
+          ref={ref}
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          onKeyDown={e => {
+            e.stopPropagation()
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend(note) }
+          }}
+          placeholder={t('canvas.send.placeholder')}
+          rows={3}
+          style={styles.sendTextarea}
+        />
+        <div style={styles.sendHint}>{t('canvas.send.attach')}</div>
+        <div style={styles.sendActions}>
+          <button style={styles.sendCancel} onClick={onCancel}>{t('canvas.send.cancel')}</button>
+          <button style={styles.sendSubmit} onClick={() => onSend(note)}>{t('canvas.send.send')}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Icons ───────────────────────────────────────────────────────────────────
 
 const svg = (children: React.ReactNode, fill = false) => (
@@ -2129,6 +2613,7 @@ const IconRotate = () => (
   </svg>
 )
 const IconNote = () => svg(<><path d="M4 4h16v11l-5 5H4z" /><path d="M15 20v-5h5" /></>)
+const IconTask = () => svg(<><rect x="4" y="3" width="16" height="18" rx="2" /><path d="m8 11 2.5 2.5L16 8" /></>)
 const IconText = () => svg(<><path d="M4 6V5h16v1M12 5v14M9 19h6" /></>)
 const IconRect = () => svg(<><rect x="3" y="5" width="18" height="14" rx="2" /></>)
 const IconEllipse = () => svg(<><ellipse cx="12" cy="12" rx="9" ry="7" /></>)
@@ -2136,6 +2621,13 @@ const IconTriangle = () => svg(<><path d="M12 4 21 20H3z" /></>)
 const IconPen = () => svg(<><path d="M12 19l7-7 3 3-7 7-3-3z" /><path d="m18 13-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" /><path d="m2 2 7.586 7.586" /><circle cx="11" cy="11" r="2" /></>)
 const IconConnect = () => svg(<><circle cx="5" cy="6" r="2.5" /><circle cx="19" cy="18" r="2.5" /><path d="M7.2 7.4 16.8 16.6" /><path d="m13.5 16.8 3.3.2-.2-3.3" /></>)
 const IconImage = () => svg(<><rect x="3" y="3" width="18" height="18" rx="2.5" /><circle cx="8.5" cy="8.5" r="1.8" /><path d="m21 15-4.5-4.5L5 21" /></>)
+// Small camera glyph sized to sit in a browser/device toolbar button.
+const IconCapture = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z" />
+    <circle cx="12" cy="13" r="3.2" />
+  </svg>
+)
 const IconSnap = () => svg(<><path d="M3 3h4v4H3zM10 3h4v4h-4zM17 3h4v4h-4zM3 10h4v4H3zM17 10h4v4h-4zM3 17h4v4H3zM10 17h4v4h-4zM17 17h4v4h-4z" /></>)
 const IconBackground = () => svg(<><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></>)
 const IconExit = () => svg(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5M21 12H9" /></>)
@@ -2325,5 +2817,37 @@ const styles: Record<string, React.CSSProperties> = {
     position: 'absolute', right: 14, bottom: 14, zIndex: 20,
     background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 10,
     boxShadow: '0 8px 26px rgba(0,0,0,0.5)', overflow: 'hidden', padding: 2,
+  },
+  toast: {
+    position: 'absolute', bottom: 22, left: '50%', transform: 'translateX(-50%)', zIndex: 40,
+    padding: '8px 16px', background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)',
+    borderRadius: 999, color: 'var(--text-primary)', fontSize: 12.5, fontWeight: 500,
+    boxShadow: '0 8px 26px rgba(0,0,0,0.55)', cursor: 'pointer', maxWidth: '70%',
+    whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+  },
+  sendOverlay: {
+    position: 'fixed', inset: 0, zIndex: 500, background: 'rgba(0,0,0,0.55)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  },
+  sendDialog: {
+    width: 420, maxWidth: 'calc(100vw - 48px)', background: 'var(--bg-elevated)',
+    border: '1px solid var(--border)', borderRadius: 12, padding: 18,
+    display: 'flex', flexDirection: 'column', gap: 10, boxShadow: '0 16px 48px rgba(0,0,0,0.55)',
+  },
+  sendTitle: { fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' },
+  sendTextarea: {
+    fontSize: 13, padding: '9px 11px', borderRadius: 8, resize: 'vertical', minHeight: 60,
+    background: 'var(--bg-base)', border: '1px solid var(--border-strong)', color: 'var(--text-primary)',
+    fontFamily: 'inherit', lineHeight: 1.5, outline: 'none',
+  },
+  sendHint: { fontSize: 11, color: 'var(--text-dim)', lineHeight: 1.5 },
+  sendActions: { display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 2 },
+  sendCancel: {
+    fontSize: 12.5, fontWeight: 600, padding: '6px 14px', borderRadius: 7, cursor: 'pointer',
+    background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border-strong)',
+  },
+  sendSubmit: {
+    fontSize: 12.5, fontWeight: 600, padding: '6px 16px', borderRadius: 7, cursor: 'pointer',
+    background: 'var(--accent)', color: 'var(--accent-fg)', border: 'none',
   },
 }

@@ -1,8 +1,10 @@
 import { ipcMain, shell } from 'electron'
-import { readdir, readFile, writeFile, mkdir, rename, chmod, stat } from 'fs/promises'
+import { readdir, readFile, writeFile, mkdir, rename, chmod, stat, cp, rm } from 'fs/promises'
 import { existsSync, statSync } from 'fs'
-import { join, extname, dirname, resolve, sep } from 'path'
+import { join, extname, dirname, resolve, sep, basename } from 'path'
 import { getCurrentRootPath } from './workspace'
+import { isValidEntryName, isInside, samePathish, nextAvailableName } from '../lib/fsOps'
+import { parseImageDataUrl, MAX_CAPTURE_BYTES } from '../lib/canvasCapture'
 
 export interface FsEntry {
   name: string
@@ -46,13 +48,18 @@ async function walkFiles(rootPath: string, max: number): Promise<string[]> {
 export interface CodeMatch { path: string; line: number; text: string }
 
 // ── Destructive-op containment ──────────────────────────────────────────────
-// rename / trash / chmod mutate the user's disk, so unlike the read handlers
-// they are confined to the open workspace. Everything is resolved to an
-// absolute real path first, then checked to be *strictly inside* the root — so
-// `..` traversal, and the root directory itself, are both rejected. Without
-// this an accidental (or agent-driven) call could rename or trash anything the
-// user account can reach.
-function assertInsideWorkspace(target: string): string {
+// rename / move / copy / create / trash / chmod mutate the user's disk, so
+// unlike the read handlers they are confined to the open workspace. Everything
+// is resolved to an absolute real path first, then checked to be *strictly
+// inside* the root — so `..` traversal, and the root directory itself, are both
+// rejected. Without this an accidental (or agent-driven) call could rename or
+// trash anything the user account can reach.
+//
+// `allowRoot` exists only for *container* arguments (the directory a new file
+// or a paste lands in): the workspace root is a legitimate place to create
+// things, but never a legitimate thing to move, rename or delete. The child
+// path that results is always re-checked without it.
+function assertInsideWorkspace(target: string, opts: { allowRoot?: boolean } = {}): string {
   const root = getCurrentRootPath()
   if (!root) throw new Error('No workspace is open')
   const abs = resolve(target)
@@ -60,16 +67,61 @@ function assertInsideWorkspace(target: string): string {
   const prefix = rootAbs.endsWith(sep) ? rootAbs : rootAbs + sep
   // Case-insensitive on Windows/macOS; the compare mirrors the OS's own rules
   // loosely enough to stay a guard rather than a correctness dependency.
-  const cmp = process.platform === 'linux'
-    ? (a: string, b: string) => a.startsWith(b)
-    : (a: string, b: string) => a.toLowerCase().startsWith(b.toLowerCase())
-  if (!cmp(abs, prefix)) throw new Error('Path is outside the workspace')
+  const ci = process.platform !== 'linux'
+  const cmp = ci
+    ? (a: string, b: string) => a.toLowerCase().startsWith(b.toLowerCase())
+    : (a: string, b: string) => a.startsWith(b)
+  const isRoot = ci ? abs.toLowerCase() === rootAbs.toLowerCase() : abs === rootAbs
+  if (!(opts.allowRoot && isRoot) && !cmp(abs, prefix)) {
+    throw new Error('Path is outside the workspace')
+  }
   // Never touch SwarmMind's own per-workspace state directory.
-  const rel = abs.slice(prefix.length)
+  const rel = isRoot ? '' : abs.slice(prefix.length)
   if (rel === '.swarmmind' || rel.startsWith('.swarmmind' + sep)) {
     throw new Error('Path is inside .swarmmind')
   }
   return abs
+}
+
+/** Path comparisons follow the platform's own case rules (see above). */
+const CASE_INSENSITIVE_FS = process.platform !== 'linux'
+const IS_WINDOWS = process.platform === 'win32'
+
+/** Reject a name that can't be a single directory entry, with a real reason. */
+function checkName(name: string): string | null {
+  if (!name.trim()) return 'Name cannot be empty'
+  if (/[\\/]/.test(name)) return 'Name cannot contain a path separator'
+  if (!isValidEntryName(name, { windows: IS_WINDOWS })) return `“${name}” is not a valid file name`
+  return null
+}
+
+/**
+ * Resolve a destination directory and the final path an entry lands at inside
+ * it, applying the shared move/copy guards: the destination must be an existing
+ * directory in the workspace, and must not be the source itself or anything
+ * beneath it (moving a folder into its own subtree orphans the whole subtree).
+ */
+async function resolveDestination(
+  fromPath: string,
+  destDir: string
+): Promise<{ from: string; dir: string; name: string } | { error: string }> {
+  const from = assertInsideWorkspace(fromPath)
+  const dir = assertInsideWorkspace(destDir, { allowRoot: true })
+  if (!existsSync(from)) return { error: 'Source no longer exists' }
+  const dirStat = statSync(dir, { throwIfNoEntry: false })
+  if (!dirStat?.isDirectory()) return { error: 'Destination is not a folder' }
+  if (samePathish(from, dir, CASE_INSENSITIVE_FS)) return { error: 'Cannot place a folder inside itself' }
+  if (isInside(from, dir, CASE_INSENSITIVE_FS)) return { error: 'Cannot place a folder inside itself' }
+  return { from, dir, name: basename(from) }
+}
+
+/** Names already present in a directory — the input to collision-free naming. */
+async function namesIn(dir: string): Promise<string[]> {
+  try {
+    return await readdir(dir)
+  } catch {
+    return []
+  }
 }
 
 export interface FsStat {
@@ -197,21 +249,145 @@ export function registerFsHandlers(): void {
     }
   })
 
-  // Rename (or move) a file/folder within the workspace. Refuses to clobber an
-  // existing target — fs.rename would silently overwrite a file otherwise.
+  // Rename a file/folder in place. Refuses to clobber an existing target —
+  // fs.rename would silently overwrite a file otherwise.
   ipcMain.handle('fs:rename', async (_e, fromPath: string, toName: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
     try {
       const from = assertInsideWorkspace(fromPath)
-      // `toName` is a bare name, not a path — reject separators so a rename
-      // can't walk out of the containing directory.
-      if (!toName || /[\\/]/.test(toName) || toName === '.' || toName === '..') {
-        return { ok: false, error: 'Invalid name' }
-      }
+      // `toName` is a bare name, not a path — separators are rejected so a
+      // rename can't walk out of the containing directory. Moving between
+      // directories is fs:move's job.
+      const bad = checkName(toName)
+      if (bad) return { ok: false, error: bad }
       const to = assertInsideWorkspace(join(dirname(from), toName))
       if (from === to) return { ok: true, path: to }
-      if (existsSync(to)) return { ok: false, error: 'A file with that name already exists' }
+      // A case-only rename ("Foo.ts" → "foo.ts") is a real, common operation
+      // that existsSync would reject on Windows/macOS, where the old and new
+      // names are the same file. rename() handles it fine.
+      const caseOnlyChange = CASE_INSENSITIVE_FS && from.toLowerCase() === to.toLowerCase()
+      if (!caseOnlyChange && existsSync(to)) {
+        return { ok: false, error: 'A file with that name already exists' }
+      }
       await rename(from, to)
       return { ok: true, path: to }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Create an empty file or a folder inside `dirPath`. The workspace root is a
+  // valid container here (allowRoot), unlike for the destructive ops.
+  ipcMain.handle('fs:create', async (_e, dirPath: string, name: string, kind: 'file' | 'dir'): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+    try {
+      const dir = assertInsideWorkspace(dirPath, { allowRoot: true })
+      const bad = checkName(name)
+      if (bad) return { ok: false, error: bad }
+      const target = assertInsideWorkspace(join(dir, name))
+      if (existsSync(target)) return { ok: false, error: 'A file with that name already exists' }
+      if (kind === 'dir') {
+        await mkdir(target, { recursive: true })
+      } else {
+        await mkdir(dirname(target), { recursive: true })
+        // 'wx' fails rather than truncating if something appeared in between.
+        await writeFile(target, '', { encoding: 'utf-8', flag: 'wx' })
+      }
+      return { ok: true, path: target }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Move a file/folder into another folder (drag-and-drop, cut+paste).
+  // `overwrite: false` (the default) picks a free "copy"-style name instead of
+  // clobbering; the renderer sets it true only after the user confirms.
+  ipcMain.handle('fs:move', async (_e, fromPath: string, destDir: string, overwrite = false): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+    try {
+      const resolved = await resolveDestination(fromPath, destDir)
+      if ('error' in resolved) return { ok: false, error: resolved.error }
+      const { from, dir, name } = resolved
+      if (samePathish(dirname(from), dir, CASE_INSENSITIVE_FS)) {
+        return { ok: true, path: from } // already there — a no-op, not an error
+      }
+      let target = assertInsideWorkspace(join(dir, name))
+      if (existsSync(target)) {
+        if (!overwrite) {
+          target = assertInsideWorkspace(join(dir, nextAvailableName(name, await namesIn(dir), { caseInsensitive: CASE_INSENSITIVE_FS })))
+        } else {
+          await rm(target, { recursive: true, force: true })
+        }
+      }
+      try {
+        await rename(from, target)
+      } catch (err) {
+        // Cross-device (a junction/symlink/mount pointing outside the volume)
+        // — rename can't span filesystems, so fall back to copy-then-delete.
+        if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err
+        await cp(from, target, { recursive: true, force: true })
+        await rm(from, { recursive: true, force: true })
+      }
+      return { ok: true, path: target }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Copy a file/folder into a folder (copy+paste, duplicate). Recursive for
+  // directories. Never overwrites: a colliding name becomes "x copy.ts".
+  ipcMain.handle('fs:copy', async (_e, fromPath: string, destDir: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+    try {
+      const resolved = await resolveDestination(fromPath, destDir)
+      if ('error' in resolved) return { ok: false, error: resolved.error }
+      const { from, dir, name } = resolved
+      const finalName = nextAvailableName(name, await namesIn(dir), { caseInsensitive: CASE_INSENSITIVE_FS })
+      const target = assertInsideWorkspace(join(dir, finalName))
+      await cp(from, target, { recursive: true, errorOnExist: true, force: false })
+      return { ok: true, path: target }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Import files dragged in from the OS file manager. The *sources* are outside
+  // the workspace by definition (that's the point), so they are not containment-
+  // checked — the user physically dragged them — but the destination still is,
+  // and the batch is capped so a dropped 10k-file folder can't wedge the app.
+  ipcMain.handle('fs:import', async (_e, sources: string[], destDir: string): Promise<{ ok: true; paths: string[] } | { ok: false; error: string }> => {
+    try {
+      const dir = assertInsideWorkspace(destDir, { allowRoot: true })
+      if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) {
+        return { ok: false, error: 'Destination is not a folder' }
+      }
+      if (!Array.isArray(sources) || !sources.length) return { ok: false, error: 'Nothing to import' }
+      if (sources.length > 200) return { ok: false, error: 'Too many items (max 200)' }
+      const written: string[] = []
+      for (const src of sources) {
+        const from = resolve(src)
+        if (!existsSync(from)) continue
+        // Dropping a folder onto something inside itself would recurse forever.
+        if (samePathish(from, dir, CASE_INSENSITIVE_FS) || isInside(from, dir, CASE_INSENSITIVE_FS)) {
+          return { ok: false, error: 'Cannot import a folder into itself' }
+        }
+        const finalName = nextAvailableName(basename(from), await namesIn(dir), { caseInsensitive: CASE_INSENSITIVE_FS })
+        const target = assertInsideWorkspace(join(dir, finalName))
+        await cp(from, target, { recursive: true, errorOnExist: true, force: false })
+        written.push(target)
+      }
+      return { ok: true, paths: written }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Duplicate in place — copy into the entry's own parent under a free name.
+  ipcMain.handle('fs:duplicate', async (_e, filePath: string): Promise<{ ok: true; path: string } | { ok: false; error: string }> => {
+    try {
+      const from = assertInsideWorkspace(filePath)
+      if (!existsSync(from)) return { ok: false, error: 'Source no longer exists' }
+      const dir = dirname(from)
+      const finalName = nextAvailableName(basename(from), await namesIn(dir), { caseInsensitive: CASE_INSENSITIVE_FS })
+      const target = assertInsideWorkspace(join(dir, finalName))
+      await cp(from, target, { recursive: true, errorOnExist: true, force: false })
+      return { ok: true, path: target }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
@@ -249,6 +425,45 @@ export function registerFsHandlers(): void {
   // Reveal a path in the OS file manager (Explorer / Finder).
   ipcMain.handle('fs:reveal', async (_e, filePath: string): Promise<void> => {
     try { shell.showItemInFolder(resolve(filePath)) } catch { /* best effort */ }
+  })
+
+  // Open a path with the OS default application ("Open with system editor").
+  // Confined to the workspace: shell.openPath hands the file to whatever the
+  // OS has registered, so this is the one read-ish call that deserves the same
+  // containment as the mutating ones.
+  ipcMain.handle('fs:openPath', async (_e, filePath: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      const abs = assertInsideWorkspace(filePath)
+      const err = await shell.openPath(abs)
+      return err ? { ok: false, error: err } : { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
+  // Save a Canvas screenshot capture (webview capturePage + baked annotations)
+  // as a PNG/JPEG under the workspace's own state dir, returning a repo-relative
+  // path the handoff prompt can hand to an agent to read. Writes straight into
+  // .swarmmind (SwarmMind's own directory, like scrollback/worktrees) rather
+  // than through the user-op guard, which deliberately forbids .swarmmind — this
+  // is an internal artifact, not a user file operation.
+  ipcMain.handle('canvas:saveCapture', async (_e, dataUrl: string): Promise<{ ok: true; path: string; rel: string } | { ok: false; error: string }> => {
+    try {
+      const root = getCurrentRootPath()
+      if (!root) return { ok: false, error: 'No workspace is open' }
+      const parsed = parseImageDataUrl(dataUrl)
+      if (!parsed) return { ok: false, error: 'Unsupported image data' }
+      const buf = Buffer.from(parsed.base64, 'base64')
+      if (buf.length === 0) return { ok: false, error: 'Empty capture' }
+      if (buf.length > MAX_CAPTURE_BYTES) return { ok: false, error: 'Capture too large' }
+      const dir = join(root, '.swarmmind', 'canvas-captures')
+      await mkdir(dir, { recursive: true })
+      const name = `capture-${Date.now()}.${parsed.ext}`
+      await writeFile(join(dir, name), buf)
+      return { ok: true, path: join(dir, name), rel: `.swarmmind/canvas-captures/${name}` }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
 
   // Read an image file as a base64 data URL plus metadata (max 25MB)

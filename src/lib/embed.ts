@@ -10,6 +10,8 @@
 // load. Everything here is best-effort: callers fall back to lexical ranking if
 // embeddings are unavailable (offline, load failure, etc.).
 
+import { onnxThreadCount } from './onnxThreads'
+
 const EMBED_MODEL = 'Xenova/all-MiniLM-L6-v2'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -56,6 +58,9 @@ async function load(): Promise<void> {
         : '/ort/'
       env.backends.onnx.wasm.wasmPaths = wasmBase
       env.backends.onnx.wasm.proxy = false
+      // Single-threaded under file:// — the pthread blob workers can't load
+      // there (see onnxThreads.ts); this is what stops the importScripts noise.
+      env.backends.onnx.wasm.numThreads = onnxThreadCount(location.protocol, typeof SharedArrayBuffer !== 'undefined', navigator.hardwareConcurrency)
     }
   }
   _extractor = await pipeline('feature-extraction', EMBED_MODEL, { quantized: true })

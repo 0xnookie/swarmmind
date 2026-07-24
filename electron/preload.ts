@@ -1,4 +1,4 @@
-﻿import { contextBridge, ipcRenderer } from 'electron'
+﻿import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('swarmmind', {
   ptyCreate: (paneId: string, agentId: string, cwd: string, shellStyle: string, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string, workspaceId?: string) =>
@@ -220,9 +220,20 @@ contextBridge.exposeInMainWorld('swarmmind', {
   // Mutating file ops — workspace-confined in main; delete goes to the OS trash.
   fsStat: (filePath: string) => ipcRenderer.invoke('fs:stat', filePath),
   fsRename: (fromPath: string, toName: string) => ipcRenderer.invoke('fs:rename', fromPath, toName),
+  fsCreate: (dirPath: string, name: string, kind: 'file' | 'dir') => ipcRenderer.invoke('fs:create', dirPath, name, kind),
+  fsMove: (fromPath: string, destDir: string, overwrite?: boolean) => ipcRenderer.invoke('fs:move', fromPath, destDir, overwrite),
+  fsCopy: (fromPath: string, destDir: string) => ipcRenderer.invoke('fs:copy', fromPath, destDir),
+  fsDuplicate: (filePath: string) => ipcRenderer.invoke('fs:duplicate', filePath),
   fsTrash: (filePath: string) => ipcRenderer.invoke('fs:trash', filePath),
   fsChmod: (filePath: string, mode: number) => ipcRenderer.invoke('fs:chmod', filePath, mode),
   fsReveal: (filePath: string) => ipcRenderer.invoke('fs:reveal', filePath),
+  fsOpenPath: (filePath: string) => ipcRenderer.invoke('fs:openPath', filePath),
+  fsImport: (sources: string[], destDir: string) => ipcRenderer.invoke('fs:import', sources, destDir),
+  // Save a Canvas screenshot capture (data URL → PNG/JPEG under .swarmmind).
+  canvasSaveCapture: (dataUrl: string) => ipcRenderer.invoke('canvas:saveCapture', dataUrl),
+  // Electron 32 removed File.path; this is the sanctioned way to learn where a
+  // file dragged in from the OS file manager actually lives on disk.
+  fsPathForFile: (file: File) => { try { return webUtils.getPathForFile(file) } catch { return '' } },
   // TypeScript language service (real diagnostics / hover / go-to-definition).
   // The live buffer travels with each request — unsaved text is the truth.
   lspDiagnostics: (filePath: string, content: string) => ipcRenderer.invoke('lsp:diagnostics', filePath, content),

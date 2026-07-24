@@ -173,9 +173,22 @@ declare global {
       // a result union instead of throwing, so callers can surface the reason.
       fsStat: (filePath: string) => Promise<FsStat | null>
       fsRename: (fromPath: string, toName: string) => Promise<FsResult<{ path: string }>>
+      fsCreate: (dirPath: string, name: string, kind: 'file' | 'dir') => Promise<FsResult<{ path: string }>>
+      /** Move into `destDir`; without `overwrite` a collision gets a free name. */
+      fsMove: (fromPath: string, destDir: string, overwrite?: boolean) => Promise<FsResult<{ path: string }>>
+      /** Recursive copy into `destDir`; never overwrites (picks "x copy.ts"). */
+      fsCopy: (fromPath: string, destDir: string) => Promise<FsResult<{ path: string }>>
+      fsDuplicate: (filePath: string) => Promise<FsResult<{ path: string }>>
       fsTrash: (filePath: string) => Promise<FsResult>
       fsChmod: (filePath: string, mode: number) => Promise<FsResult>
       fsReveal: (filePath: string) => Promise<void>
+      fsOpenPath: (filePath: string) => Promise<FsResult>
+      /** Copy OS-dragged files into a workspace folder (sources are external). */
+      fsImport: (sources: string[], destDir: string) => Promise<FsResult<{ paths: string[] }>>
+      /** Real disk path of a dragged File (Electron 32 removed File.path). */
+      fsPathForFile: (file: File) => string
+      /** Save a Canvas screenshot capture; returns a repo-relative path. */
+      canvasSaveCapture: (dataUrl: string) => Promise<FsResult<{ path: string; rel: string }>>
       verifyScripts: (rootPath: string) => Promise<string[]>
       verifyRun: (rootPath: string, script: string) => Promise<{ code: number; stdout: string; stderr: string; error?: string }>
       // TypeScript language service — real diagnostics, hover, go-to-definition.

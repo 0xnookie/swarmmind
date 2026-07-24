@@ -41,6 +41,22 @@ import { scoreVoice, rankVoices, pickVoice, cleanForSpeech, chunkForSpeech, type
 import { findPathLinks, isAbsolutePathLike, candidateAbsolutePaths } from '../src/lib/terminalLinks.ts'
 import { isIndexablePath, planIncrementalUpdate, mergeIndexEntries } from '../src/lib/indexUpdate.ts'
 import { findDevServerUrl } from '../src/lib/devServerUrl.ts'
+import {
+  pathSep, baseName, parentDir, joinPath, rewritePath, selectRange, toggleSelection,
+  canMoveInto, canCopyInto, topLevelPaths, isUnder, relativeToRoot,
+} from '../src/lib/fileOps.ts'
+import {
+  splitName, isValidEntryName, isInside, samePathish, nextAvailableName,
+} from '../electron/lib/fsOps.ts'
+import { isLoopDue, decideLoopAction, nextRunAfter } from '../src/lib/loopSchedule.ts'
+import {
+  rectsIntersect, fitBox, projectPointToImage, strokeScale, buildHandoffPrompt,
+} from '../src/lib/canvasHandoff.ts'
+import { parseImageDataUrl, MAX_CAPTURE_BYTES } from '../electron/lib/canvasCapture.ts'
+import { onnxThreadCount } from '../src/lib/onnxThreads.ts'
+import {
+  parseDeps as parseTaskDeps, serializeDeps, addDep, removeDep, wouldCycle, taskStatusColor,
+} from '../src/lib/canvasTasks.ts'
 import { SWARM_RECIPES, buildRecipeLayout, type BuiltLeaf, type BuiltGroup } from '../src/lib/recipes.ts'
 import {
   escapeHtml, summarizeEvent, buildSessionStats, formatDuration, compactNumber,
@@ -1456,6 +1472,280 @@ t('canvasGrid: a snapped card corner coincides with a drawn feature', () => {
   const r = resizeRect({ x: 0, y: 0, w: 400, h: 300 }, 'se', 5, 5, { minW: 140, minH: 80, grid: GRID })
   assert.ok(nearlyMultipleOfGrid(r.x + r.w))
   assert.ok(nearlyMultipleOfGrid(r.y + r.h))
+})
+
+// ── fileOps / fsOps (file-explorer IDE operations) ───────────────────────────
+// The explorer's move/copy/paste/drag surface is all path arithmetic, and the
+// dangerous mistakes there are silent: relocating a folder into its own subtree,
+// clobbering a file on paste, or leaving an editor tab pointed at a dead path.
+
+t('fileOps: baseName/parentDir handle both separator styles', () => {
+  assert.equal(baseName('D:\\repo\\src\\a.ts'), 'a.ts')
+  assert.equal(baseName('/repo/src/a.ts'), 'a.ts')
+  assert.equal(baseName('/repo/src/'), 'src')
+  assert.equal(parentDir('D:\\repo\\src\\a.ts'), 'D:\\repo\\src')
+  assert.equal(parentDir('/repo/src/a.ts'), '/repo/src')
+  assert.equal(parentDir('a.ts'), '')
+  assert.equal(pathSep('D:\\a'), '\\')
+  assert.equal(pathSep('/a'), '/')
+  assert.equal(joinPath('D:\\repo\\src', 'b.ts'), 'D:\\repo\\src\\b.ts')
+  assert.equal(joinPath('/repo/src/', 'b.ts'), '/repo/src/b.ts')
+})
+t('fileOps: rewritePath follows a moved file and everything under it', () => {
+  assert.equal(rewritePath('/r/a.ts', '/r/a.ts', '/r/sub/a.ts'), '/r/sub/a.ts')
+  assert.equal(rewritePath('/r/dir/x/y.ts', '/r/dir', '/r/moved'), '/r/moved/x/y.ts')
+  // untouched paths report null so callers leave them alone
+  assert.equal(rewritePath('/r/other.ts', '/r/dir', '/r/moved'), null)
+  // a mere string prefix is not a descendant
+  assert.equal(rewritePath('/r/dirty.ts', '/r/dir', '/r/moved'), null)
+})
+t('fileOps: selectRange is inclusive and order-independent', () => {
+  const xs = [0, 1, 2, 3, 4]
+  assert.deepEqual(selectRange(xs, 1, 3), [1, 2, 3])
+  assert.deepEqual(selectRange(xs, 3, 1), [1, 2, 3])
+  assert.deepEqual(selectRange(xs, 2, 2), [2])
+  assert.deepEqual(selectRange(xs, -1, 2), [])
+  assert.deepEqual(selectRange(xs, 0, 99), [])
+})
+t('fileOps: toggleSelection adds then removes', () => {
+  assert.deepEqual(toggleSelection([], '/a'), ['/a'])
+  assert.deepEqual(toggleSelection(['/a', '/b'], '/a'), ['/b'])
+})
+t('fileOps: a folder can never be moved into itself or its own subtree', () => {
+  assert.equal(canMoveInto(['/r/dir'], '/r/dir'), false)
+  assert.equal(canMoveInto(['/r/dir'], '/r/dir/sub'), false)
+  assert.equal(canCopyInto(['/r/dir'], '/r/dir/sub'), false)
+  assert.equal(canMoveInto(['/r/dir'], '/r/other'), true)
+})
+t('fileOps: moving into the current parent is a no-op, copying there is not', () => {
+  assert.equal(canMoveInto(['/r/dir/a.ts'], '/r/dir'), false)
+  assert.equal(canCopyInto(['/r/dir/a.ts'], '/r/dir'), true) // that is "duplicate"
+  // a mixed selection is still movable if something actually relocates
+  assert.equal(canMoveInto(['/r/dir/a.ts', '/r/elsewhere/b.ts'], '/r/dir'), true)
+})
+t('fileOps: topLevelPaths drops descendants of a selected folder', () => {
+  assert.deepEqual(
+    topLevelPaths(['/r/dir', '/r/dir/a.ts', '/r/dir/sub/b.ts', '/r/loose.ts']),
+    ['/r/dir', '/r/loose.ts']
+  )
+  assert.deepEqual(topLevelPaths(['/r/a.ts', '/r/b.ts']), ['/r/a.ts', '/r/b.ts'])
+})
+t('fileOps: isUnder / relativeToRoot are separator- and case-tolerant', () => {
+  assert.equal(isUnder('D:\\repo', 'D:/REPO/src/a.ts'), true)
+  assert.equal(isUnder('/r/dir', '/r/dirty/a.ts'), false)
+  assert.equal(relativeToRoot('D:\\repo', 'D:\\repo\\src\\a.ts'), 'src/a.ts')
+  assert.equal(relativeToRoot('/r', '/elsewhere/a.ts'), '/elsewhere/a.ts')
+})
+t('fsOps: splitName keeps dotfiles whole', () => {
+  assert.deepEqual(splitName('a.ts'), { stem: 'a', ext: '.ts' })
+  assert.deepEqual(splitName('.gitignore'), { stem: '.gitignore', ext: '' })
+  assert.deepEqual(splitName('archive.tar.gz'), { stem: 'archive.tar', ext: '.gz' })
+  assert.deepEqual(splitName('README'), { stem: 'README', ext: '' })
+})
+t('fsOps: isValidEntryName rejects traversal everywhere, Win32 traps on Windows', () => {
+  assert.equal(isValidEntryName('a.ts'), true)
+  assert.equal(isValidEntryName(''), false)
+  assert.equal(isValidEntryName('..'), false)
+  assert.equal(isValidEntryName('.'), false)
+  assert.equal(isValidEntryName('a/b'), false)
+  assert.equal(isValidEntryName('a\\b'), false)
+  assert.equal(isValidEntryName('a' + String.fromCharCode(9) + 'b'), false)
+  // POSIX-legal, Windows-illegal
+  assert.equal(isValidEntryName('a?.ts'), true)
+  assert.equal(isValidEntryName('a?.ts', { windows: true }), false)
+  assert.equal(isValidEntryName('name.', { windows: true }), false)
+  assert.equal(isValidEntryName('CON', { windows: true }), false)
+  assert.equal(isValidEntryName('con.txt', { windows: true }), false)
+  assert.equal(isValidEntryName('console.ts', { windows: true }), true)
+})
+t('fsOps: isInside is strict containment, samePathish normalizes', () => {
+  assert.equal(isInside('/r/dir', '/r/dir/a.ts'), true)
+  assert.equal(isInside('/r/dir', '/r/dir'), false)
+  assert.equal(isInside('/r/dir', '/r/dirty/a.ts'), false)
+  assert.equal(isInside('D:\\r', 'D:/R/a.ts', true), true)
+  assert.equal(isInside('D:\\r', 'D:/R/a.ts', false), false)
+  assert.equal(samePathish('/r/dir/', '/r/dir'), true)
+  assert.equal(samePathish('D:\\r', 'd:/r', true), true)
+})
+t('fsOps: nextAvailableName mirrors Finder/VS Code copy naming', () => {
+  assert.equal(nextAvailableName('a.ts', []), 'a.ts')
+  assert.equal(nextAvailableName('a.ts', ['a.ts']), 'a copy.ts')
+  assert.equal(nextAvailableName('a.ts', ['a.ts', 'a copy.ts']), 'a copy 2.ts')
+  // duplicating a duplicate must not stack suffixes
+  assert.equal(nextAvailableName('a copy.ts', ['a copy.ts']), 'a copy 2.ts')
+  assert.equal(nextAvailableName('a copy 2.ts', ['a copy.ts', 'a copy 2.ts']), 'a copy 3.ts')
+  // dotfiles and extensionless names keep their shape
+  assert.equal(nextAvailableName('.env', ['.env']), '.env copy')
+  assert.equal(nextAvailableName('LICENSE', ['LICENSE']), 'LICENSE copy')
+  // case-insensitive by default (Windows/macOS), exact when told otherwise
+  assert.equal(nextAvailableName('A.ts', ['a.ts']), 'A copy.ts')
+  assert.equal(nextAvailableName('A.ts', ['a.ts'], { caseInsensitive: false }), 'A.ts')
+})
+
+// ── loopSchedule (recurring-prompt loop timing) ──────────────────────────────
+// The bug this guards against is silent and slow: a loop armed to run now that
+// gets pushed a full interval into the future because its target pane was a
+// moment late to come online ("a 30-minute loop only starts after 30 minutes").
+
+t('loopSchedule: a fresh loop (null nextRunAt) is due immediately', () => {
+  assert.equal(isLoopDue({ enabled: true, nextRunAt: null, intervalSec: 1800 }, 1000), true)
+  // ...and firing schedules the next run exactly one interval out, not now.
+  assert.equal(nextRunAfter(1000, 1800), 1000 + 1800 * 1000)
+})
+t('loopSchedule: a disabled loop is never due', () => {
+  assert.equal(isLoopDue({ enabled: false, nextRunAt: null, intervalSec: 60 }, 5000), false)
+  assert.equal(isLoopDue({ enabled: false, nextRunAt: 0, intervalSec: 60 }, 5000), false)
+})
+t('loopSchedule: due exactly at nextRunAt, not before', () => {
+  const loop = { enabled: true, nextRunAt: 5000, intervalSec: 60 }
+  assert.equal(isLoopDue(loop, 4999), false)
+  assert.equal(isLoopDue(loop, 5000), true)
+  assert.equal(isLoopDue(loop, 5001), true)
+})
+t('loopSchedule: due + live target → run; due + no target → wait (never reschedules)', () => {
+  const due = { enabled: true, nextRunAt: null, intervalSec: 1800 }
+  assert.equal(decideLoopAction(due, true, 1000), 'run')
+  // The critical case: no live target yet stays "wait", so the runner leaves it
+  // due and retries next tick — it must NOT slip a whole interval.
+  assert.equal(decideLoopAction(due, false, 1000), 'wait')
+})
+t('loopSchedule: a not-yet-due loop skips regardless of target', () => {
+  const later = { enabled: true, nextRunAt: 10_000, intervalSec: 60 }
+  assert.equal(decideLoopAction(later, true, 1000), 'skip')
+  assert.equal(decideLoopAction(later, false, 1000), 'skip')
+})
+t('loopSchedule: a loop waiting on a slow pane fires the moment it comes online', () => {
+  // t0: created, due now, pane still spawning (no target) → wait, stays due.
+  const loop = { enabled: true, nextRunAt: null, intervalSec: 1800 }
+  assert.equal(decideLoopAction(loop, false, 0), 'wait')
+  assert.equal(decideLoopAction(loop, false, 3000), 'wait')   // still spawning 3s later
+  // pane goes 'running' at t=8s → next tick runs it (an 8s delay, not 30 min).
+  assert.equal(decideLoopAction(loop, true, 8000), 'run')
+})
+t('loopSchedule: nextRunAfter floors a zero/negative interval to 1s', () => {
+  assert.equal(nextRunAfter(1000, 0), 2000)
+  assert.equal(nextRunAfter(1000, -5), 2000)
+})
+
+// ── canvasHandoff / canvasCapture (screenshot → annotate → hand off) ─────────
+// The tricky, silent-if-wrong parts of the capture handoff: mapping a stroke
+// drawn in world space onto an image's pixel grid, deciding which strokes to
+// bake in, building the terminal-safe prompt, and refusing non-image data URLs.
+
+t('canvasHandoff: rectsIntersect is overlap, not mere touching', () => {
+  assert.equal(rectsIntersect({ x: 0, y: 0, w: 10, h: 10 }, { x: 5, y: 5, w: 10, h: 10 }), true)
+  assert.equal(rectsIntersect({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 0, w: 10, h: 10 }), false) // edge-touch
+  assert.equal(rectsIntersect({ x: 0, y: 0, w: 10, h: 10 }, { x: 20, y: 20, w: 5, h: 5 }), false)
+  // a stroke fully inside the image counts
+  assert.equal(rectsIntersect({ x: 0, y: 0, w: 100, h: 100 }, { x: 40, y: 40, w: 5, h: 5 }), true)
+})
+t('canvasHandoff: fitBox preserves aspect, never upscales, keeps minimums', () => {
+  // landscape shrinks to the width bound
+  assert.deepEqual(fitBox(800, 400, 420, 360), { w: 420, h: 210 })
+  // portrait shrinks to the height bound
+  assert.deepEqual(fitBox(400, 800, 420, 360), { w: 180, h: 360 })
+  // already small → unchanged (scale clamped to 1)
+  assert.deepEqual(fitBox(200, 150, 420, 360), { w: 200, h: 150 })
+  // degenerate input falls back to the max box rather than NaN
+  assert.deepEqual(fitBox(0, 0, 420, 360), { w: 420, h: 360 })
+})
+t('canvasHandoff: projectPointToImage scales world → native pixels', () => {
+  // image displayed 100×100 world px, backed by a 400×400 picture → ×4
+  const box = { x: 10, y: 20, w: 100, h: 100 }
+  assert.deepEqual(projectPointToImage(box, 400, 400, 10, 20), { x: 0, y: 0 })   // top-left corner
+  assert.deepEqual(projectPointToImage(box, 400, 400, 60, 70), { x: 200, y: 200 }) // centre
+  assert.deepEqual(projectPointToImage(box, 400, 400, 110, 120), { x: 400, y: 400 }) // bottom-right
+  assert.equal(strokeScale(box, 400, 400), 4)
+})
+t('canvasHandoff: buildHandoffPrompt is single-line and always names the path', () => {
+  const p = buildHandoffPrompt('fix the  red\nbutton', '.swarmmind/canvas-captures/x.png')
+  assert.equal(p, 'fix the red button (screenshot: .swarmmind/canvas-captures/x.png)')
+  assert.equal(p.includes('\n'), false) // never submit a terminal prompt early
+  // empty / whitespace note falls back to the generic ask
+  assert.equal(
+    buildHandoffPrompt('   ', 'a.png', 'Look at this.'),
+    'Look at this. (screenshot: a.png)'
+  )
+  assert.equal(buildHandoffPrompt(null, 'a.png', 'Look.'), 'Look. (screenshot: a.png)')
+})
+t('canvasCapture: parseImageDataUrl accepts only PNG/JPEG image data', () => {
+  const png = parseImageDataUrl('data:image/png;base64,iVBORw0KGgo=')
+  assert.deepEqual(png, { ext: 'png', base64: 'iVBORw0KGgo=' })
+  assert.equal(parseImageDataUrl('data:image/jpeg;base64,/9j/4AAQ')?.ext, 'jpg')
+  assert.equal(parseImageDataUrl('data:image/jpg;base64,/9j/4AAQ')?.ext, 'jpg')
+  // whitespace inside the payload is stripped
+  assert.equal(parseImageDataUrl('data:image/png;base64,iVBO\nR w0=')?.base64, 'iVBORw0=')
+  // rejected: non-image or non-data URLs, and empty payloads
+  assert.equal(parseImageDataUrl('data:image/svg+xml;base64,PHN2Zz4='), null)
+  assert.equal(parseImageDataUrl('data:text/html;base64,PGgxPg=='), null)
+  assert.equal(parseImageDataUrl('https://example.com/a.png'), null)
+  assert.equal(parseImageDataUrl('data:image/png;base64,'), null)
+  assert.equal(parseImageDataUrl(null), null)
+  assert.ok(MAX_CAPTURE_BYTES > 0)
+})
+
+// ── onnxThreads (on-device model WASM threading) ─────────────────────────────
+// The packaged file:// origin can't run ORT's blob pthread workers; requesting
+// threads there just spews importScripts errors and degrades to 1 anyway.
+
+t('onnxThreads: never threads under file:// (packaged build)', () => {
+  assert.equal(onnxThreadCount('file:', true, 16), 1)
+  assert.equal(onnxThreadCount('file:', false, 16), 1)
+})
+t('onnxThreads: single-threaded without SharedArrayBuffer', () => {
+  assert.equal(onnxThreadCount('http:', false, 16), 1)
+})
+t('onnxThreads: small capped pool in dev with SharedArrayBuffer', () => {
+  assert.equal(onnxThreadCount('http:', true, 16), 4)  // capped at 4
+  assert.equal(onnxThreadCount('http:', true, 4), 3)   // cores - 1
+  assert.equal(onnxThreadCount('http:', true, 1), 1)   // floored at 1
+  assert.equal(onnxThreadCount('http:', true, 0), 1)   // missing hardwareConcurrency
+})
+
+// ── canvasTasks (canvas visual-orchestrator: depends_on surgery) ─────────────
+// Drawing an arrow between task cards edits the comma-separated depends_on
+// column. The dangerous mistakes are silent: a dup dep, a self-dep, or closing
+// a dependency cycle that would wedge the conductor (a task can never become
+// runnable if it transitively depends on itself).
+
+t('canvasTasks: parse/serialize round-trips and cleans the column', () => {
+  assert.deepEqual(parseTaskDeps('a, b ,,c'), ['a', 'b', 'c'])
+  assert.deepEqual(parseTaskDeps(null), [])
+  assert.deepEqual(parseTaskDeps(''), [])
+  assert.equal(serializeDeps(['a', 'b']), 'a,b')
+  assert.equal(serializeDeps([]), null)          // empty → null column, not ''
+  assert.equal(serializeDeps([' a ', '', 'b']), 'a,b')
+})
+t('canvasTasks: addDep is idempotent and refuses self-deps', () => {
+  assert.equal(addDep(null, 'a', 'self'), 'a')
+  assert.equal(addDep('a', 'b', 'self'), 'a,b')
+  assert.equal(addDep('a,b', 'a', 'self'), 'a,b')   // already present → unchanged
+  assert.equal(addDep('a', 'self', 'self'), 'a')    // self-dep refused
+  assert.equal(addDep(null, 'self', 'self'), null)
+})
+t('canvasTasks: removeDep drops just the one id', () => {
+  assert.equal(removeDep('a,b,c', 'b'), 'a,c')
+  assert.equal(removeDep('a', 'a'), null)           // last one → null column
+  assert.equal(removeDep('a,b', 'z'), 'a,b')        // absent → unchanged
+})
+t('canvasTasks: wouldCycle catches direct, transitive and self loops', () => {
+  // graph: B depends on A, C depends on B  →  A --needs--> nothing
+  const deps = { A: [], B: ['A'], C: ['B'] }
+  const depsOf = (id) => deps[id] ?? []
+  assert.equal(wouldCycle('A', 'A', depsOf), true)   // self
+  // Adding "A depends on C" closes A→C→B→A.
+  assert.equal(wouldCycle('A', 'C', depsOf), true)
+  // Adding "A depends on B" closes A→B→A.
+  assert.equal(wouldCycle('A', 'B', depsOf), true)
+  // Adding "C depends on A" is fine (A has no prerequisites).
+  assert.equal(wouldCycle('C', 'A', depsOf), false)
+})
+t('canvasTasks: status colours are stable and distinct where it matters', () => {
+  assert.equal(taskStatusColor('in_progress'), 'var(--accent)')
+  assert.equal(taskStatusColor('done'), '#7fc8a0')
+  assert.equal(taskStatusColor('failed'), '#e5484d')
+  assert.equal(taskStatusColor('pending'), 'var(--text-muted)')
+  assert.equal(taskStatusColor('anything-else'), 'var(--text-muted)') // safe default
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

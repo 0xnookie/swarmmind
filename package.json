@@ -1,7 +1,7 @@
 {
   "name": "swarmmind",
   "productName": "SwarmMind",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "Multi-agent AI coding workspace with shared MCP memory",
   "main": "out/main/index.js",
   "scripts": {
@@ -11,6 +11,9 @@
     "build": "electron-vite build",
     "smoke": "node tests/smoke.mjs",
     "lsp-verify": "node tests/lsp-verify.mjs",
+    "fileops-verify": "node tests/fileops-verify.mjs",
+    "canvas-verify": "node tests/canvas-verify.mjs",
+    "canvas-tasks-verify": "node tests/canvas-tasks-verify.mjs",
     "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",

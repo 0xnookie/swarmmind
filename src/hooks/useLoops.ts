@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { useWorkspaceStore, type PaneNode, type PaneLeaf, type SwarmLoop } from '../store/workspace'
+import { decideLoopAction } from '../lib/loopSchedule'
 
 // ── The Loop runner ─────────────────────────────────────────────────────────
 //
@@ -44,16 +45,18 @@ export function useLoops(): void {
       const leaves = collectLeaves(st.rootPane)
 
       for (const loop of st.loops) {
+        // A quick enabled/not-yet-due filter before the (cheap) target scan.
         if (!loop.enabled) continue
         if (loop.nextRunAt != null && now < loop.nextRunAt) continue
 
         const targets = resolveTargets(loop, leaves)
-        if (targets.length === 0) {
-          // No running target right now — retry on the next interval rather than
-          // busy-looping every tick.
-          st.deferLoop(loop.id, now)
-          continue
-        }
+        const action = decideLoopAction(loop, targets.length > 0, now)
+        // 'wait' = due but the target pane isn't running yet (still spawning
+        // after a restart, or an idle agent). We deliberately do NOT reschedule
+        // it — it stays due and is re-checked on the next 1s tick, so it fires
+        // the moment the pane comes online instead of slipping a full interval.
+        // Retrying costs only a target scan; nothing is written to the store.
+        if (action !== 'run') continue
         for (const target of targets) inject(target.id, loop.prompt)
         st.markLoopRun(loop.id, now)
       }

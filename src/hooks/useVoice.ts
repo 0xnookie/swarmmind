@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
+import { onnxThreadCount } from '../lib/onnxThreads'
 
 export type VoiceStatus = 'idle' | 'model-loading' | 'recording' | 'transcribing' | 'error'
 
@@ -172,17 +173,14 @@ async function loadModel(model: VoiceModel): Promise<void> {
     }
   )
 
-  // Multi-threaded WASM when SharedArrayBuffer is available (main.ts
-  // force-enables it via the Chromium feature flag — neither dev's
-  // http://localhost nor the packaged file:// origin is cross-origin isolated,
-  // so it would otherwise be missing). Threading roughly halves-to-quarters
-  // inference time. Capped at 4: diminishing returns beyond that, and leave
-  // cores for the terminal panes. If threaded init fails for any reason
-  // (worker creation blocked, missing .worker.js, …), fall back to the
-  // single-threaded backend rather than breaking voice entirely.
-  const threads = typeof SharedArrayBuffer !== 'undefined'
-    ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1))
-    : 1
+  // Multi-threaded WASM only where the pthread workers can actually load: dev's
+  // http://localhost (main.ts force-enables SharedArrayBuffer). Under the
+  // packaged file:// origin the blob pthread workers can't importScripts the ORT
+  // loader — they fail noisily and ORT falls back to single-thread anyway — so
+  // onnxThreadCount returns 1 there and we skip the doomed spawn. Threading
+  // roughly halves-to-quarters inference time; capped so terminal panes keep
+  // cores. A threaded init that still fails falls back to single-threaded below.
+  const threads = onnxThreadCount(location.protocol, typeof SharedArrayBuffer !== 'undefined', navigator.hardwareConcurrency)
   if (env?.backends?.onnx?.wasm) env.backends.onnx.wasm.numThreads = threads
   console.debug(`[SwarmVoice] SAB=${typeof SharedArrayBuffer !== 'undefined'}, numThreads=${threads}`)
 

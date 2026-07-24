@@ -1,12 +1,16 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react'
-import { useT } from '../i18n'
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import { useT, type TFunction } from '../i18n'
 import { confirmDialog } from './ConfirmDialog'
+import {
+  baseName, parentDir, rewritePath, selectRange, toggleSelection,
+  canMoveInto, canCopyInto, topLevelPaths, relativeToRoot, isUnder,
+} from '../lib/fileOps'
 
 interface FileExplorerProps {
   rootPath: string
   onFileSelect: (filePath: string, fileName: string) => void
   selectedPath?: string | null
-  /** A tree entry was renamed on disk — open tabs pointing at it must follow. */
+  /** A tree entry was renamed or moved on disk — open tabs pointing at it must follow. */
   onFileRenamed?: (oldPath: string, newPath: string, newName: string) => void
   /** A tree entry was trashed — open tabs under it must close. */
   onFileDeleted?: (path: string) => void
@@ -17,6 +21,20 @@ interface TreeNode {
   children: TreeNode[] | null // null = not loaded, [] = loaded+empty
   expanded: boolean
   depth: number
+}
+
+/** Cut/copy staging area. Lives in the component, not the OS clipboard, so the
+ *  paths survive focus changes and can carry the copy-vs-move intent. */
+interface FileClipboard {
+  paths: string[]
+  mode: 'copy' | 'cut'
+}
+
+/** One reversible file operation. `run` performs the inverse (including any
+ *  editor-tab follow-up) and resolves to an error string, or null on success. */
+interface UndoAction {
+  label: string
+  run: () => Promise<string | null>
 }
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -156,6 +174,11 @@ const FOLDER_COLOR = '#e8b97e'
 const INDENT_STEP = 12
 const BASE_PADDING = 8
 
+// Drag payload marker. The concrete paths ride in a ref (dataTransfer contents
+// are unreadable during dragover, and we need them to decide drop validity),
+// but the type still has to be present for the browser to allow the drop.
+const DRAG_MIME = 'application/x-swarmmind-paths'
+
 // ── Helper ────────────────────────────────────────────────────────────────────
 
 function rootFolderName(path: string): string {
@@ -173,6 +196,11 @@ function sortEntries(entries: FsEntry[]): FsEntry[] {
     if (a.type !== b.type) return a.type === 'dir' ? -1 : 1
     return a.name.localeCompare(b.name)
   })
+}
+
+/** A copy/move lands *in* a folder; dropping on a file means its parent. */
+function containerOf(entry: FsEntry): string {
+  return entry.type === 'dir' ? entry.path : parentDir(entry.path)
 }
 
 // ── Expanded-folder persistence ───────────────────────────────────────────────
@@ -252,10 +280,50 @@ export function FileExplorer({
   const [renaming, setRenaming] = useState<string | null>(null)
   const [permsFor, setPermsFor] = useState<FsEntry | null>(null)
   const [opError, setOpError] = useState<string | null>(null)
+  const [flash, setFlash] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // Multi-selection (Ctrl/⌘-click toggles, Shift-click extends). `anchor` is the
+  // last row touched — the origin of a shift-range and the cursor for keyboard
+  // navigation.
+  const [selection, setSelection] = useState<string[]>([])
+  const [anchor, setAnchor] = useState<string | null>(null)
+  const selectionSet = useMemo(() => new Set(selection), [selection])
+
+  const [clipboard, setClipboard] = useState<FileClipboard | null>(null)
+  const cutSet = useMemo(
+    () => new Set(clipboard?.mode === 'cut' ? clipboard.paths : []),
+    [clipboard]
+  )
+
+  // Inline "new file/folder" row: which directory it belongs to and what kind.
+  const [creating, setCreating] = useState<{ dir: string; kind: 'file' | 'dir' } | null>(null)
+
+  // Drag state. `dragPathsRef` carries the payload because dragover handlers may
+  // not read dataTransfer data — we still need it to compute drop validity.
+  const dragPathsRef = useRef<string[]>([])
+  const [dropTarget, setDropTarget] = useState<{ dir: string; row: string } | null>(null)
+
+  // Undo stack (Ctrl+Z) for the reversible mutating ops — rename, move, create,
+  // duplicate, paste, import. Each entry knows how to invert itself and update
+  // the open editor tabs; trashing is deliberately NOT here (it went to the OS
+  // trash, which the user restores from there). Bounded so it can't grow forever.
+  const undoRef = useRef<UndoAction[]>([])
+  const [canUndo, setCanUndo] = useState(false)
+
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  const showFlash = useCallback((msg: string) => setFlash(msg), [])
+
+  const pushUndo = useCallback((action: UndoAction) => {
+    undoRef.current.push(action)
+    if (undoRef.current.length > 25) undoRef.current.shift()
+    setCanUndo(true)
+  }, [])
 
   // Rebuild the whole tree from disk, keeping the expanded set. Mutations
-  // (rename/delete) can change any level, so a full rebuild is simpler — and
-  // cheap, since only expanded directories are ever read.
+  // (rename/move/copy/delete) can change any level, so a full rebuild is
+  // simpler — and cheap, since only expanded directories are ever read.
   const reload = useCallback(async () => {
     try {
       const built = await buildNodes(rootPath, 1, expandedRef.current)
@@ -304,12 +372,63 @@ export function FileExplorer({
     }
   }, [menu])
 
-  // Auto-clear a transient op error so it doesn't linger over the tree.
+  // Auto-clear the transient banners so they don't linger over the tree.
   useEffect(() => {
     if (!opError) return
     const id = setTimeout(() => setOpError(null), 6000)
     return () => clearTimeout(id)
   }, [opError])
+
+  useEffect(() => {
+    if (!flash) return
+    const id = setTimeout(() => setFlash(null), 2200)
+    return () => clearTimeout(id)
+  }, [flash])
+
+  // ── Expanded-set bookkeeping ────────────────────────────────────────────────
+
+  /** Follow a rename/move: remembered-open paths under the old location move too. */
+  const remapExpanded = useCallback((oldPath: string, newPath: string) => {
+    const next = new Set<string>()
+    for (const p of expandedRef.current) next.add(rewritePath(p, oldPath, newPath) ?? p)
+    expandedRef.current = next
+  }, [])
+
+  /** Forget a deleted subtree so it isn't re-probed on the next rebuild. */
+  const forgetExpanded = useCallback((path: string) => {
+    for (const p of [...expandedRef.current]) {
+      if (p === path || isUnder(path, p)) expandedRef.current.delete(p)
+    }
+  }, [])
+
+  // ── Selection ───────────────────────────────────────────────────────────────
+
+  const selectOnly = useCallback((path: string) => {
+    setSelection([path])
+    setAnchor(path)
+  }, [])
+
+  /**
+   * Which entries an action applies to. Right-clicking inside the selection
+   * keeps it (so "delete" hits all five files you highlighted); right-clicking
+   * outside collapses to the row under the cursor, like every file manager.
+   */
+  const targetsFor = useCallback(
+    (entry: FsEntry): string[] =>
+      selectionSet.has(entry.path) ? topLevelPaths(selection) : [entry.path],
+    [selection, selectionSet]
+  )
+
+  /** Where a paste / new-file lands: the selected folder, else its parent. */
+  const activeDir = useCallback((): string => {
+    const focus = anchor ?? selection[selection.length - 1]
+    if (!focus) return rootPath
+    const node = nodes.find((n) => n.entry.path === focus)
+    if (!node) return rootPath
+    return containerOf(node.entry)
+  }, [anchor, selection, nodes, rootPath])
+
+  // ── Mutations ───────────────────────────────────────────────────────────────
 
   const commitRename = useCallback(
     async (entry: FsEntry, newName: string) => {
@@ -318,37 +437,301 @@ export function FileExplorer({
       if (!trimmed || trimmed === entry.name) return
       const res = await window.swarmmind.fsRename(entry.path, trimmed)
       if (!res.ok) { setOpError(res.error); return }
-      // A renamed directory invalidates every remembered path beneath it.
-      if (entry.type === 'dir') {
-        const oldPrefix = entry.path + (entry.path.includes('\\') ? '\\' : '/')
-        for (const p of [...expandedRef.current]) {
-          if (p === entry.path || p.startsWith(oldPrefix)) expandedRef.current.delete(p)
-        }
-      }
+      remapExpanded(entry.path, res.path)
       onFileRenamed?.(entry.path, res.path, trimmed)
+      setSelection([res.path])
+      setAnchor(res.path)
+      pushUndo({
+        label: t('file.undo.rename'),
+        run: async () => {
+          const back = await window.swarmmind.fsRename(res.path, entry.name)
+          if (!back.ok) return back.error
+          remapExpanded(res.path, back.path)
+          onFileRenamed?.(res.path, back.path, entry.name)
+          return null
+        },
+      })
       await reload()
     },
-    [onFileRenamed, reload]
+    [onFileRenamed, reload, remapExpanded, pushUndo, t]
+  )
+
+  const commitCreate = useCallback(
+    async (name: string) => {
+      const target = creating
+      setCreating(null)
+      const trimmed = name.trim()
+      if (!target || !trimmed) return
+      const res = await window.swarmmind.fsCreate(target.dir, trimmed, target.kind)
+      if (!res.ok) { setOpError(res.error); return }
+      pushUndo({
+        label: t('file.undo.create'),
+        run: async () => {
+          const del = await window.swarmmind.fsTrash(res.path)
+          if (!del.ok) return del.error
+          forgetExpanded(res.path)
+          onFileDeleted?.(res.path)
+          return null
+        },
+      })
+      await reload()
+      setSelection([res.path])
+      setAnchor(res.path)
+      // A new file opens straight away — that's why you made it.
+      if (target.kind === 'file') onFileSelect(res.path, baseName(res.path))
+    },
+    [creating, reload, onFileSelect, pushUndo, forgetExpanded, onFileDeleted, t]
+  )
+
+  /** Open the inline create row, expanding the destination folder first. */
+  const startCreate = useCallback(
+    async (dir: string, kind: 'file' | 'dir') => {
+      setMenu(null)
+      if (dir !== rootPath && !expandedRef.current.has(dir)) {
+        expandedRef.current.add(dir)
+        await reload()
+      }
+      setCreating({ dir, kind })
+    },
+    [rootPath, reload]
   )
 
   const doDelete = useCallback(
-    async (entry: FsEntry) => {
+    async (paths: string[]) => {
       setMenu(null)
+      if (!paths.length) return
+      const single = paths.length === 1
+      const node = single ? nodes.find((n) => n.entry.path === paths[0]) : null
       const ok = await confirmDialog({
-        title: entry.name,
-        body: entry.type === 'dir' ? t('file.trashDirConfirm') : t('file.trashConfirm'),
+        title: single ? baseName(paths[0]) : t('file.trashManyTitle', { n: paths.length }),
+        body: !single
+          ? t('file.trashManyConfirm', { n: paths.length })
+          : node?.entry.type === 'dir'
+          ? t('file.trashDirConfirm')
+          : t('file.trashConfirm'),
         confirmLabel: t('file.moveToTrash'),
         danger: true,
       })
       if (!ok) return
-      const res = await window.swarmmind.fsTrash(entry.path)
-      if (!res.ok) { setOpError(res.error); return }
-      expandedRef.current.delete(entry.path)
-      onFileDeleted?.(entry.path)
+      setBusy(true)
+      let failure: string | null = null
+      for (const p of paths) {
+        const res = await window.swarmmind.fsTrash(p)
+        if (!res.ok) { failure = res.error; break }
+        forgetExpanded(p)
+        onFileDeleted?.(p)
+      }
+      setSelection([])
+      setAnchor(null)
       await reload()
+      setBusy(false)
+      if (failure) setOpError(failure)
     },
-    [t, onFileDeleted, reload]
+    [t, nodes, onFileDeleted, reload, forgetExpanded]
   )
+
+  const doDuplicate = useCallback(
+    async (paths: string[]) => {
+      setMenu(null)
+      if (!paths.length) return
+      setBusy(true)
+      const created: string[] = []
+      let failure: string | null = null
+      for (const p of paths) {
+        const res = await window.swarmmind.fsDuplicate(p)
+        if (!res.ok) { failure = res.error; break }
+        created.push(res.path)
+      }
+      if (created.length) {
+        pushUndo({
+          label: t('file.undo.duplicate'),
+          run: async () => {
+            let err: string | null = null
+            for (const p of created) {
+              const del = await window.swarmmind.fsTrash(p)
+              if (!del.ok) { err = del.error; continue }
+              forgetExpanded(p)
+              onFileDeleted?.(p)
+            }
+            return err
+          },
+        })
+      }
+      await reload()
+      if (created.length) { setSelection(created); setAnchor(created[created.length - 1]) }
+      setBusy(false)
+      if (failure) setOpError(failure)
+    },
+    [reload, pushUndo, forgetExpanded, onFileDeleted, t]
+  )
+
+  /**
+   * The one code path behind paste, drag-and-drop and cut/copy: relocate or
+   * clone `sources` into `destDir`. Moves report through `onFileRenamed` so
+   * open editor tabs follow the file instead of dangling at a dead path.
+   */
+  const transfer = useCallback(
+    async (sources: string[], destDir: string, mode: 'copy' | 'cut') => {
+      const tops = topLevelPaths(sources)
+      const allowed = mode === 'cut' ? canMoveInto(tops, destDir) : canCopyInto(tops, destDir)
+      if (!allowed) { setOpError(t('file.op.invalidTarget')); return }
+      setBusy(true)
+      const landed: string[] = []
+      // For a move, remember where each entry came from so the undo can put it
+      // back in its original folder.
+      const moved: { from: string; to: string }[] = []
+      let failure: string | null = null
+      for (const src of tops) {
+        const res = mode === 'cut'
+          ? await window.swarmmind.fsMove(src, destDir)
+          : await window.swarmmind.fsCopy(src, destDir)
+        if (!res.ok) { failure = res.error; break }
+        landed.push(res.path)
+        if (mode === 'cut') {
+          remapExpanded(src, res.path)
+          onFileRenamed?.(src, res.path, baseName(res.path))
+          moved.push({ from: src, to: res.path })
+        }
+      }
+      // Register the inverse: a move goes back to each original parent; a copy
+      // is undone by trashing what it created.
+      if (mode === 'cut' && moved.length) {
+        pushUndo({
+          label: t('file.undo.move'),
+          run: async () => {
+            let err: string | null = null
+            for (const m of moved) {
+              const back = await window.swarmmind.fsMove(m.to, parentDir(m.from))
+              if (!back.ok) { err = back.error; continue }
+              remapExpanded(m.to, back.path)
+              onFileRenamed?.(m.to, back.path, baseName(back.path))
+            }
+            return err
+          },
+        })
+      } else if (mode === 'copy' && landed.length) {
+        pushUndo({
+          label: t('file.undo.copy'),
+          run: async () => {
+            let err: string | null = null
+            for (const p of landed) {
+              const del = await window.swarmmind.fsTrash(p)
+              if (!del.ok) { err = del.error; continue }
+              forgetExpanded(p)
+              onFileDeleted?.(p)
+            }
+            return err
+          },
+        })
+      }
+      // Reveal where things landed.
+      if (destDir !== rootPath) expandedRef.current.add(destDir)
+      await reload()
+      if (landed.length) { setSelection(landed); setAnchor(landed[landed.length - 1]) }
+      setBusy(false)
+      if (failure) setOpError(failure)
+    },
+    [t, rootPath, reload, remapExpanded, onFileRenamed, pushUndo, forgetExpanded, onFileDeleted]
+  )
+
+  const doPaste = useCallback(
+    async (destDir: string) => {
+      setMenu(null)
+      const clip = clipboard
+      if (!clip) return
+      await transfer(clip.paths, destDir, clip.mode)
+      // A cut is consumed by its paste; a copy stays on the clipboard so it can
+      // be pasted into several places, as in every file manager.
+      if (clip.mode === 'cut') setClipboard(null)
+    },
+    [clipboard, transfer]
+  )
+
+  /** OS file-manager drop: copy the dragged files into the workspace. */
+  const doImport = useCallback(
+    async (files: FileList, destDir: string) => {
+      const sources = Array.from(files)
+        .map((f) => window.swarmmind.fsPathForFile(f))
+        .filter(Boolean)
+      if (!sources.length) return
+      setBusy(true)
+      const res = await window.swarmmind.fsImport(sources, destDir)
+      if (destDir !== rootPath) expandedRef.current.add(destDir)
+      await reload()
+      setBusy(false)
+      if (!res.ok) { setOpError(res.error); return }
+      if (res.paths.length) {
+        setSelection(res.paths); setAnchor(res.paths[res.paths.length - 1])
+        pushUndo({
+          label: t('file.undo.import'),
+          run: async () => {
+            let err: string | null = null
+            for (const p of res.paths) {
+              const del = await window.swarmmind.fsTrash(p)
+              if (!del.ok) { err = del.error; continue }
+              forgetExpanded(p)
+              onFileDeleted?.(p)
+            }
+            return err
+          },
+        })
+      }
+      showFlash(t('file.op.imported', { n: res.paths.length }))
+    },
+    [rootPath, reload, showFlash, t, pushUndo, forgetExpanded, onFileDeleted]
+  )
+
+  const doUndo = useCallback(async () => {
+    const action = undoRef.current.pop()
+    setCanUndo(undoRef.current.length > 0)
+    if (!action) return
+    setBusy(true)
+    const err = await action.run()
+    await reload()
+    setBusy(false)
+    if (err) setOpError(err)
+    else showFlash(`${t('file.undo.done')}: ${action.label}`)
+  }, [reload, showFlash, t])
+
+  const copyText = useCallback(
+    (text: string, msg: string) => {
+      navigator.clipboard.writeText(text).then(() => showFlash(msg)).catch(() => {})
+    },
+    [showFlash]
+  )
+
+  // ── Expand / collapse ───────────────────────────────────────────────────────
+
+  const setExpanded = useCallback(
+    async (node: TreeNode, index: number, open: boolean) => {
+      if (node.entry.type !== 'dir' || node.expanded === open) return
+      if (!open) {
+        expandedRef.current.delete(node.entry.path)
+        saveExpanded(rootPath, expandedRef.current)
+        setNodes((prev) => collapseNode(prev, index))
+        return
+      }
+      expandedRef.current.add(node.entry.path)
+      saveExpanded(rootPath, expandedRef.current)
+      try {
+        const children = sortEntries(await loadDir(node.entry.path)).map((e): TreeNode => ({
+          entry: e,
+          children: null,
+          expanded: false,
+          depth: node.depth + 1,
+        }))
+        setNodes((prev) => expandNode(prev, index, children))
+      } catch {
+        // Unreadable directory — leave it collapsed.
+      }
+    },
+    [rootPath]
+  )
+
+  const collapseAll = useCallback(async () => {
+    expandedRef.current = new Set()
+    await reload()
+  }, [reload])
 
   const toggle = useCallback(
     async (nodeIndex: number, node: TreeNode) => {
@@ -356,39 +739,171 @@ export function FileExplorer({
         onFileSelect(node.entry.path, node.entry.name)
         return
       }
+      await setExpanded(node, nodeIndex, !node.expanded)
+    },
+    [onFileSelect, setExpanded]
+  )
 
-      // Toggle dir
-      if (node.expanded) {
-        // Collapse: remove children from flat list
-        expandedRef.current.delete(node.entry.path)
-        saveExpanded(rootPath, expandedRef.current)
-        setNodes((prev) => collapseNode(prev, nodeIndex))
-      } else {
-        // Expand: lazy load if needed
-        expandedRef.current.add(node.entry.path)
-        saveExpanded(rootPath, expandedRef.current)
-        if (node.children === null) {
-          // Load first
-          try {
-            const entries = await loadDir(node.entry.path)
-            const sorted = sortEntries(entries)
-            const childNodes: TreeNode[] = sorted.map((e) => ({
-              entry: e,
-              children: e.type === 'dir' ? null : null,
-              expanded: false,
-              depth: node.depth + 1,
-            }))
-            setNodes((prev) => expandNode(prev, nodeIndex, childNodes))
-          } catch {
-            // ignore load errors gracefully
-          }
-        } else {
-          setNodes((prev) => expandNode(prev, nodeIndex, node.children!))
+  // ── Row interaction ─────────────────────────────────────────────────────────
+
+  const handleRowClick = useCallback(
+    (e: React.MouseEvent, index: number, node: TreeNode) => {
+      const path = node.entry.path
+      if (e.shiftKey && anchor) {
+        const from = nodes.findIndex((n) => n.entry.path === anchor)
+        if (from >= 0) {
+          setSelection(selectRange(nodes, from, index).map((n) => n.entry.path))
+          return
         }
       }
+      if (e.ctrlKey || e.metaKey) {
+        setSelection((prev) => toggleSelection(prev, path))
+        setAnchor(path)
+        return
+      }
+      selectOnly(path)
+      void toggle(index, node)
     },
-    [onFileSelect, rootPath]
+    [anchor, nodes, selectOnly, toggle]
   )
+
+  // ── Keyboard ────────────────────────────────────────────────────────────────
+  // The whole IDE shortcut set, scoped to the tree (the container is focusable
+  // and these only fire while focus is inside it, so Ctrl-C in the editor is
+  // untouched).
+
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      // An inline rename/create input owns its own keys.
+      if ((e.target as HTMLElement).tagName === 'INPUT') return
+      // Claim a key for the tree: stop it here so a (possibly rebound) global
+      // shortcut on window doesn't also fire for the same press.
+      const take = () => { e.preventDefault(); e.stopPropagation() }
+      const mod = e.ctrlKey || e.metaKey
+      const focusIndex = anchor ? nodes.findIndex((n) => n.entry.path === anchor) : -1
+      const node = focusIndex >= 0 ? nodes[focusIndex] : null
+      const targets = topLevelPaths(selection)
+
+      const move = (delta: number) => {
+        if (!nodes.length) return
+        const next = focusIndex < 0 ? 0 : Math.max(0, Math.min(nodes.length - 1, focusIndex + delta))
+        const path = nodes[next].entry.path
+        setAnchor(path)
+        if (e.shiftKey && focusIndex >= 0) {
+          setSelection(selectRange(nodes, focusIndex, next).map((n) => n.entry.path))
+        } else {
+          setSelection([path])
+        }
+        containerRef.current
+          ?.querySelector<HTMLElement>(`[data-row-index="${next}"]`)
+          ?.scrollIntoView({ block: 'nearest' })
+      }
+
+      switch (true) {
+        case e.key === 'ArrowDown':
+          take(); move(1); return
+        case e.key === 'ArrowUp':
+          take(); move(-1); return
+        case e.key === 'ArrowRight':
+          if (node?.entry.type === 'dir') { take(); void setExpanded(node, focusIndex, true) }
+          return
+        case e.key === 'ArrowLeft':
+          if (node?.entry.type === 'dir' && node.expanded) { take(); void setExpanded(node, focusIndex, false) }
+          return
+        case e.key === 'Enter':
+          if (node) { take(); void toggle(focusIndex, node) }
+          return
+        case e.key === 'F2':
+          if (node) { take(); setRenaming(node.entry.path) }
+          return
+        case e.key === 'Delete':
+          if (targets.length) { take(); void doDelete(targets) }
+          return
+        case e.key === 'Escape':
+          setSelection([]); setAnchor(null); setClipboard(null); setCreating(null)
+          return
+        case mod && e.key.toLowerCase() === 'a':
+          take(); setSelection(nodes.map((n) => n.entry.path)); return
+        case mod && e.key.toLowerCase() === 'c':
+          if (targets.length) { take(); setClipboard({ paths: targets, mode: 'copy' }); showFlash(t('file.op.copied', { n: targets.length })) }
+          return
+        case mod && e.key.toLowerCase() === 'x':
+          if (targets.length) { take(); setClipboard({ paths: targets, mode: 'cut' }); showFlash(t('file.op.cut', { n: targets.length })) }
+          return
+        case mod && e.key.toLowerCase() === 'z':
+          take(); void doUndo(); return
+        case mod && e.key.toLowerCase() === 'v':
+          if (clipboard) { take(); void doPaste(activeDir()) }
+          return
+        case mod && e.key.toLowerCase() === 'd':
+          if (targets.length) { take(); void doDuplicate(targets) }
+          return
+        case mod && e.key.toLowerCase() === 'n':
+          take(); void startCreate(activeDir(), e.shiftKey ? 'dir' : 'file'); return
+        default:
+          return
+      }
+    },
+    [anchor, nodes, selection, clipboard, activeDir, setExpanded, toggle, doDelete, doDuplicate, doPaste, doUndo, startCreate, showFlash, t]
+  )
+
+  // ── Drag & drop ─────────────────────────────────────────────────────────────
+
+  const onRowDragStart = useCallback(
+    (e: React.DragEvent, entry: FsEntry) => {
+      // Dragging an unselected row implicitly selects it, matching Explorer.
+      const paths = selectionSet.has(entry.path) ? topLevelPaths(selection) : [entry.path]
+      if (!selectionSet.has(entry.path)) selectOnly(entry.path)
+      dragPathsRef.current = paths
+      e.dataTransfer.effectAllowed = 'copyMove'
+      e.dataTransfer.setData(DRAG_MIME, paths.join('\n'))
+      e.dataTransfer.setData('text/plain', paths.join('\n'))
+    },
+    [selection, selectionSet, selectOnly]
+  )
+
+  const onRowDragEnd = useCallback(() => {
+    dragPathsRef.current = []
+    setDropTarget(null)
+  }, [])
+
+  /** Drops are external (OS files) unless our own drag is in flight. */
+  const dragOverDir = useCallback((e: React.DragEvent, dir: string, row: string) => {
+    const dragged = dragPathsRef.current
+    if (dragged.length) {
+      const copy = e.ctrlKey || e.altKey
+      const ok = copy ? canCopyInto(dragged, dir) : canMoveInto(dragged, dir)
+      if (!ok) { setDropTarget(null); return }
+      e.preventDefault()
+      e.dataTransfer.dropEffect = copy ? 'copy' : 'move'
+    } else {
+      // Files coming in from Explorer/Finder.
+      if (!Array.from(e.dataTransfer.types).includes('Files')) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+    }
+    // dragover fires continuously; only re-render when the target actually
+    // changes, or the whole tree repaints dozens of times per second.
+    setDropTarget((prev) => (prev?.row === row && prev.dir === dir ? prev : { dir, row }))
+  }, [])
+
+  const dropOnDir = useCallback(
+    (e: React.DragEvent, dir: string) => {
+      e.preventDefault()
+      e.stopPropagation()
+      setDropTarget(null)
+      const dragged = dragPathsRef.current
+      dragPathsRef.current = []
+      if (dragged.length) {
+        void transfer(dragged, dir, e.ctrlKey || e.altKey ? 'copy' : 'cut')
+        return
+      }
+      if (e.dataTransfer.files?.length) void doImport(e.dataTransfer.files, dir)
+    },
+    [transfer, doImport]
+  )
+
+  // ── Render ──────────────────────────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -427,23 +942,52 @@ export function FileExplorer({
     )
   }
 
+  // Where the inline create row goes: directly under its parent folder's row,
+  // or at the very top when it belongs to the workspace root.
+  const createParentIndex = creating && creating.dir !== rootPath
+    ? nodes.findIndex((n) => n.entry.path === creating.dir)
+    : -1
+  const createAtRoot = !!creating && creating.dir === rootPath
+  const createDepth = createParentIndex >= 0 ? nodes[createParentIndex].depth + 1 : 1
+
+  const rootIsDropTarget = dropTarget?.row === rootPath
+
   return (
     <div
+      ref={containerRef}
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+      onContextMenu={(e) => {
+        // Right-click on empty space acts on the workspace root.
+        if (e.target !== e.currentTarget) return
+        e.preventDefault()
+        setSelection([])
+        setAnchor(null)
+        setMenu({ x: e.clientX, y: e.clientY, entry: { name: rootFolderName(rootPath), path: rootPath, type: 'dir', ext: '' } })
+      }}
+      onDragOver={(e) => { if (e.target === e.currentTarget) dragOverDir(e, rootPath, rootPath) }}
+      onDrop={(e) => { if (e.target === e.currentTarget) dropOnDir(e, rootPath) }}
       style={{
         height: '100%',
         overflowY: 'auto',
         overflowX: 'auto',
         background: 'var(--bg-panel)',
         userSelect: 'none',
+        outline: 'none',
+        position: 'relative',
       }}
     >
-      {/* Root folder header */}
+      {/* Root folder header — also the drop target for "move to the top level" */}
       <div
+        onDragOver={(e) => dragOverDir(e, rootPath, rootPath)}
+        onDragLeave={() => setDropTarget((d) => (d?.row === rootPath ? null : d))}
+        onDrop={(e) => dropOnDir(e, rootPath)}
         style={{
           height: 28,
           display: 'flex',
           alignItems: 'center',
           paddingLeft: 8,
+          paddingRight: 4,
           gap: 6,
           fontSize: 11,
           fontWeight: 600,
@@ -451,12 +995,19 @@ export function FileExplorer({
           textTransform: 'uppercase',
           letterSpacing: '0.05em',
           borderBottom: '1px solid var(--border-subtle)',
+          background: rootIsDropTarget ? 'var(--accent-subtle)' : undefined,
+          boxShadow: rootIsDropTarget ? 'inset 0 0 0 1px var(--accent)' : undefined,
           flexShrink: 0,
+          position: 'sticky',
+          top: 0,
+          zIndex: 3,
         }}
       >
         <FolderOpenIcon color={FOLDER_COLOR} />
         <span
           style={{
+            flex: 1,
+            minWidth: 0,
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -465,26 +1016,127 @@ export function FileExplorer({
         >
           {rootFolderName(rootPath)}
         </span>
+
+        {/* Toolbar: new file / new folder / collapse all / refresh */}
+        <ToolbarButton title={t('file.newFile')} onClick={() => startCreate(activeDir(), 'file')}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M12 12v6M9 15h6" />
+          </svg>
+        </ToolbarButton>
+        <ToolbarButton title={t('file.newFolder')} onClick={() => startCreate(activeDir(), 'dir')}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            <path d="M12 11v6M9 14h6" />
+          </svg>
+        </ToolbarButton>
+        {canUndo && (
+          <ToolbarButton title={t('file.undo.done')} onClick={() => void doUndo()}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 14 4 9l5-5" />
+              <path d="M4 9h11a5 5 0 0 1 0 10h-1" />
+            </svg>
+          </ToolbarButton>
+        )}
+        <ToolbarButton title={t('file.collapseAll')} onClick={collapseAll}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="4 9 12 3 20 9" />
+            <polyline points="4 21 12 15 20 21" />
+          </svg>
+        </ToolbarButton>
+        <ToolbarButton title={t('file.refresh')} onClick={() => void reload()}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <polyline points="21 3 21 9 15 9" />
+          </svg>
+        </ToolbarButton>
       </div>
+
+      {/* Inline create row for a new entry at the workspace root */}
+      {createAtRoot && (
+        <CreateRow
+          depth={1}
+          kind={creating.kind}
+          onCommit={commitCreate}
+          onCancel={() => setCreating(null)}
+        />
+      )}
 
       {/* Tree rows */}
       {nodes.map((node, i) => (
-        <TreeRow
-          key={node.entry.path}
-          node={node}
-          index={i}
-          selectedPath={selectedPath ?? null}
-          onToggle={toggle}
-          renaming={renaming === node.entry.path}
-          onRenameCommit={(name) => commitRename(node.entry, name)}
-          onRenameCancel={() => setRenaming(null)}
-          onContextMenu={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            setMenu({ x: e.clientX, y: e.clientY, entry: node.entry })
-          }}
-        />
+        <React.Fragment key={node.entry.path}>
+          <TreeRow
+            node={node}
+            index={i}
+            isOpenInEditor={node.entry.type === 'file' && node.entry.path === selectedPath}
+            isSelected={selectionSet.has(node.entry.path)}
+            isFocused={anchor === node.entry.path}
+            isCut={cutSet.has(node.entry.path)}
+            isDropTarget={dropTarget?.row === node.entry.path}
+            renaming={renaming === node.entry.path}
+            onRenameCommit={(name) => commitRename(node.entry, name)}
+            onRenameCancel={() => setRenaming(null)}
+            onClick={(e) => handleRowClick(e, i, node)}
+            onDragStart={(e) => onRowDragStart(e, node.entry)}
+            onDragEnd={onRowDragEnd}
+            onDragOver={(e) => dragOverDir(e, containerOf(node.entry), node.entry.path)}
+            onDragLeave={() => setDropTarget((d) => (d?.row === node.entry.path ? null : d))}
+            onDrop={(e) => dropOnDir(e, containerOf(node.entry))}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              if (!selectionSet.has(node.entry.path)) selectOnly(node.entry.path)
+              else setAnchor(node.entry.path)
+              setMenu({ x: e.clientX, y: e.clientY, entry: node.entry })
+            }}
+          />
+          {createParentIndex === i && creating && (
+            <CreateRow
+              depth={createDepth}
+              kind={creating.kind}
+              onCommit={commitCreate}
+              onCancel={() => setCreating(null)}
+            />
+          )}
+        </React.Fragment>
       ))}
+
+      {/* Selection / clipboard status strip — mirrors what the shortcuts act on */}
+      {(selection.length > 1 || clipboard) && (
+        <div
+          style={{
+            position: 'sticky', bottom: 0, zIndex: 2,
+            display: 'flex', alignItems: 'center', gap: 8,
+            padding: '4px 10px', fontSize: 10.5,
+            background: 'var(--bg-elevated)',
+            borderTop: '1px solid var(--border-subtle)',
+            color: 'var(--text-dim)',
+          }}
+        >
+          {selection.length > 1 && <span>{t('file.selectedCount', { n: selection.length })}</span>}
+          {clipboard && (
+            <span style={{ color: 'var(--accent)' }}>
+              {clipboard.mode === 'cut'
+                ? t('file.op.cut', { n: clipboard.paths.length })
+                : t('file.op.copied', { n: clipboard.paths.length })}
+            </span>
+          )}
+          {busy && <span style={{ marginLeft: 'auto' }}>{t('file.op.working')}</span>}
+        </div>
+      )}
+
+      {/* Transient success toast (copied path, imported files) */}
+      {flash && (
+        <div
+          style={{
+            position: 'sticky', bottom: 0, margin: 8, padding: '6px 10px',
+            background: 'var(--bg-elevated)', border: '1px solid var(--accent)',
+            borderRadius: 7, color: 'var(--accent)', fontSize: 11.5,
+          }}
+        >
+          {flash}
+        </div>
+      )}
 
       {/* Failure banner — permissions, name collisions, locked files */}
       {opError && (
@@ -504,45 +1156,24 @@ export function FileExplorer({
 
       {/* Right-click file operations */}
       {menu && (
-        <div
-          style={{
-            position: 'fixed',
-            left: Math.min(menu.x, window.innerWidth - 200),
-            top: Math.min(menu.y, window.innerHeight - 180),
-            minWidth: 180, padding: 4, zIndex: 300,
-            background: 'var(--bg-elevated)', border: '1px solid var(--border)',
-            borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
-            display: 'flex', flexDirection: 'column', gap: 1,
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            className="ctx-menu-item"
-            onClick={() => { setRenaming(menu.entry.path); setMenu(null) }}
-          >
-            {t('file.rename')}
-          </button>
-          <button
-            className="ctx-menu-item"
-            onClick={() => { setPermsFor(menu.entry); setMenu(null) }}
-          >
-            {t('file.permissions')}
-          </button>
-          <button
-            className="ctx-menu-item"
-            onClick={() => { void window.swarmmind.fsReveal(menu.entry.path); setMenu(null) }}
-          >
-            {t('file.revealInFolder')}
-          </button>
-          <div style={{ height: 1, background: 'var(--border)', margin: '3px 4px' }} />
-          <button
-            className="ctx-menu-item"
-            data-variant="danger"
-            onClick={() => doDelete(menu.entry)}
-          >
-            {t('file.moveToTrash')}
-          </button>
-        </div>
+        <ContextMenu
+          menu={menu}
+          rootPath={rootPath}
+          targets={targetsFor(menu.entry)}
+          clipboard={clipboard}
+          t={t}
+          onNew={(kind) => startCreate(containerOf(menu.entry), kind)}
+          onCut={(paths) => { setClipboard({ paths, mode: 'cut' }); setMenu(null); showFlash(t('file.op.cut', { n: paths.length })) }}
+          onCopy={(paths) => { setClipboard({ paths, mode: 'copy' }); setMenu(null); showFlash(t('file.op.copied', { n: paths.length })) }}
+          onPaste={() => doPaste(containerOf(menu.entry))}
+          onDuplicate={doDuplicate}
+          onRename={() => { setRenaming(menu.entry.path); setMenu(null) }}
+          onPermissions={() => { setPermsFor(menu.entry); setMenu(null) }}
+          onCopyPath={(text, msg) => { copyText(text, msg); setMenu(null) }}
+          onOpenExternal={() => { void window.swarmmind.fsOpenPath(menu.entry.path); setMenu(null) }}
+          onReveal={() => { void window.swarmmind.fsReveal(menu.entry.path); setMenu(null) }}
+          onDelete={doDelete}
+        />
       )}
 
       {/* Permissions editor */}
@@ -554,6 +1185,156 @@ export function FileExplorer({
         />
       )}
     </div>
+  )
+}
+
+// ── Header toolbar button ─────────────────────────────────────────────────────
+
+function ToolbarButton({ title, onClick, children }: { title: string; onClick: () => void; children: React.ReactNode }) {
+  const [hovered, setHovered] = useState(false)
+  return (
+    <button
+      title={title}
+      aria-label={title}
+      onClick={(e) => { e.stopPropagation(); onClick() }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        width: 22, height: 22, flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        border: 'none', borderRadius: 4, cursor: 'pointer',
+        background: hovered ? 'var(--overlay-hover)' : 'transparent',
+        color: hovered ? 'var(--text-primary)' : 'var(--text-muted)',
+        padding: 0,
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+// ── Context menu ──────────────────────────────────────────────────────────────
+
+function ContextMenu({
+  menu,
+  rootPath,
+  targets,
+  clipboard,
+  t,
+  onNew,
+  onCut,
+  onCopy,
+  onPaste,
+  onDuplicate,
+  onRename,
+  onPermissions,
+  onCopyPath,
+  onOpenExternal,
+  onReveal,
+  onDelete,
+}: {
+  menu: { x: number; y: number; entry: FsEntry }
+  rootPath: string
+  targets: string[]
+  clipboard: FileClipboard | null
+  t: TFunction
+  onNew: (kind: 'file' | 'dir') => void
+  onCut: (paths: string[]) => void
+  onCopy: (paths: string[]) => void
+  onPaste: () => void
+  onDuplicate: (paths: string[]) => void
+  onRename: () => void
+  onPermissions: () => void
+  onCopyPath: (text: string, msg: string) => void
+  onOpenExternal: () => void
+  onReveal: () => void
+  onDelete: (paths: string[]) => void
+}) {
+  const { entry } = menu
+  const isRoot = entry.path === rootPath
+  const multi = targets.length > 1
+  const pasteDir = entry.type === 'dir' ? entry.path : parentDir(entry.path)
+  const canPaste = !!clipboard && (
+    clipboard.mode === 'cut' ? canMoveInto(clipboard.paths, pasteDir) : canCopyInto(clipboard.paths, pasteDir)
+  )
+  const sep = <div style={{ height: 1, background: 'var(--border)', margin: '3px 4px' }} />
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        left: Math.max(4, Math.min(menu.x, window.innerWidth - 230)),
+        top: Math.max(4, Math.min(menu.y, window.innerHeight - 420)),
+        minWidth: 210, padding: 4, zIndex: 300,
+        background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+        borderRadius: 10, boxShadow: '0 12px 40px rgba(0,0,0,0.6)',
+        display: 'flex', flexDirection: 'column', gap: 1,
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
+    >
+      <MenuItem label={t('file.newFile')} onClick={() => onNew('file')} shortcut="Ctrl+N" />
+      <MenuItem label={t('file.newFolder')} onClick={() => onNew('dir')} shortcut="Ctrl+⇧+N" />
+      {sep}
+      <MenuItem label={t('file.cut')} shortcut="Ctrl+X" disabled={isRoot} onClick={() => onCut(targets)} />
+      <MenuItem label={t('file.copy')} shortcut="Ctrl+C" disabled={isRoot} onClick={() => onCopy(targets)} />
+      <MenuItem label={t('file.paste')} shortcut="Ctrl+V" disabled={!canPaste} onClick={onPaste} />
+      <MenuItem label={t('file.duplicate')} shortcut="Ctrl+D" disabled={isRoot} onClick={() => onDuplicate(targets)} />
+      {sep}
+      <MenuItem
+        label={t('file.copyPath')}
+        disabled={multi}
+        onClick={() => onCopyPath(entry.path, t('file.op.pathCopied'))}
+      />
+      <MenuItem
+        label={t('file.copyRelativePath')}
+        disabled={multi}
+        onClick={() => onCopyPath(relativeToRoot(rootPath, entry.path), t('file.op.pathCopied'))}
+      />
+      {sep}
+      <MenuItem label={t('file.rename')} shortcut="F2" disabled={multi || isRoot} onClick={onRename} />
+      <MenuItem label={t('file.permissions')} disabled={multi || isRoot} onClick={onPermissions} />
+      {sep}
+      {entry.type === 'file' && !multi && (
+        <MenuItem label={t('file.openExternal')} onClick={onOpenExternal} />
+      )}
+      <MenuItem label={t('file.revealInFolder')} disabled={multi} onClick={onReveal} />
+      {sep}
+      <MenuItem
+        label={multi ? t('file.moveManyToTrash', { n: targets.length }) : t('file.moveToTrash')}
+        shortcut="Del"
+        danger
+        disabled={isRoot}
+        onClick={() => onDelete(targets)}
+      />
+    </div>
+  )
+}
+
+function MenuItem({
+  label,
+  shortcut,
+  onClick,
+  disabled,
+  danger,
+}: {
+  label: string
+  shortcut?: string
+  onClick: () => void
+  disabled?: boolean
+  danger?: boolean
+}) {
+  return (
+    <button
+      className="ctx-menu-item"
+      data-variant={danger ? 'danger' : undefined}
+      disabled={disabled}
+      onClick={() => { if (!disabled) onClick() }}
+      style={disabled ? { opacity: 0.4, cursor: 'default' } : undefined}
+    >
+      <span style={{ flex: 1, textAlign: 'left' }}>{label}</span>
+      {shortcut && <span style={{ color: 'var(--text-dim)', fontSize: 10, marginLeft: 12 }}>{shortcut}</span>}
+    </button>
   )
 }
 
@@ -727,37 +1508,61 @@ function PermissionsDialog({
 interface TreeRowProps {
   node: TreeNode
   index: number
-  selectedPath: string | null
-  onToggle: (index: number, node: TreeNode) => void
+  /** The file is the one showing in the editor (distinct from tree selection). */
+  isOpenInEditor: boolean
+  isSelected: boolean
+  isFocused: boolean
+  isCut: boolean
+  isDropTarget: boolean
   renaming: boolean
   onRenameCommit: (name: string) => void
   onRenameCancel: () => void
+  onClick: (e: React.MouseEvent) => void
   onContextMenu: (e: React.MouseEvent) => void
+  onDragStart: (e: React.DragEvent) => void
+  onDragEnd: () => void
+  onDragOver: (e: React.DragEvent) => void
+  onDragLeave: () => void
+  onDrop: (e: React.DragEvent) => void
 }
 
 function TreeRow({
   node,
   index,
-  selectedPath,
-  onToggle,
+  isOpenInEditor,
+  isSelected,
+  isFocused,
+  isCut,
+  isDropTarget,
   renaming,
   onRenameCommit,
   onRenameCancel,
+  onClick,
   onContextMenu,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDragLeave,
+  onDrop,
 }: TreeRowProps) {
   const [hovered, setHovered] = useState(false)
-  const isSelected = node.entry.type === 'file' && node.entry.path === selectedPath
 
-  const bg = isSelected
+  const bg = isDropTarget
     ? 'var(--accent-subtle)'
+    : isSelected
+    ? 'var(--accent-subtle)'
+    : isOpenInEditor
+    ? 'var(--bg-elevated)'
     : hovered
     ? 'var(--bg-elevated)'
     : 'transparent'
 
-  const textColor = isSelected ? 'var(--accent)' : 'var(--text-secondary)'
+  const textColor = isSelected || isOpenInEditor ? 'var(--accent)' : 'var(--text-secondary)'
 
   return (
     <div
+      data-row-index={index}
+      draggable={!renaming}
       style={{
         height: 28,
         display: 'flex',
@@ -776,12 +1581,24 @@ function TreeRow({
         width: 'max-content',
         minWidth: '100%',
         boxSizing: 'border-box',
+        // Cut entries dim until the paste lands, exactly like Explorer.
+        opacity: isCut ? 0.45 : 1,
+        boxShadow: isDropTarget
+          ? 'inset 0 0 0 1px var(--accent)'
+          : isFocused
+          ? 'inset 2px 0 0 var(--accent)'
+          : 'none',
         transition: 'background 80ms',
       }}
-      onClick={() => { if (!renaming) onToggle(index, node) }}
+      onClick={(e) => { if (!renaming) onClick(e) }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onContextMenu={onContextMenu}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
       title={renaming ? undefined : node.entry.path}
     >
       {node.entry.type === 'dir' ? (
@@ -794,7 +1611,7 @@ function TreeRow({
         <FileIcon ext={node.entry.ext} />
       )}
       {renaming ? (
-        <RenameInput
+        <NameInput
           initial={node.entry.name}
           isDir={node.entry.type === 'dir'}
           onCommit={onRenameCommit}
@@ -807,10 +1624,47 @@ function TreeRow({
   )
 }
 
-// Inline rename field. Mirrors VS Code: the basename is preselected (so the
-// extension survives a straight retype), Enter commits, Escape/blur cancels or
-// commits respectively.
-function RenameInput({
+// ── Inline create row ─────────────────────────────────────────────────────────
+// A ghost row that only exists while you're naming a new entry, shown at the
+// position the entry will occupy so the creation reads as in-place.
+
+function CreateRow({
+  depth,
+  kind,
+  onCommit,
+  onCancel,
+}: {
+  depth: number
+  kind: 'file' | 'dir'
+  onCommit: (name: string) => void
+  onCancel: () => void
+}) {
+  return (
+    <div
+      style={{
+        height: 28,
+        display: 'flex',
+        alignItems: 'center',
+        paddingLeft: BASE_PADDING + depth * INDENT_STEP,
+        paddingRight: 10,
+        gap: 6,
+        background: 'var(--bg-elevated)',
+        flexShrink: 0,
+        width: 'max-content',
+        minWidth: '100%',
+        boxSizing: 'border-box',
+      }}
+    >
+      {kind === 'dir' ? <FolderClosedIcon color={FOLDER_COLOR} /> : <FileIcon ext="" />}
+      <NameInput initial="" isDir={kind === 'dir'} onCommit={onCommit} onCancel={onCancel} />
+    </div>
+  )
+}
+
+// Inline name field, used for both rename and create. Mirrors VS Code: on
+// rename the basename is preselected (so the extension survives a straight
+// retype), Enter commits, Escape cancels, blur commits.
+function NameInput({
   initial,
   isDir,
   onCommit,
