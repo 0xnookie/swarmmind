@@ -5,6 +5,7 @@ import { useAppearanceSync } from '../hooks/useAppearanceSync'
 import { useT } from '../i18n'
 import { AGENTS, AgentIcon } from '../data/agents'
 import { Markdown } from '../lib/markdown'
+import { WaveformBars } from './WaveformBars'
 import logoUrl from '../assets/logo.png'
 import './SwarmAgentWidget.css'
 
@@ -190,7 +191,7 @@ export function SwarmAgentWidget() {
           ) : voiceTranscribing ? (
             <span className="wg-spinner" />
           ) : voiceRecording ? (
-            <WaveformBars levels={voice.audioLevels} />
+            <WaveformBars active={voice.status === 'recording'} className="wg-wave" pulseAnimation="wg-bar-pulse" />
           ) : (
             <MicIcon />
           )}
@@ -226,24 +227,6 @@ function WidgetRow({ m }: { m: SwarmAgentMessage }) {
 }
 
 // Live mic level bars while recording — mirrors SwarmVoice's waveform.
-function WaveformBars({ levels }: { levels: number[] }) {
-  const hasSignal = levels.some(l => l > 0.02)
-  return (
-    <span className="wg-wave" aria-hidden>
-      {levels.map((level, i) => (
-        <i
-          key={i}
-          style={{
-            transition: hasSignal ? 'transform 55ms ease-out' : undefined,
-            transform: hasSignal ? `scaleY(${Math.max(0.18, level)})` : undefined,
-            animation: hasSignal ? 'none' : `wg-bar-pulse 0.55s ease-in-out ${i * 0.11}s infinite alternate`,
-          }}
-        />
-      ))}
-    </span>
-  )
-}
-
 // ── Icons ───────────────────────────────────────────────────────────────────
 const ico = (w: number) => ({ width: w, height: w, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.9, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true })
 function SendIcon() { return <svg {...ico(16)}><path d="M12 19V5M5 12l7-7 7 7" /></svg> }

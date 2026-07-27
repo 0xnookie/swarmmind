@@ -35,6 +35,7 @@ import {
   parseDeps, depsMet, canReview, buildDispatchPrompt, sweepAction, decomposeAction,
   reviewSweepAction, planDispatches, planReviews, readyForSynthesis, planMessageDelivery,
   isWakeEvent, findUnassignable, buildEscalationPrompt, buildLeadReportPrompt,
+  totalSpend, budgetStatus, parseBudget, buildBudgetHaltNote, formatUsd,
   type ConductorTask,
 } from '../src/lib/conductor.ts'
 import { scoreVoice, rankVoices, pickVoice, cleanForSpeech, chunkForSpeech, type VoiceLike } from '../src/lib/voices.ts'
@@ -58,6 +59,14 @@ import {
   parseDeps as parseTaskDeps, serializeDeps, addDep, removeDep, wouldCycle, taskStatusColor,
 } from '../src/lib/canvasTasks.ts'
 import { SWARM_RECIPES, buildRecipeLayout, type BuiltLeaf, type BuiltGroup } from '../src/lib/recipes.ts'
+import {
+  resolveProvider, providerErrorMessage, filterChatModels, toAnthropicTools,
+  toAnthropicMessages, parseToolArguments, fromAnthropicContent, refusalMessage,
+} from '../electron/lib/aiProvider.ts'
+import { initVad, stepVad, frameLoudness } from '../src/lib/vad.ts'
+import {
+  clampToViewport, dragPosition, defaultPosition, parsePosition,
+} from '../src/lib/dragWidget.ts'
 import {
   escapeHtml, summarizeEvent, buildSessionStats, formatDuration, compactNumber,
   exportFileBase, agentPalette, renderSessionMarkdown, renderSessionHtml,
@@ -1796,6 +1805,270 @@ t('canvasTasks: status colours are stable and distinct where it matters', () => 
   assert.equal(taskStatusColor('failed'), '#e5484d')
   assert.equal(taskStatusColor('pending'), 'var(--text-muted)')
   assert.equal(taskStatusColor('anything-else'), 'var(--text-muted)') // safe default
+})
+
+// ---------- vad (SwarmVoice auto-stop) ----------
+const VAD = { threshold: 0.05, hangoverMs: 1000, minDurationMs: 500, maxDurationMs: 10_000 }
+// Drive the detector over a script of [level, elapsedMs] frames.
+function runVad(frames, opts = VAD) {
+  let state = initVad(0)
+  let last = { state, verdict: 'listening' }
+  for (const [level, at] of frames) {
+    last = stepVad(state, level, at, opts)
+    state = last.state
+    if (last.verdict.startsWith('stop')) return { ...last, at }
+  }
+  return { ...last, at: frames.length ? frames[frames.length - 1][1] : 0 }
+}
+t('vad: silence before any speech never stops the recording', () => {
+  // Someone who takes four seconds to gather their thoughts must not have the
+  // recording ended out from under them.
+  const r = runVad(Array.from({ length: 40 }, (_, i) => [0.001, i * 100]))
+  assert.equal(r.verdict, 'listening')
+  assert.equal(r.state.speechStarted, false)
+})
+t('vad: stops after the hangover once speech has been heard', () => {
+  const frames = [
+    [0.4, 100], [0.4, 200], [0.4, 600],   // speech (past minDuration)
+    [0.0, 700], [0.0, 1200], [0.0, 1700], // silence — 1100ms after last loud
+  ]
+  const r = runVad(frames)
+  assert.equal(r.verdict, 'stop-silence')
+  assert.equal(r.at, 1700)
+})
+t('vad: a pause shorter than the hangover keeps recording', () => {
+  // Breathing between sentences must not end dictation.
+  const r = runVad([
+    [0.4, 100], [0.4, 600],
+    [0.0, 900], [0.0, 1300],  // 700ms gap — under the 1000ms hangover
+    [0.4, 1400], [0.4, 1800],
+  ])
+  assert.equal(r.verdict, 'speaking')
+})
+t('vad: a too-short clip is never auto-stopped', () => {
+  // A cough at t=50 then silence: minDurationMs must hold the recording open
+  // even though the hangover has elapsed.
+  const r = runVad([[0.4, 50], [0.0, 100], [0.0, 400]])
+  assert.equal(r.verdict, 'speaking')
+})
+t('vad: the max-duration ceiling fires even in continuous speech', () => {
+  const r = runVad([[0.4, 100], [0.4, 5000], [0.4, 10_000]])
+  assert.equal(r.verdict, 'stop-max')
+})
+t('vad: frameLoudness averages the usable bins and clamps to 1', () => {
+  assert.equal(frameLoudness(new Uint8Array(10).fill(0)), 0)
+  assert.equal(frameLoudness(new Uint8Array(10).fill(140)), 1)
+  assert.equal(frameLoudness(new Uint8Array(10).fill(255)), 1)   // clamped
+  assert.ok(Math.abs(frameLoudness(new Uint8Array(10).fill(70)) - 0.5) < 1e-9)
+})
+
+// ---------- dragWidget (floating widget placement) ----------
+const SIZE = { width: 200, height: 100 }
+const VIEW = { width: 1000, height: 800 }
+t('dragWidget: clampToViewport keeps a widget fully on screen', () => {
+  assert.deepEqual(clampToViewport({ x: 500, y: 400 }, SIZE, VIEW), { x: 500, y: 400 })
+  assert.deepEqual(clampToViewport({ x: -50, y: -50 }, SIZE, VIEW), { x: 8, y: 8 })
+  // Bottom-right: pinned so the full widget stays visible, not just its corner.
+  assert.deepEqual(clampToViewport({ x: 9999, y: 9999 }, SIZE, VIEW), { x: 792, y: 692 })
+})
+t('dragWidget: a viewport smaller than the widget pins it, never negative', () => {
+  // A window narrower than the widget must still leave it grabbable at the
+  // top-left rather than pushing it off-screen to a negative coordinate.
+  const tiny = { width: 100, height: 60 }
+  const p = clampToViewport({ x: 50, y: 50 }, SIZE, tiny)
+  assert.deepEqual(p, { x: 8, y: 8 })
+})
+t('dragWidget: a saved position survives a shrunken window', () => {
+  // Restored at 1000x800 coords into a 600x400 window: must come back on screen.
+  const p = clampToViewport({ x: 792, y: 692 }, SIZE, { width: 600, height: 400 })
+  assert.deepEqual(p, { x: 392, y: 292 })
+})
+t('dragWidget: dragPosition preserves the grab offset', () => {
+  // Grabbed 30px in from the widget's left edge → the widget's left edge should
+  // sit 30px left of the pointer, not jump its corner to the cursor.
+  assert.deepEqual(
+    dragPosition({ x: 400, y: 300 }, { x: 30, y: 20 }, SIZE, VIEW),
+    { x: 370, y: 280 },
+  )
+  // ...and still clamps at the edges.
+  assert.deepEqual(dragPosition({ x: 5, y: 5 }, { x: 30, y: 20 }, SIZE, VIEW), { x: 8, y: 8 })
+})
+t('dragWidget: defaultPosition lands inside the bottom-right corner', () => {
+  const p = defaultPosition(SIZE, VIEW)
+  assert.ok(p.x + SIZE.width <= VIEW.width && p.y + SIZE.height <= VIEW.height)
+  assert.ok(p.x > VIEW.width / 2 && p.y > VIEW.height / 2)
+})
+t('dragWidget: parsePosition rejects anything unusable', () => {
+  assert.deepEqual(parsePosition('{"x":10,"y":20}'), { x: 10, y: 20 })
+  assert.equal(parsePosition(null), null)
+  assert.equal(parsePosition(''), null)
+  assert.equal(parsePosition('not json'), null)
+  assert.equal(parsePosition('{"x":null,"y":3}'), null)
+  // A NaN written by an earlier bug must not render the widget at an
+  // unreachable coordinate — fall back to the default corner instead.
+  assert.equal(parsePosition('{"x":"NaN","y":5}'), null)
+})
+
+// ---------- conductor spend budget ----------
+t('conductor budget: totalSpend sums panes and ignores junk', () => {
+  assert.equal(totalSpend({ a: { usd: 1.5 }, b: { usd: 2.25 } }), 3.75)
+  assert.equal(totalSpend({}), 0)
+  assert.equal(totalSpend(undefined), 0)
+  // A NaN or negative figure parsed out of terminal output must not corrupt
+  // the total (it would otherwise poison every later comparison).
+  assert.equal(totalSpend({ a: { usd: NaN }, b: { usd: -5 }, c: { usd: 2 } }), 2)
+})
+t('conductor budget: an unset budget never pauses a run', () => {
+  assert.equal(budgetStatus(999, null), 'ok')
+  assert.equal(budgetStatus(999, 0), 'ok')     // 0 is "unset", not "spend nothing"
+})
+t('conductor budget: warn at 80%, exceeded at the limit', () => {
+  assert.equal(budgetStatus(1, 10), 'ok')
+  assert.equal(budgetStatus(7.99, 10), 'ok')
+  assert.equal(budgetStatus(8, 10), 'warn')
+  assert.equal(budgetStatus(9.99, 10), 'warn')
+  assert.equal(budgetStatus(10, 10), 'exceeded')   // reaching it counts
+  assert.equal(budgetStatus(25, 10), 'exceeded')
+})
+t('conductor budget: parseBudget rejects anything not a positive number', () => {
+  assert.equal(parseBudget('5'), 5)
+  assert.equal(parseBudget(' 2.50 '), 2.5)
+  assert.equal(parseBudget('$3'), 3)
+  assert.equal(parseBudget(''), null)      // blank = no budget
+  assert.equal(parseBudget(null), null)
+  assert.equal(parseBudget('abc'), null)
+  // Critically: these must be null, not 0 — a 0 budget would read as
+  // 'exceeded' and pause the run the moment the user typed a stray character.
+  assert.equal(parseBudget('0'), null)
+  assert.equal(parseBudget('-5'), null)
+  assert.equal(parseBudget('Infinity'), null)
+})
+t('conductor budget: the halt note names both figures', () => {
+  const note = buildBudgetHaltNote(10.5, 10)
+  assert.match(note, /\$10\.50/)
+  assert.match(note, /\$10\.00/)
+  assert.match(note, /paused/i)
+  assert.equal(formatUsd(0.125), '$0.125')   // sub-dollar keeps precision
+  assert.equal(formatUsd(12.5), '$12.50')
+})
+
+// ---------- aiProvider (multi-provider AI backend) ----------
+t('aiProvider: resolveProvider falls back on blank/unknown settings', () => {
+  const groq = resolveProvider(null, null, null)
+  assert.equal(groq.id, 'groq')
+  assert.equal(groq.model, 'llama-3.3-70b-versatile')
+  // An unknown provider id degrades to the default rather than breaking every
+  // AI surface at once.
+  assert.equal(resolveProvider('nope', null, null).id, 'groq')
+  const claude = resolveProvider('anthropic', '  ', null)
+  assert.equal(claude.model, 'claude-opus-5')
+  assert.equal(claude.openAiCompatible, false)
+  // A custom endpoint keeps its URL (trailing slashes trimmed) and needs no key.
+  const local = resolveProvider('custom', 'llama3', 'http://localhost:11434/v1//')
+  assert.equal(local.baseUrl, 'http://localhost:11434/v1')
+  assert.equal(local.requiresKey, false)
+})
+t('aiProvider: errors name the configured provider, not a hard-coded vendor', () => {
+  const p = resolveProvider('anthropic', 'claude-opus-5', null)
+  assert.match(providerErrorMessage(p, { status: 401 }), /Anthropic/)
+  assert.match(providerErrorMessage(p, { status: 429 }), /rate limit/i)
+  assert.match(providerErrorMessage(p, { status: 404 }), /claude-opus-5/)
+  assert.match(providerErrorMessage(p, { status: 503 }), /unavailable/i)
+  assert.equal(providerErrorMessage(p, { message: 'socket hang up' }), 'socket hang up')
+  assert.match(providerErrorMessage(p, null), /request failed/)
+})
+t('aiProvider: filterChatModels drops non-chat models and duplicates', () => {
+  assert.deepEqual(
+    filterChatModels(['gpt-4o', 'whisper-large-v3', 'text-embedding-3', 'gpt-4o', 'llama-guard-4']),
+    ['gpt-4o'],
+  )
+})
+t('aiProvider: toAnthropicTools always emits a valid object schema', () => {
+  const [tool] = toAnthropicTools([
+    { type: 'function', function: { name: 'open_view', description: 'd', parameters: { type: 'object', properties: { v: { type: 'string' } }, required: ['v'] } } },
+  ])
+  assert.equal(tool.name, 'open_view')
+  assert.equal(tool.input_schema.type, 'object')
+  assert.deepEqual(tool.input_schema.required, ['v'])
+  // A parameter-less tool still gets a well-formed schema (the API rejects a
+  // missing or non-object one).
+  const [bare] = toAnthropicTools([{ type: 'function', function: { name: 'get_status' } }])
+  assert.equal(bare.input_schema.type, 'object')
+  assert.deepEqual(bare.input_schema.properties, {})
+  assert.equal(bare.description, '')
+})
+t('aiProvider: toAnthropicMessages lifts system out of the message array', () => {
+  const { system, messages } = toAnthropicMessages([
+    { role: 'system', content: 'You are SwarmAgent.' },
+    { role: 'user', content: 'hi' },
+  ])
+  assert.equal(system, 'You are SwarmAgent.')
+  assert.equal(messages.length, 1)
+  assert.deepEqual(messages[0], { role: 'user', content: [{ type: 'text', text: 'hi' }] })
+})
+t('aiProvider: parallel tool results merge into ONE user message', () => {
+  // The renderer appends each tool result as its own `role:'tool'` message.
+  // Sending those as separate user turns degrades parallel tool calling
+  // silently — no error, the model just stops issuing them.
+  const { messages } = toAnthropicMessages([
+    { role: 'user', content: 'status?' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        { id: 'a', type: 'function', function: { name: 'get_status', arguments: '{}' } },
+        { id: 'b', type: 'function', function: { name: 'list_tasks', arguments: '{"x":1}' } },
+      ],
+    },
+    { role: 'tool', tool_call_id: 'a', content: '2 panes' },
+    { role: 'tool', tool_call_id: 'b', content: '3 tasks' },
+  ])
+  assert.equal(messages.length, 3)
+  assert.equal(messages[1].role, 'assistant')
+  assert.equal(messages[1].content.length, 2)          // two tool_use blocks, no empty text block
+  assert.equal(messages[1].content[0].type, 'tool_use')
+  assert.deepEqual(messages[1].content[1].input, { x: 1 })  // arguments string → object
+  assert.equal(messages[2].role, 'user')
+  assert.equal(messages[2].content.length, 2)          // both results in ONE turn
+  assert.deepEqual(messages[2].content.map((b) => b.tool_use_id), ['a', 'b'])
+})
+t('aiProvider: toAnthropicMessages drops blanks the API would reject', () => {
+  const { messages } = toAnthropicMessages([
+    { role: 'user', content: '   ' },
+    { role: 'assistant', content: '' },
+    { role: 'tool', tool_call_id: 't', content: '' },
+    { role: 'tool', content: 'orphan with no id' },
+  ])
+  // Only the id-carrying tool result survives, with a placeholder body.
+  assert.equal(messages.length, 1)
+  assert.deepEqual(messages[0].content, [{ type: 'tool_result', tool_use_id: 't', content: '(no output)' }])
+})
+t('aiProvider: parseToolArguments never throws on malformed JSON', () => {
+  assert.deepEqual(parseToolArguments('{"a":1}'), { a: 1 })
+  assert.deepEqual(parseToolArguments('not json'), {})
+  assert.deepEqual(parseToolArguments('[1,2]'), {})   // arrays aren't argument objects
+  assert.deepEqual(parseToolArguments(undefined), {})
+})
+t('aiProvider: fromAnthropicContent rebuilds the OpenAI-shaped reply', () => {
+  const { content, toolCalls } = fromAnthropicContent([
+    { type: 'text', text: 'Okay, ' },
+    { type: 'text', text: 'one second.' },
+    { type: 'tool_use', id: 'tu_1', name: 'open_view', input: { view: 'board' } },
+  ])
+  assert.equal(content, 'Okay, one second.')
+  assert.equal(toolCalls.length, 1)
+  assert.equal(toolCalls[0].id, 'tu_1')
+  assert.equal(toolCalls[0].type, 'function')
+  assert.equal(toolCalls[0].function.name, 'open_view')
+  assert.deepEqual(JSON.parse(toolCalls[0].function.arguments), { view: 'board' })
+  assert.deepEqual(fromAnthropicContent(undefined), { content: '', toolCalls: [] })
+})
+t('aiProvider: a refusal is detectable before reading content', () => {
+  // Claude declines with a *successful* response, so this must be checked or a
+  // refusal presents as an inexplicably blank reply.
+  assert.match(refusalMessage('refusal') ?? '', /declined/i)
+  assert.equal(refusalMessage('end_turn'), null)
+  assert.equal(refusalMessage(null), null)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

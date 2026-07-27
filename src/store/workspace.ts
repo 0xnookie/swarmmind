@@ -216,6 +216,14 @@ interface WorkspaceState {
   // the background shortly after launch.
   voiceModel: VoiceModel
   voicePreload: boolean
+  // Stop recording automatically after a pause in speech, so dictation doesn't
+  // need a second keypress. Persisted as `voiceAutoStop`.
+  voiceAutoStop: boolean
+  // The floating dictation widget: whether it's shown, and where the user
+  // dragged it (null = not yet placed → default corner). Persisted as
+  // `voiceWidgetOpen` / `voiceWidgetPos`.
+  voiceWidgetOpen: boolean
+  voiceWidgetPos: { x: number; y: number } | null
   // ── Appearance (applied live via CSS variables, persisted) ────────────────
   themePreset: ThemePreset
   accentColor: string | null
@@ -295,6 +303,10 @@ interface WorkspaceState {
   // course-correct (spawn follow-ups, reprioritise) instead of only seeing
   // results at the final synthesis. Costs lead tokens, so off by default.
   orchestratorReportToLead: boolean
+  // Optional spend ceiling (USD) for an autonomous run. Once the swarm's total
+  // reported cost reaches it the conductor stops dispatching new work; running
+  // agents are left to finish. null = no budget (the default).
+  orchestratorBudgetUsd: number | null
   // ── Loops ──────────────────────────────────────────────────────────────────
   // Recurring prompt schedules for the current workspace, and the Loops overlay.
   loops: SwarmLoop[]
@@ -356,6 +368,9 @@ interface WorkspaceState {
   setLanguage: (lang: Language) => void
   setVoiceModel: (m: VoiceModel) => void
   setVoicePreload: (b: boolean) => void
+  setVoiceAutoStop: (b: boolean) => void
+  toggleVoiceWidget: () => void
+  setVoiceWidgetPos: (pos: { x: number; y: number }) => void
   // Appearance setters — each persists and re-applies immediately.
   setThemePreset: (p: ThemePreset) => void
   setAccentColor: (hex: string | null) => void
@@ -415,6 +430,7 @@ interface WorkspaceState {
   pushOrchestratorLog: (text: string) => void
   clearOrchestratorLog: () => void
   setOrchestratorReportToLead: (on: boolean) => void
+  setOrchestratorBudgetUsd: (usd: number | null) => void
   startOrchestration: () => void
   stopOrchestration: () => void
   // ── Loop actions ───────────────────────────────────────────────────────────
@@ -610,6 +626,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   language: 'en',
   voiceModel: 'base',
   voicePreload: true,
+  voiceAutoStop: true,
+  voiceWidgetOpen: false,
+  voiceWidgetPos: null,
   themePreset: DEFAULT_APPEARANCE.themePreset,
   accentColor: DEFAULT_APPEARANCE.accentColor,
   uiDensity: DEFAULT_APPEARANCE.uiDensity,
@@ -648,6 +667,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   orchestratorProposal: null,
   orchestratorLog: [],
   orchestratorReportToLead: false,
+  orchestratorBudgetUsd: null,
   loops: [],
   loopsOpen: false,
   cliLoops: [],
@@ -1003,6 +1023,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   setOrchestratorReportToLead: (on) => set({ orchestratorReportToLead: on }),
 
+  setOrchestratorBudgetUsd: (usd) => set({ orchestratorBudgetUsd: usd }),
+
   // Begin a goal-driven run: phase → 'running'. The conductor hook reacts by
   // injecting the decomposition prompt into the lead pane. Plain queue dispatch
   // (no goal) doesn't need this — it runs whenever the mode is not 'off'.
@@ -1134,6 +1156,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setVoicePreload: (b) => {
     set({ voicePreload: b })
     window.swarmmind.setAppSetting('voicePreload', b ? '1' : '0').catch(() => {})
+  },
+
+  setVoiceAutoStop: (b) => {
+    set({ voiceAutoStop: b })
+    window.swarmmind.setAppSetting('voiceAutoStop', b ? '1' : '0').catch(() => {})
+  },
+
+  toggleVoiceWidget: () => {
+    const open = !get().voiceWidgetOpen
+    set({ voiceWidgetOpen: open })
+    window.swarmmind.setAppSetting('voiceWidgetOpen', open ? '1' : '0').catch(() => {})
+  },
+
+  // Written on every pointer move during a drag, so persist without awaiting
+  // and let the last write win rather than debouncing (an app setting write is
+  // a single cheap SQLite upsert).
+  setVoiceWidgetPos: (pos) => {
+    set({ voiceWidgetPos: pos })
+    window.swarmmind.setAppSetting('voiceWidgetPos', JSON.stringify(pos)).catch(() => {})
   },
 
   // ── Appearance ─────────────────────────────────────────────────────────────

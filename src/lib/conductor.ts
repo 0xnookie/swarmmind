@@ -365,6 +365,59 @@ export function readyForSynthesis(tasks: readonly ConductorTask[]): boolean {
   return !tasks.some(t => t.status === 'pending' || t.status === 'in_progress' || t.status === 'needs_review')
 }
 
+// ── Spend budget ─────────────────────────────────────────────────────────────
+//
+// `auto` mode dispatches, retries and escalates on its own, for as long as
+// there is work — which means it spends money unattended. The PTY manager
+// already parses each agent's reported cumulative cost into the store's
+// `paneCost`, so the guardrail is simply: stop starting *new* work once the run
+// has spent its budget.
+//
+// The semantics are deliberately narrow. Exceeding the budget pauses dispatch;
+// it does not kill in-flight agents (that would strand half-finished work) and
+// it does not touch `assisted` mode, where a human already approves every step.
+
+export type BudgetVerdict = 'ok' | 'warn' | 'exceeded'
+
+// Fraction of the budget at which to warn the user that it's nearly gone.
+export const BUDGET_WARN_AT = 0.8
+
+// Total spend across every pane in the run.
+export function totalSpend(paneCost: Record<string, { usd: number }> | undefined): number {
+  let sum = 0
+  for (const entry of Object.values(paneCost ?? {})) {
+    const usd = Number(entry?.usd)
+    if (Number.isFinite(usd) && usd > 0) sum += usd
+  }
+  return sum
+}
+
+// No budget set (null) always reads 'ok' — the guardrail is opt-in, and an
+// unset budget must never pause a run.
+export function budgetStatus(spentUsd: number, limitUsd: number | null): BudgetVerdict {
+  if (limitUsd === null || !(limitUsd > 0)) return 'ok'
+  if (spentUsd >= limitUsd) return 'exceeded'
+  return spentUsd >= limitUsd * BUDGET_WARN_AT ? 'warn' : 'ok'
+}
+
+// Parse the budget field. Blank means "no budget"; anything not a positive
+// finite number is rejected rather than silently coerced to 0, which would
+// otherwise read as "exceeded" and pause the run immediately.
+export function parseBudget(raw: string | null | undefined): number | null {
+  const trimmed = (raw ?? '').trim().replace(/^\$/, '')
+  if (!trimmed) return null
+  const n = Number(trimmed)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+export function formatUsd(usd: number): string {
+  return `$${usd.toFixed(usd < 1 ? 3 : 2)}`
+}
+
+export function buildBudgetHaltNote(spentUsd: number, limitUsd: number): string {
+  return `⏸ budget reached — spent ${formatUsd(spentUsd)} of ${formatUsd(limitUsd)}. Dispatch paused; running agents finish. Raise the budget to continue.`
+}
+
 // ── Message delivery ─────────────────────────────────────────────────────────
 // Pair each queued agent-to-agent message with a free running pane of the
 // recipient agent: at most one message per pane per tick, never a pane that's

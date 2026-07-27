@@ -10,6 +10,7 @@ import {
 } from '../store/workspace'
 import { conductorControls } from '../hooks/useConductor'
 import { SWARM_RECIPES, buildRecipeLayout, type SwarmRecipe } from '../lib/recipes'
+import { totalSpend, budgetStatus, parseBudget, formatUsd } from '../lib/conductor'
 import { AgentIcon } from '../data/agents'
 import { confirmDialog } from './ConfirmDialog'
 import { useT, type TranslationKey } from '../i18n'
@@ -57,7 +58,25 @@ export function OrchestratorBar() {
   const clearLog = useWorkspaceStore(s => s.clearOrchestratorLog)
   const reportToLead = useWorkspaceStore(s => s.orchestratorReportToLead)
   const setReportToLead = useWorkspaceStore(s => s.setOrchestratorReportToLead)
+  const budgetUsd = useWorkspaceStore(s => s.orchestratorBudgetUsd)
+  const setBudget = useWorkspaceStore(s => s.setOrchestratorBudgetUsd)
+  const paneCost = useWorkspaceStore(s => s.paneCost)
   const rootPane = useWorkspaceStore(s => s.rootPane)
+
+  // The budget field is free text (so "1.", "" and "$2" are all typeable) with
+  // the store holding only the parsed value. Seeded from the store so a budget
+  // restored with the workspace shows up in the field.
+  const [budgetDraft, setBudgetDraft] = useState(budgetUsd === null ? '' : String(budgetUsd))
+  useEffect(() => {
+    // Adopt an externally-restored budget, but never fight the user mid-typing.
+    if (parseBudget(budgetDraft) !== budgetUsd) {
+      setBudgetDraft(budgetUsd === null ? '' : String(budgetUsd))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [budgetUsd])
+
+  const spent = totalSpend(paneCost)
+  const budgetState = budgetStatus(spent, budgetUsd)
 
   // Poll the task list so the worker-status rows can show task titles.
   const [taskTitles, setTaskTitles] = useState<Record<string, string>>({})
@@ -187,6 +206,32 @@ export function OrchestratorBar() {
           />
           {t('orch.reportToLead')}
         </label>
+        {/* Spend ceiling for an autonomous run. Blank = no budget. The field
+            shows live spend once the swarm reports any, so the number next to
+            it is the one the guardrail actually compares against. */}
+        <label style={styles.reportToggle} title={t('orch.budget.hint')}>
+          {t('orch.budget')}
+          <input
+            style={{
+              ...styles.budgetInput,
+              ...(budgetState === 'exceeded' ? { borderColor: '#e5484d', color: '#e5484d' } : {}),
+              ...(budgetState === 'warn' ? { borderColor: 'var(--accent)' } : {}),
+            }}
+            value={budgetDraft}
+            onChange={e => {
+              setBudgetDraft(e.target.value)
+              setBudget(parseBudget(e.target.value))
+            }}
+            placeholder="—"
+            inputMode="decimal"
+            spellCheck={false}
+          />
+          {budgetUsd !== null && spent > 0 && (
+            <span style={{ color: budgetState === 'exceeded' ? '#e5484d' : 'var(--text-muted)' }}>
+              {formatUsd(spent)}
+            </span>
+          )}
+        </label>
         {phase === 'running' ? (
           <button style={styles.stopBtn} onClick={stop}>{t('orch.stop')}</button>
         ) : (
@@ -305,6 +350,11 @@ const styles: Record<string, React.CSSProperties> = {
   reportToggle: {
     display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-muted)',
     fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none',
+  },
+  budgetInput: {
+    width: 54, background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+    border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+    padding: '4px 6px', fontSize: 11, outline: 'none', textAlign: 'right',
   },
   select: {
     background: 'var(--bg-elevated)', color: 'var(--text-primary)', border: '1px solid var(--border)',

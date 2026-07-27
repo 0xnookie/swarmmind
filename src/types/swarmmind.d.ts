@@ -99,10 +99,11 @@ declare global {
       // App settings
       getAppSetting: (key: string) => Promise<string | null>
       setAppSetting: (key: string, value: string) => Promise<void>
-      // SwarmAgent (in-app assistant; Groq-backed, key held in main process)
-      swarmAgentHasKey: () => Promise<boolean>
-      swarmAgentSetKey: (key: string) => Promise<boolean>
-      swarmAgentListModels: () => Promise<string[]>
+      // SwarmAgent (in-app assistant; provider-agnostic, key held in main process)
+      swarmAgentProviders: () => Promise<SwarmAgentProvider[]>
+      swarmAgentHasKey: (provider?: string) => Promise<boolean>
+      swarmAgentSetKey: (key: string, provider?: string) => Promise<boolean>
+      swarmAgentListModels: (provider?: string) => Promise<string[]>
       swarmAgentChat: (
         requestId: string,
         messages: SwarmAgentMessage[],
@@ -264,6 +265,18 @@ declare global {
     tool_calls?: SwarmAgentToolCall[]
     tool_call_id?: string
     name?: string
+  }
+
+  // One selectable AI backend, as reported by the main process. `configured`
+  // says whether a key is already stored — the key itself is never readable
+  // from the renderer.
+  interface SwarmAgentProvider {
+    id: string
+    label: string
+    defaultModel: string
+    requiresKey: boolean
+    hint: string
+    configured: boolean
   }
 
   type UpdateStatus =

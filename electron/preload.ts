@@ -143,12 +143,17 @@ contextBridge.exposeInMainWorld('swarmmind', {
   getAppSetting: (key: string) => ipcRenderer.invoke('appsetting:get', key),
   setAppSetting: (key: string, value: string) => ipcRenderer.invoke('appsetting:set', key, value),
 
-  // SwarmAgent — the in-app assistant. Its Groq key stays in the main process;
+  // SwarmAgent — the in-app assistant. Its API key stays in the main process;
   // the renderer drives the agentic loop one turn at a time via swarmAgentChat
-  // and receives streamed text via onSwarmAgentDelta.
-  swarmAgentHasKey: () => ipcRenderer.invoke('swarmAgent:hasKey'),
-  swarmAgentSetKey: (key: string) => ipcRenderer.invoke('swarmAgent:setKey', key),
-  swarmAgentListModels: () => ipcRenderer.invoke('swarmAgent:listModels'),
+  // and receives streamed text via onSwarmAgentDelta. The `provider` arguments
+  // are optional and default to the configured one — Settings passes them
+  // explicitly so it can act on a provider the user picked but hasn't saved.
+  swarmAgentProviders: () => ipcRenderer.invoke('swarmAgent:providers'),
+  swarmAgentHasKey: (provider?: string) => ipcRenderer.invoke('swarmAgent:hasKey', provider),
+  swarmAgentSetKey: (key: string, provider?: string) =>
+    ipcRenderer.invoke('swarmAgent:setKey', key, provider),
+  swarmAgentListModels: (provider?: string) =>
+    ipcRenderer.invoke('swarmAgent:listModels', provider),
   swarmAgentChat: (requestId: string, messages: unknown[], tools: unknown[], context?: string) =>
     ipcRenderer.invoke('swarmAgent:chat', requestId, messages, tools, context),
   onSwarmAgentDelta: (cb: (data: { requestId: string; text: string }) => void) => {

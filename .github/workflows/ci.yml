@@ -1,6 +1,7 @@
 name: CI
 
-# Type-checking is the project's primary correctness gate (no test suite).
+# Correctness gates, cheapest first: the pure-logic unit suite, type-checking,
+# then a real boot of the built app.
 on:
   push:
     branches: [main]
@@ -9,6 +10,26 @@ on:
   workflow_dispatch:
 
 jobs:
+  unit:
+    name: Unit (pure logic)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Node 22+: the suite runs the TypeScript sources directly via
+      # --experimental-strip-types (see the `test` script).
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Deliberately no `npm ci`: every module under test is dependency-free by
+      # design (that's why the risky logic lives in src/lib and electron/lib), so
+      # this gate needs nothing but a checkout and runs in seconds.
+      - name: Unit tests
+        run: npm test
+
   typecheck:
     name: Type-check
     runs-on: ubuntu-latest
@@ -90,3 +111,13 @@ jobs:
 
       - name: Smoke test (boot the app)
         run: npm run smoke
+
+      # Drives a real pty: asserts output still arrives intact and in order,
+      # and that it stays coalesced into frame-sized IPC batches.
+      - name: PTY output test
+        run: npm run pty-verify
+
+      # The floating dictation widget: opens, drags, persists, and re-clamps a
+      # position saved for a larger window. No microphone involved.
+      - name: Voice widget test
+        run: npm run voice-verify

@@ -6,7 +6,55 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.22.0]
+## [0.23.0]
+
+**Your models, your budget, your terminals.** The AI behind every in-app feature
+is now a setting rather than a single hard-wired vendor — bring a Claude key, an
+OpenAI key, or point it at a model running on your own machine. Autonomous runs
+gain a spend ceiling, terminal output stops taxing the main process, and
+dictation shrinks to a pill you can park anywhere.
+
+### Added
+- **Bring your own model.** SwarmAgent, the Composer, inline `Ctrl/⌘-K` edits,
+  ghost text, diagnostics and next-edit prediction all run through one provider
+  layer: **Groq**, **Anthropic (Claude)**, **OpenAI**, or any OpenAI-compatible
+  endpoint — Ollama, LM Studio, OpenRouter, vLLM — including key-free local
+  models. Keys and model choices are stored *per provider*, so switching costs
+  nothing and an existing Groq setup carries over untouched.
+- **Spend budget for autonomous runs.** An optional per-run ceiling in the
+  Orchestrator bar: once the swarm's reported cost reaches it, no new tasks are
+  dispatched and running agents are left to finish. Warns at 80%, remembered per
+  workspace. The one feature that spends money unattended now has a stop.
+- **Floating dictation widget.** A small draggable pill — the SwarmMind orb and
+  a live audio line — that you can park next to whichever pane you're actually
+  watching. Click to talk, drag to move, right-click to dismiss; status, target
+  pane and last transcript live in its tooltip. The TopBar voice control is now
+  an icon that shows and hides it.
+- **Stop on silence.** Dictation ends itself after a pause instead of needing a
+  second keypress, so transcription starts sooner. Guarded so it never cuts off
+  a slow start, a short answer, or a breath between sentences. Toggle in
+  Settings → General.
+
+### Changed
+- **Terminal output is batched.** Output from each pane is coalesced into
+  frame-sized batches instead of one IPC message per chunk, and the per-chunk
+  cost parsing and buffer work now happens once per frame. A burst that used to
+  cost hundreds of messages now costs single digits, so one noisy agent no
+  longer degrades every other pane.
+- **Dictation is faster and cheaper.** Recording no longer re-renders the UI
+  ~60×/second to animate the waveform, and decoding a clip went from three audio
+  contexts to one — removing the pause between "stopped" and "transcribing" on
+  longer recordings.
+- **The TopBar voice button matches the icons beside it** (it had grown its own
+  round chrome), and the waveform is now one shared component rather than four
+  near-identical copies.
+
+### Fixed
+- A pane's final output can no longer be lost when its process exits, and a
+  restarted pane can't interleave the previous process's last output with the
+  new one's.
+
+
 
 **The conductor grows a heartbeat and a brain.** Autonomous runs no longer stall
 silently: workers send progress pings, the loop notices when one goes quiet or

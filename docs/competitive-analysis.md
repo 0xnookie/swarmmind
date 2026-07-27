@@ -43,6 +43,8 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 | ⭐ Review gate with human ReviewCard | ✅ | `needs_review` tasks get Approve / Request-changes / View-changes (worktree diff) right on the Kanban card; verdicts emit `review` events like agent reviews |
 | ⭐ Changes panel diff drill-down | ✅ | Click any file in the live change feed → its git diff (worktree-aware), rendered by the shared `UnifiedDiff`; "Open" jumps into the editor |
 | ⭐ Focus mode + ambient audio cues | ✅ | Opt-in: auto-spotlight the pane that just asked a question; quiet WebAudio pings for needs-you / turn-done / contention (rate-limited) |
+| ⭐ Bring your own model (any provider, incl. local) | ✅ | One `runChat` entry point backs every AI surface: Groq, **Anthropic (Claude, official SDK)**, OpenAI, or any OpenAI-compatible base URL — Ollama / LM Studio / OpenRouter / vLLM, key-free. Keys stored per provider, so switching costs nothing. Cursor ties you to its own backend; SwarmMind's editor AI can run entirely on a local model |
+| ⭐ Spend budget on autonomous runs | ✅ | An optional per-run ceiling pauses `auto`-mode dispatch once the swarm's reported cost reaches it (running agents finish). The one feature that spends money unattended now has a stop |
 | ⭐ Session export (shareable swarm report) | ✅ | One click in the Swarm Timeline exports the event log as a **self-contained HTML report** (stat tiles, agent legend, day-grouped timeline — no external assets, everything escaped) or a Markdown digest for PRs/issues. Pure `sessionExport.ts` (unit-tested); save-dialog picks the format by extension |
 
 ## Engineering quality bar
@@ -50,9 +52,11 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 | | SwarmMind |
 |---|---|
 | Type gate | `npm run typecheck` clean (two tsconfig projects) |
+| CI gates | `unit` (Node 22; no `npm ci` — the pure suite is dependency-free by design, so it runs in seconds), `typecheck`, then `build` → `smoke` → `pty-verify` on Windows |
 | Pure-logic unit tests | `npm test` — 194 assertions over pure modules (incl. `nextEdit`, `codeBlocks`, `retrieval` lexical+vector, `verify`, `conductor` orchestration decisions, `terminalLinks`, `indexUpdate`, `devServerUrl`, `recipes`, `tsLsp` incl. span edits, `rename`, `diagnostics`, `sessionExport`), no build step |
 | Constrained exec | `verify:run` only runs the workspace's declared npm scripts (allowlist + strict charset), execFile without a shell — no arbitrary command surface |
 | Boot/integration | `npm run smoke`, `node tests/editor-verify.mjs`, `npm run lsp-verify` (Playwright on the built app — the last drives a real type error to a rendered squiggle + Fix-with-AI action, cross-file F12, Shift+F12 references across files, and an F2 rename landing as a two-file Composer plan) |
+| Terminal throughput | `npm run pty-verify` drives a real shell: output arrives complete and in order, **and** stays coalesced into frame-sized IPC batches (400 lines → single-digit messages), so the batching can't be silently refactored away |
 | Spawn safety | HMAC-signed agent config, shell-quoted argv, per-workspace MCP token |
 
 ## Honest gaps / next targets (priority order)
@@ -96,11 +100,25 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
    would each need a real external language server; worth it only if users ask.
 13. **LSP-backed completions** — symbol-exact completion popups from the language
    service; ghost-text covers the AI side of this surface today.
+14. ~~**Provider lock-in**~~ — ✅ shipped: the whole AI stack was wired to a single
+   vendor, capping quality on exactly the workloads that most reward a frontier
+   model (Composer plans, agentic chat) and taking every AI surface down with one
+   outage. Now one `runChat` entry point behind a provider setting: Groq,
+   Anthropic (official SDK), OpenAI, or any OpenAI-compatible/local endpoint.
+15. ~~**Unbounded autonomous spend**~~ — ✅ shipped: an optional per-run budget
+   pauses `auto`-mode dispatch at the ceiling; in-flight agents finish.
+16. **Structured outputs for the Composer** — the plan is coaxed out as JSON by
+   prompt plus a defensive parse. Anthropic and OpenAI both support real schema
+   enforcement (`output_config.format` / `response_format: json_schema`), which
+   would make a malformed plan impossible rather than merely handled. Worth doing
+   per-provider once the abstraction has settled.
 
 This file is a living scorecard, not a marketing claim: "best" is earned row by
 row. The in-editor AI table is at parity row-for-row *and* carries things Cursor
 does not: an index that stays fresh while other agents edit, compiler diagnostics
-wired straight into the AI fix loop, and a compiler-exact rename that still rides
-the review/checkpoint rails. Every numbered priority target on this list has now
-been shipped except the two explicitly-conditional ones (other-language servers
-"only if users ask"; LSP completions, whose surface ghost-text already covers).
+wired straight into the AI fix loop, a compiler-exact rename that still rides the
+review/checkpoint rails, and a model layer the user actually owns — including a
+fully local one. Every numbered priority target on this list has been shipped
+except the two explicitly-conditional ones (other-language servers "only if users
+ask"; LSP completions, whose surface ghost-text already covers) and #16
+(structured outputs), which is a hardening pass on something already working.

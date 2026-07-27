@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useWorkspaceStore, selectTerminalsVisible } from '../store/workspace'
 import { useT } from '../i18n'
+import { IconBtn } from './IconBtn'
 import { SwarmVoice } from './SwarmVoice'
 import { NotificationCenter } from './NotificationCenter'
 import logoUrl from '../assets/logo.png'
@@ -209,53 +210,6 @@ function IconConductor() {
       <circle cx="19" cy="18" r="2.4" />
       <path d="M12 7.4 6.4 15.8M12 7.4v8.2M12 7.4l5.6 8.4" />
     </svg>
-  )
-}
-
-// ── Icon button ───────────────────────────────────────────────────────────────
-
-interface IconBtnProps {
-  label: string
-  onClick?: () => void
-  active?: boolean
-  disabled?: boolean
-  children: React.ReactNode
-  style?: React.CSSProperties
-}
-
-function IconBtn({ label, onClick, active, disabled, children, style }: IconBtnProps) {
-  const [hovered, setHovered] = useState(false)
-  const showActive = !disabled && (active || hovered)
-
-  const baseStyle: React.CSSProperties = {
-    width: 28,
-    height: 28,
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 6,
-    border: 'none',
-    cursor: disabled ? 'not-allowed' : 'pointer',
-    color: disabled ? 'var(--text-dim)' : showActive ? 'var(--text-secondary)' : 'var(--text-muted)',
-    background: showActive ? 'var(--bg-elevated)' : 'transparent',
-    opacity: disabled ? 0.4 : 1,
-    transition: 'background 150ms ease-out, color 150ms ease-out',
-    position: 'relative',
-    ...style,
-  }
-
-  return (
-    <button
-      aria-label={label}
-      title={label}
-      style={baseStyle}
-      onClick={onClick}
-      disabled={disabled}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-    >
-      {children}
-    </button>
   )
 }
 

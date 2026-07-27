@@ -16,14 +16,26 @@ import { LoginTerminal } from './LoginTerminal'
 // electron/agent-accounts.ts. Other agents fall back to manual API-key entry.
 const PROFILE_AGENTS = new Set<AgentId>(['claude', 'codex', 'opencode'])
 
-// Curated SwarmAgent (Groq) model recommendations — quick-pick buttons next to
-// the model field. The live list fetched from the key augments these in the
-// datalist; verify the catalogue per release (Groq's lineup changes often).
-const SWARMAGENT_RECOMMENDED: { id: string; label: string }[] = [
-  { id: 'openai/gpt-oss-120b', label: 'Most capable' },
-  { id: 'llama-3.3-70b-versatile', label: 'Balanced' },
-  { id: 'openai/gpt-oss-20b', label: 'Fastest' },
-]
+// Curated per-provider model recommendations — quick-pick buttons next to the
+// model field. The live list fetched with the key augments these in the
+// datalist; verify the catalogues per release (every provider's lineup moves).
+const SWARMAGENT_RECOMMENDED: Record<string, { id: string; label: string }[]> = {
+  groq: [
+    { id: 'openai/gpt-oss-120b', label: 'Most capable' },
+    { id: 'llama-3.3-70b-versatile', label: 'Balanced' },
+    { id: 'openai/gpt-oss-20b', label: 'Fastest' },
+  ],
+  anthropic: [
+    { id: 'claude-opus-5', label: 'Most capable' },
+    { id: 'claude-sonnet-5', label: 'Balanced' },
+    { id: 'claude-haiku-4-5', label: 'Fastest' },
+  ],
+  openai: [
+    { id: 'gpt-4o', label: 'Balanced' },
+    { id: 'gpt-4o-mini', label: 'Fastest' },
+  ],
+  custom: [],
+}
 
 // Whisper model choices for SwarmVoice (Settings → General).
 const VOICE_MODEL_OPTIONS: { value: VoiceModel; labelKey: 'settings.voice.model.tiny' | 'settings.voice.model.base' | 'settings.voice.model.small' }[] = [
@@ -119,7 +131,9 @@ export function SettingsModal() {
   const storeVoiceModel = useWorkspaceStore(s => s.voiceModel)
   const setVoiceModelStore = useWorkspaceStore(s => s.setVoiceModel)
   const storeVoicePreload = useWorkspaceStore(s => s.voicePreload)
+  const storeVoiceAutoStop = useWorkspaceStore(s => s.voiceAutoStop)
   const setVoicePreloadStore = useWorkspaceStore(s => s.setVoicePreload)
+  const setVoiceAutoStopStore = useWorkspaceStore(s => s.setVoiceAutoStop)
 
   // Appearance + shortcuts apply instantly (no draft/Save), so we read live
   // store values and call setters directly from the controls.
@@ -153,11 +167,17 @@ export function SettingsModal() {
   const [closeTray, setCloseTray] = useState(storeCloseToTray)
   const [voiceModelDraft, setVoiceModelDraft] = useState<VoiceModel>(storeVoiceModel)
   const [voicePreloadDraft, setVoicePreloadDraft] = useState(storeVoicePreload)
-  // SwarmAgent (Groq) — key is write-only (never read back); model is plain.
+  const [voiceAutoStopDraft, setVoiceAutoStopDraft] = useState(storeVoiceAutoStop)
+  // SwarmAgent — key is write-only (never read back); provider/model are plain.
   const [swarmAgentKeyDraft, setSwarmAgentKeyDraft] = useState('')
   const [swarmAgentHasKey, setSwarmAgentHasKey] = useState(false)
   const [swarmAgentModelDraft, setSwarmAgentModelDraft] = useState('')
-  // Models fetched live from Groq (empty until the key is set / fetch returns).
+  const [swarmAgentProviderDraft, setSwarmAgentProviderDraft] = useState('groq')
+  const [swarmAgentBaseUrlDraft, setSwarmAgentBaseUrlDraft] = useState('')
+  // The selectable backends, reported by the main process.
+  const [swarmAgentProviders, setSwarmAgentProviders] = useState<SwarmAgentProvider[]>([])
+  // Models fetched live from the provider (empty until a key is set / the fetch
+  // returns).
   const [swarmAgentModels, setSwarmAgentModels] = useState<string[]>([])
   // Terminal-section draft
   const [fontSize, setFontSize] = useState(storeFontSize)
@@ -204,10 +224,26 @@ export function SettingsModal() {
     setCloseTray(storeCloseToTray)
     setVoiceModelDraft(storeVoiceModel)
     setVoicePreloadDraft(storeVoicePreload)
+    setVoiceAutoStopDraft(storeVoiceAutoStop)
     setSwarmAgentKeyDraft('')
-    window.swarmmind.swarmAgentHasKey().then(setSwarmAgentHasKey).catch(() => {})
-    window.swarmmind.getAppSetting('swarmAgentModel').then(val => setSwarmAgentModelDraft(val ?? '')).catch(() => {})
-    window.swarmmind.swarmAgentListModels().then(m => { if (Array.isArray(m)) setSwarmAgentModels(m) }).catch(() => {})
+    window.swarmmind.swarmAgentProviders().then(p => { if (Array.isArray(p)) setSwarmAgentProviders(p) }).catch(() => {})
+    window.swarmmind.getAppSetting('swarmAgentBaseUrl').then(val => setSwarmAgentBaseUrlDraft(val ?? '')).catch(() => {})
+    // Load the saved provider first, then everything that's scoped to it. The
+    // per-provider model setting falls back to the pre-multi-provider key so an
+    // existing Groq configuration survives the upgrade unchanged.
+    window.swarmmind.getAppSetting('swarmAgentProvider')
+      .then(async saved => {
+        const id = saved || 'groq'
+        setSwarmAgentProviderDraft(id)
+        const [scoped, legacy] = await Promise.all([
+          window.swarmmind.getAppSetting(`swarmAgentModel:${id}`),
+          id === 'groq' ? window.swarmmind.getAppSetting('swarmAgentModel') : Promise.resolve(null),
+        ])
+        setSwarmAgentModelDraft(scoped || legacy || '')
+        window.swarmmind.swarmAgentHasKey(id).then(setSwarmAgentHasKey).catch(() => {})
+        window.swarmmind.swarmAgentListModels(id).then(m => { if (Array.isArray(m)) setSwarmAgentModels(m) }).catch(() => {})
+      })
+      .catch(() => {})
     setRecordingId(null)
     setAccentDraft(useWorkspaceStore.getState().accentColor ?? '')
 
@@ -281,12 +317,20 @@ export function SettingsModal() {
       setCloseToTray(closeTray)
       setVoiceModelStore(voiceModelDraft)
       setVoicePreloadStore(voicePreloadDraft)
+      setVoiceAutoStopStore(voiceAutoStopDraft)
+      // Pass the provider explicitly: the key belongs to the provider the user
+      // just picked, which isn't the saved one yet.
       if (swarmAgentKeyDraft.trim()) {
-        await window.swarmmind.swarmAgentSetKey(swarmAgentKeyDraft.trim())
+        await window.swarmmind.swarmAgentSetKey(swarmAgentKeyDraft.trim(), swarmAgentProviderDraft)
         setSwarmAgentHasKey(true)
         setSwarmAgentKeyDraft('')
       }
-      await window.swarmmind.setAppSetting('swarmAgentModel', swarmAgentModelDraft.trim())
+      await window.swarmmind.setAppSetting('swarmAgentProvider', swarmAgentProviderDraft)
+      await window.swarmmind.setAppSetting('swarmAgentBaseUrl', swarmAgentBaseUrlDraft.trim())
+      await window.swarmmind.setAppSetting(
+        `swarmAgentModel:${swarmAgentProviderDraft}`,
+        swarmAgentModelDraft.trim(),
+      )
     }
     if (terminalDirty) {
       setTerminalFontSize(fontSize)
@@ -312,7 +356,8 @@ export function SettingsModal() {
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, agentAccounts, shell, defaultAgent, idleSeconds, closeTray,
-      voiceModelDraft, voicePreloadDraft, setVoiceModelStore, setVoicePreloadStore, swarmAgentKeyDraft, swarmAgentModelDraft,
+      voiceModelDraft, voicePreloadDraft, voiceAutoStopDraft,
+      setVoiceModelStore, setVoicePreloadStore, setVoiceAutoStopStore, swarmAgentKeyDraft, swarmAgentModelDraft,
       fontSize, cursorBlink, setShellStyle, setDefaultAgentId, setTerminalFontSize, setTerminalCursorBlink, setCloseToTray])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -395,6 +440,15 @@ export function SettingsModal() {
   const setActiveAccount = (id: AgentId, accId: string) => {
     updateAccounts(id, s => ({ ...s, activeId: accId }))
   }
+
+  // Everything in the SwarmAgent group that depends on which provider is picked.
+  const activeProvider = swarmAgentProviders.find(p => p.id === swarmAgentProviderDraft)
+  const recommendedModels = SWARMAGENT_RECOMMENDED[swarmAgentProviderDraft] ?? []
+  const keyPlaceholder =
+    swarmAgentProviderDraft === 'anthropic' ? 'sk-ant-…'
+    : swarmAgentProviderDraft === 'openai' ? 'sk-…'
+    : swarmAgentProviderDraft === 'groq' ? 'gsk_…'
+    : ''
 
   const navItem = (id: Section, label: string, icon: React.ReactNode, dirty: boolean) => (
     <button
@@ -586,6 +640,22 @@ export function SettingsModal() {
                     />
                   </div>
 
+                  <div style={styles.rowBetween}>
+                    <div>
+                      <FieldLabel>{t('settings.voice.autoStop')}</FieldLabel>
+                      <p style={{ ...styles.desc, marginTop: 2 }}>
+                        {t('settings.voice.autoStopDesc')}
+                      </p>
+                    </div>
+                    <button
+                      className="settings-toggle"
+                      role="switch"
+                      aria-checked={voiceAutoStopDraft}
+                      aria-label={t('settings.voice.autoStop')}
+                      onClick={() => { setVoiceAutoStopDraft(v => !v); setGeneralDirty(true) }}
+                    />
+                  </div>
+
                   <p style={styles.desc}>
                     {t('settings.voice.desc')}{' '}
                     {formatKeys(getEffectiveKeys('voice', keybindings)).split('+').map((k, i, arr) => (
@@ -597,6 +667,58 @@ export function SettingsModal() {
                 </Group>
 
                 <Group title={t('settings.swarmAgent.group')}>
+                  <FieldLabel htmlFor="swarmagent-provider">{t('settings.swarmAgent.provider')}</FieldLabel>
+                  <select
+                    id="swarmagent-provider"
+                    style={styles.input}
+                    value={swarmAgentProviderDraft}
+                    onChange={e => {
+                      const id = e.target.value
+                      setSwarmAgentProviderDraft(id)
+                      setGeneralDirty(true)
+                      // Everything below is scoped to the provider, so reload it:
+                      // an unsaved key draft belongs to the provider it was typed
+                      // for and must not follow the user to a different one.
+                      setSwarmAgentKeyDraft('')
+                      setSwarmAgentModels([])
+                      setSwarmAgentHasKey(swarmAgentProviders.find(p => p.id === id)?.configured ?? false)
+                      window.swarmmind.getAppSetting(`swarmAgentModel:${id}`)
+                        .then(val => setSwarmAgentModelDraft(val ?? ''))
+                        .catch(() => {})
+                      window.swarmmind.swarmAgentListModels(id)
+                        .then(m => { if (Array.isArray(m)) setSwarmAgentModels(m) })
+                        .catch(() => {})
+                    }}
+                  >
+                    {swarmAgentProviders.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}{p.configured ? ' ✓' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p style={styles.desc}>
+                    {activeProvider?.hint ?? ''} {t('settings.swarmAgent.providerDesc')}
+                  </p>
+
+                  {/* Only a custom/local endpoint needs a URL; the hosted
+                      providers have fixed ones. */}
+                  {swarmAgentProviderDraft === 'custom' && (
+                    <>
+                      <FieldLabel htmlFor="swarmagent-baseurl">{t('settings.swarmAgent.baseUrl')}</FieldLabel>
+                      <input
+                        id="swarmagent-baseurl"
+                        type="text"
+                        style={styles.input}
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={swarmAgentBaseUrlDraft}
+                        placeholder="http://localhost:11434/v1"
+                        onChange={e => { setSwarmAgentBaseUrlDraft(e.target.value); setGeneralDirty(true) }}
+                      />
+                      <p style={styles.desc}>{t('settings.swarmAgent.baseUrlDesc')}</p>
+                    </>
+                  )}
+
                   <FieldLabel htmlFor="swarmagent-key">{t('settings.swarmAgent.apiKey')}</FieldLabel>
                   <input
                     id="swarmagent-key"
@@ -604,11 +726,13 @@ export function SettingsModal() {
                     style={styles.input}
                     autoComplete="off"
                     value={swarmAgentKeyDraft}
-                    placeholder={swarmAgentHasKey ? '••••••••••••' : 'gsk_…'}
+                    placeholder={swarmAgentHasKey ? '••••••••••••' : keyPlaceholder}
                     onChange={e => { setSwarmAgentKeyDraft(e.target.value); setGeneralDirty(true) }}
                   />
                   <p style={styles.desc}>
-                    {swarmAgentHasKey && !swarmAgentKeyDraft
+                    {activeProvider && !activeProvider.requiresKey
+                      ? t('settings.swarmAgent.apiKeyOptional')
+                      : swarmAgentHasKey && !swarmAgentKeyDraft
                       ? t('settings.swarmAgent.apiKeyConfigured')
                       : t('settings.swarmAgent.apiKeyDesc')}
                   </p>
@@ -620,16 +744,16 @@ export function SettingsModal() {
                     list="swarmagent-model-options"
                     style={styles.input}
                     value={swarmAgentModelDraft}
-                    placeholder="llama-3.3-70b-versatile"
+                    placeholder={activeProvider?.defaultModel ?? ''}
                     onChange={e => { setSwarmAgentModelDraft(e.target.value); setGeneralDirty(true) }}
                   />
                   <datalist id="swarmagent-model-options">
-                    {Array.from(new Set([...SWARMAGENT_RECOMMENDED.map(r => r.id), ...swarmAgentModels])).map(id => (
+                    {Array.from(new Set([...recommendedModels.map(r => r.id), ...swarmAgentModels])).map(id => (
                       <option key={id} value={id} />
                     ))}
                   </datalist>
                   <div style={styles.modelPicks}>
-                    {SWARMAGENT_RECOMMENDED.map(r => (
+                    {recommendedModels.map(r => (
                       <button
                         key={r.id}
                         type="button"

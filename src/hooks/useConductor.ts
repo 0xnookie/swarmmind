@@ -31,6 +31,11 @@ import {
   readyForSynthesis,
   planMessageDelivery,
   isWakeEvent,
+  totalSpend,
+  budgetStatus,
+  buildBudgetHaltNote,
+  formatUsd,
+  parseBudget,
 } from '../lib/conductor'
 
 // ── The Conductor ───────────────────────────────────────────────────────────
@@ -167,6 +172,9 @@ export function useConductor(): void {
   const hadTasksRef = useRef(false)
   const skippedRef = useRef<Set<string>>(new Set())
   const prevPhaseRef = useRef<string>('idle')
+  // Budget notices are logged once per crossing, not once per tick — the tick
+  // is a reconciler and would otherwise repeat the same line forever.
+  const budgetNoticeRef = useRef<'ok' | 'warn' | 'exceeded'>('ok')
   // Guards against overlapping async ticks.
   const busyRef = useRef(false)
   // ── Robustness bookkeeping (session-scoped, reset on each fresh run) ─────────
@@ -280,6 +288,7 @@ export function useConductor(): void {
           decomposeAttemptsRef.current = 0
           lastProgressRef.current.clear()
           escalatedRef.current.clear()
+          budgetNoticeRef.current = 'ok'
         }
         prevPhaseRef.current = orchestratorPhase
 
@@ -475,8 +484,29 @@ export function useConductor(): void {
         // review (no self-review); otherwise workers report done directly.
         const reviewable = canReview(workers)
 
+        // ── 3a. Spend guardrail ─────────────────────────────────────────────
+        // An autonomous run spends money with nobody watching, so an optional
+        // budget stops it starting *new* work once the swarm's reported cost
+        // reaches the ceiling. In-flight agents are left alone — killing them
+        // would strand half-finished work — and `assisted` mode is unaffected,
+        // since a human approves each dispatch there anyway.
+        const budgetLimit = useWorkspaceStore.getState().orchestratorBudgetUsd
+        const spent = totalSpend(useWorkspaceStore.getState().paneCost)
+        const budget = budgetStatus(spent, budgetLimit)
+        if (budget !== budgetNoticeRef.current) {
+          if (budget === 'exceeded' && budgetLimit !== null) {
+            useWorkspaceStore.getState().pushOrchestratorLog(buildBudgetHaltNote(spent, budgetLimit))
+          } else if (budget === 'warn' && budgetLimit !== null) {
+            useWorkspaceStore.getState().pushOrchestratorLog(
+              `⚠ ${formatUsd(spent)} of ${formatUsd(budgetLimit)} budget spent`,
+            )
+          }
+          budgetNoticeRef.current = budget
+        }
+        const budgetHalted = budget === 'exceeded' && orchestrationMode === 'auto'
+
         let dispatchedThisTick = 0
-        if (!(orchestrationMode === 'assisted' && proposalPending)) {
+        if (!budgetHalted && !(orchestrationMode === 'assisted' && proposalPending)) {
           const planned = planDispatches({
             tasks,
             workers,
@@ -646,6 +676,8 @@ export function useConductor(): void {
     let loadedFor: string | null = null
     let saveTimer: ReturnType<typeof setTimeout> | null = null
 
+    const budgetKey = (id: string) => `orchestratorBudget:${id}`
+
     const loadFor = async (id: string) => {
       loadedFor = id
       try {
@@ -655,6 +687,16 @@ export function useConductor(): void {
           if (Array.isArray(arr)) useWorkspaceStore.setState({ orchestratorLog: arr })
         }
       } catch { /* ignore malformed/missing */ }
+      // The spend ceiling rides along with the log: a guardrail that silently
+      // reset to "unlimited" on restart would not be much of a guardrail.
+      // Safe to restore because per-pane spend resets on workspace load, so a
+      // restored budget always starts the next run with a fresh tally.
+      try {
+        const rawBudget = await window.swarmmind.getAppSetting(budgetKey(id))
+        if (useWorkspaceStore.getState().workspace?.id === id) {
+          useWorkspaceStore.setState({ orchestratorBudgetUsd: parseBudget(rawBudget) })
+        }
+      } catch { /* ignore */ }
     }
 
     const initial = useWorkspaceStore.getState().workspace?.id
@@ -672,6 +714,10 @@ export function useConductor(): void {
         saveTimer = setTimeout(() => {
           window.swarmmind.setAppSetting(key(id), JSON.stringify(snapshot)).catch(() => {})
         }, 1000)
+      }
+      if (id && id === loadedFor && state.orchestratorBudgetUsd !== prev.orchestratorBudgetUsd) {
+        const usd = state.orchestratorBudgetUsd
+        window.swarmmind.setAppSetting(budgetKey(id), usd === null ? '' : String(usd)).catch(() => {})
       }
     })
 

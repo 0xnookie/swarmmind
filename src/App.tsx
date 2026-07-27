@@ -34,6 +34,7 @@ import { useLoops } from './hooks/useLoops'
 import { useWidgetBridge } from './hooks/useWidgetBridge'
 import { useWorkspaceStore, buildLayoutForCount, selectTerminalsVisible, type AgentId, type ShellStyle } from './store/workspace'
 import { parseSnippets } from './lib/snippets'
+import { parsePosition } from './lib/dragWidget'
 import { playCue } from './lib/audioCues'
 import { SHORTCUTS, matchEvent, getEffectiveKeys } from './shortcuts'
 import type { ThemePreset, UiDensity, UiFontId, MonoFontId } from './appearance'
@@ -115,6 +116,16 @@ export default function App() {
     }).catch(() => {})
     window.swarmmind.getAppSetting('voicePreload').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ voicePreload: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('voiceAutoStop').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ voiceAutoStop: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('voiceWidgetOpen').then(val => {
+      if (val === '1') useWorkspaceStore.setState({ voiceWidgetOpen: true })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('voiceWidgetPos').then(val => {
+      const pos = parsePosition(val)
+      if (pos) useWorkspaceStore.setState({ voiceWidgetPos: pos })
     }).catch(() => {})
     window.swarmmind.getAppSetting('editorGhostText').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ ghostTextEnabled: val !== '0' })

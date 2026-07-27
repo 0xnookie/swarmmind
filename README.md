@@ -1,6 +1,6 @@
 # SwarmMind
 
-[![Version](https://img.shields.io/badge/Version-0.22.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
+[![Version](https://img.shields.io/badge/Version-0.23.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
 [![License](https://img.shields.io/badge/License-MIT-3fb950)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-32-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -67,9 +67,18 @@ The pen tool with its colour/width picker:
 ### Orchestration
 
 - **Conductor + Lead** — an autonomous control loop dispatches a dependency-aware task queue to worker panes, with `off` / `assisted` / `auto` modes. A designated *lead* pane can decompose a goal into tasks and synthesize the results once they finish. It spends **zero** model tokens — the code does the wiring, the panes do the thinking.
+- **Spend budget** — give an autonomous run a ceiling in dollars. When the swarm's reported cost reaches it, no new work is dispatched and running agents are left to finish; you get a warning at 80%. Remembered per workspace.
 - **Loops** — save a prompt and have SwarmMind re-inject it into a chosen pane (or all running agents) every *N* seconds, with run counts, countdowns, and pause/resume.
 
 ![Shared memory graph](./docs/memory-graph.png)
+
+### Bring your own model
+
+Every AI feature in SwarmMind — the assistant, the Composer, inline edits, ghost text, diagnostics — runs through one provider setting, so the model is yours to choose:
+
+- **Groq**, **Anthropic (Claude)**, **OpenAI**, or **any OpenAI-compatible endpoint** — Ollama, LM Studio, OpenRouter, vLLM.
+- **Run it entirely locally.** Point it at Ollama or LM Studio and the editor AI needs no key and no network.
+- **Keys are stored per provider**, so you can keep a fast, cheap model for autocomplete and a frontier one for multi-file changes, and switch without re-entering anything.
 
 ### SwarmAgent — the in-app AI assistant
 
@@ -104,7 +113,7 @@ The AI suite:
 - **Worktree review** — per-pane git worktree isolation, with a diff viewer to commit (all or per-file), merge, or discard each agent's work safely.
 - **Checkpoints** — workspace-wide snapshots you can create, list, and restore (rewinds are themselves snapshotted, so they're undoable).
 - **Encrypted secrets** — agent API keys are encrypted at rest via Electron `safeStorage`; untrusted-workspace config that affects spawning is signed and dropped unless it verifies.
-- **SwarmVoice** — push-to-talk dictation into the active pane via a local Whisper model (with download/warm-up progress).
+- **SwarmVoice** — dictation into the active pane via a local Whisper model (offline, with download/warm-up progress). It **stops itself** when you stop talking, and lives in a small **draggable pill** you can park next to whichever pane you're watching — click to talk, drag to move, with status and the last transcript in its tooltip.
 - **Benchmarks leaderboard** — ranks today's coding agents/models on the Artificial Analysis Coding Agent Index, refreshing live and working offline from a bundled snapshot.
 - **Command palette** (`Ctrl/⌘-K`) reaching every view, with match-highlighting and most-used recall — and **EN / DE** localization throughout.
 
@@ -120,7 +129,7 @@ The AI suite:
   - **Codex**: `npm install -g @openai/codex`
   - **Kilo Code**: see [kilocode.ai](https://kilocode.ai)
   - **OpenCode**: `npm install -g opencode-ai`
-- *(Optional)* A **Groq API key** powers the SwarmAgent assistant and the in-editor AI features — set it in Settings → General.
+- *(Optional)* An **API key for the provider of your choice** powers the SwarmAgent assistant and the in-editor AI features — Groq, Anthropic (Claude), OpenAI, or any OpenAI-compatible endpoint. Set it in Settings → General. A local runtime such as **Ollama** or **LM Studio** needs no key at all.
 
 ---
 
@@ -138,6 +147,15 @@ TypeScript is the primary correctness gate. Pure, risky logic is extracted into 
 ```bash
 npm run typecheck  # tsc --noEmit over tsconfig.web.json and tsconfig.node.json
 npm test           # node --experimental-strip-types tests/lib-units.mts (Node 22+)
+```
+
+Integration checks drive the built app with Playwright (run `npm run build` first):
+
+```bash
+npm run smoke         # boots the packaged app
+npm run pty-verify    # terminal output: intact, ordered, and still batched
+npm run voice-verify  # the dictation widget: opens, drags, persists, re-clamps
+npm run lsp-verify    # type errors → squiggles, F12, Shift+F12, F2 rename
 ```
 
 ### Native modules

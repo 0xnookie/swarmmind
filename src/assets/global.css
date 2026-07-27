@@ -125,6 +125,29 @@ button:disabled { opacity: 0.38; cursor: not-allowed; }
   to   { transform: rotate(360deg) }
 }
 
+/* SwarmVoice widget — the brand orb at the pill's right cap. Sized and
+   positioned from JS (it has to sit concentric with the rounded end), so this
+   only carries the parts inline styles can't express: the rotating conic ring
+   shown while the model loads or a clip is transcribing. Same treatment as the
+   SwarmAgent chat/desktop orbs (.sa-orb / .wg-orb), masked to a hairline so the
+   logo underneath stays crisp. */
+.voice-orb { position: relative; border-radius: 50%; flex-shrink: 0; }
+.voice-orb img {
+  width: 100%; height: 100%;
+  border-radius: 50%; object-fit: cover; display: block;
+  pointer-events: none;
+}
+.voice-orb.is-busy::before {
+  content: "";
+  position: absolute; inset: -2px; border-radius: 50%;
+  background: conic-gradient(from 0deg,
+    var(--accent), color-mix(in srgb, var(--accent) 12%, transparent),
+    var(--accent-hover), color-mix(in srgb, var(--accent) 12%, transparent), var(--accent));
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1.5px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 1.5px), #000 calc(100% - 1.5px));
+  animation: voice-spin 1.6s linear infinite;
+}
+
 /* ── Loading overlay ───────────────────────────────── */
 @keyframes loading-backdrop-in {
   from { opacity: 0; }

@@ -4,6 +4,8 @@ import { useVoice, preloadVoiceModel, VOICE_MODELS } from '../hooks/useVoice'
 import { useLoadingStore } from '../store/loading'
 import { matchEvent, getEffectiveKeys, formatKeys } from '../shortcuts'
 import { useT } from '../i18n'
+import { IconBtn } from './IconBtn'
+import { VoiceWidget } from './VoiceWidget'
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -38,38 +40,13 @@ function SpinnerIcon() {
   )
 }
 
-// ── Waveform bars ─────────────────────────────────────────────────────────────
-
-function WaveformBars({ levels }: { levels: number[] }) {
-  const hasSignal = levels.some(l => l > 0.02)
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 2, height: 14, flexShrink: 0 }}>
-      {levels.map((level, i) => (
-        <div
-          key={i}
-          style={{
-            width: 3,
-            height: 12,
-            background: 'currentColor',
-            borderRadius: 2,
-            transformOrigin: 'center',
-            transition: hasSignal ? 'transform 55ms ease-out' : 'none',
-            transform: hasSignal ? `scaleY(${Math.max(0.15, level)})` : undefined,
-            animation: !hasSignal
-              ? `voice-bar-pulse 0.55s ease-in-out ${i * 0.11}s infinite alternate`
-              : 'none',
-          }}
-        />
-      ))}
-    </div>
-  )
-}
-
 // ── SwarmVoice ────────────────────────────────────────────────────────────────
 
 export function SwarmVoice() {
   const t = useT()
   const activePaneId = useWorkspaceStore(s => s.activePaneId)
+  const widgetOpen   = useWorkspaceStore(s => s.voiceWidgetOpen)
+  const toggleWidget = useWorkspaceStore(s => s.toggleVoiceWidget)
   const voicePreload = useWorkspaceStore(s => s.voicePreload)
   const voiceModel   = useWorkspaceStore(s => s.voiceModel)
   const keybindings  = useWorkspaceStore(s => s.keybindings)
@@ -88,7 +65,7 @@ export function SwarmVoice() {
     if (id) window.swarmmind.ptyInput(id, text)
   }, [])
 
-  const { status, modelProgress, audioLevels, lastTranscript, start, stop, error } = useVoice(handleTranscript)
+  const { status, modelProgress, lastTranscript, start, stop, error } = useVoice(handleTranscript)
 
   // Localised model label + one-time download size, shared by both the overlay
   // (foreground) and the ambient pill (background preload).
@@ -214,18 +191,9 @@ export function SwarmVoice() {
     return () => window.removeEventListener('keydown', handler)
   }, [handleToggle])
 
-  // Button colours
-  const borderColor = isActive  ? 'var(--accent)'
-    : isError        ? 'var(--error)'
-    : isModelLoading ? 'var(--border-strong)'
-    : 'var(--border-strong)'
-
-  const bgColor = isActive ? 'var(--accent-subtle)' : 'transparent'
-
-  const fgColor = isActive       ? 'var(--accent)'
-    : isError        ? 'var(--error)'
-    : isModelLoading ? 'var(--text-dim)'
-    : 'var(--text-muted)'
+  // Only the foreground colour is ours now; IconBtn owns the box, background
+  // and hover states so the button matches the icons around it.
+  const fgColor = isActive ? 'var(--accent)' : isError ? 'var(--error)' : 'var(--text-muted)'
 
   const tooltip = isModelLoading
     ? `${t('voice.tooltip.downloading')}${modelProgress > 0 ? ` ${modelProgress}%` : ''}`
@@ -236,6 +204,18 @@ export function SwarmVoice() {
 
   return (
     <>
+      {/* ── Floating dictation widget (drag anywhere) ─────────────────────────── */}
+      {widgetOpen && (
+        <VoiceWidget
+          status={status}
+          modelProgress={modelProgress}
+          lastTranscript={lastTranscript}
+          error={error}
+          onToggle={handleToggle}
+          onClose={toggleWidget}
+        />
+      )}
+
       {/* ── Status flash (model loading / no pane / etc.) ────────────────────── */}
       {flashMsg && (
         <div style={{
@@ -265,25 +245,25 @@ export function SwarmVoice() {
       )}
 
       {/* ── Voice button ─────────────────────────────────────────────────────── */}
-      <button
-        aria-label={isRecording ? t('voice.aria.stop') : isTranscribing ? t('voice.aria.transcribing') : t('voice.aria.start')}
-        title={tooltip}
-        onClick={handleToggle}
-        style={{
-          display: 'inline-flex', alignItems: 'center', gap: 5,
-          height: 28, padding: '0 10px', borderRadius: 14,
-          border: `1px solid ${borderColor}`,
-          background: bgColor, color: fgColor,
-          cursor: 'pointer', fontSize: 11, fontWeight: 500, fontFamily: 'inherit',
-          transition: 'border-color 150ms, background 150ms, color 150ms',
-          flexShrink: 0, whiteSpace: 'nowrap',
-        }}
+      {/* Icon only, and it shows/hides the floating pill rather than recording:
+          talking happens on the pill (or via the shortcut, which still toggles
+          recording directly). Keeps the TopBar quiet while making the dictation
+          surface something you park next to the pane you're watching. */}
+      {/* Uses the TopBar's shared IconBtn so it sits flush with the icons beside
+          it — same 28×28 box, same 6px radius, same hover/active treatment.
+          Only the colour is overridden, and only while dictation is actually
+          live, so the button reads as "recording" without breaking the row. */}
+      <IconBtn
+        label={t('voice.aria.widget')}
+        title={`${t('voice.tooltip.widget', { keys: voiceKeys })}\n${tooltip}`}
+        onClick={toggleWidget}
+        active={widgetOpen}
+        pressed={widgetOpen}
+        style={isActive || isError ? { color: fgColor } : undefined}
       >
-        {isModelLoading && <><SpinnerIcon /><span>{modelProgress > 0 ? `${modelProgress}%` : t('voice.button.loading')}</span></>}
-        {isTranscribing  && <><SpinnerIcon /><span>{t('voice.button.transcribing')}</span></>}
-        {isRecording     && <><BoltIcon /><WaveformBars levels={audioLevels} /></>}
-        {!isActive && !isModelLoading && <><MicIcon /><span>{t('voice.button.voice')}</span></>}
-      </button>
+        {/* Busy states still read from the TopBar even when the pill is hidden. */}
+        {isModelLoading || isTranscribing ? <SpinnerIcon /> : isRecording ? <BoltIcon /> : <MicIcon />}
+      </IconBtn>
     </>
   )
 }

@@ -1,10 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { onnxThreadCount } from '../lib/onnxThreads'
+import { initVad, stepVad, frameLoudness, DEFAULT_VAD, type VadState } from '../lib/vad'
 
 export type VoiceStatus = 'idle' | 'model-loading' | 'recording' | 'transcribing' | 'error'
 
-const BAR_COUNT = 5
+export const BAR_COUNT = 5
+
+// Whisper's input rate. Decoding straight to this avoids a second resampling
+// pass over the whole clip — see the decode note in `onstop`.
+const WHISPER_SAMPLE_RATE = 16000
+
+// ── Live audio levels ────────────────────────────────────────────────────────
+//
+// The waveform used to be React state written on every animation frame, so
+// recording re-rendered the component (and its parents) ~60×/s just to move
+// five bars. The levels now live in a module-scope buffer that the analyser
+// loop mutates in place; the bars read it from their own rAF and write straight
+// to the DOM. Recording is a zero-render operation, and any number of surfaces
+// (the TopBar button, the floating widget) can show the same live levels
+// without multiplying the cost.
+
+const _levels: number[] = Array(BAR_COUNT).fill(0)
+
+export function readAudioLevels(): readonly number[] {
+  return _levels
+}
 
 // Whisper models the user can pick in Settings → General → SwarmVoice
 // (persisted as the `voiceModel` app setting; store field `voiceModel`).
@@ -218,6 +239,53 @@ export function preloadVoiceModel(onProgress?: (pct: number) => void): Promise<v
   })
 }
 
+// Decode recorded WebM/Opus straight to 16 kHz mono, the only format Whisper
+// accepts. `decodeAudioData` resamples to the sample rate of the context it's
+// called on, so decoding on a 16 kHz OfflineAudioContext does the conversion as
+// part of the decode — one pass over the audio.
+//
+// The old path did three: decode on a device-rate AudioContext (which also
+// opens a real output device just to throw it away), then render the whole clip
+// through a second OfflineAudioContext purely to resample, then copy. That was
+// pure overhead on every dictation, and it scaled with clip length — the reason
+// a long clip had a visible pause between "stopped" and "transcribing".
+//
+// Returns null for a clip too short to be speech. Falls back to the original
+// two-pass route if a browser rejects the 16 kHz context, so an unusual audio
+// stack degrades in speed rather than breaking dictation.
+async function decodeTo16kMono(arrayBuffer: ArrayBuffer): Promise<Float32Array | null> {
+  try {
+    const ctx = new OfflineAudioContext(1, 1, WHISPER_SAMPLE_RATE)
+    const decoded = await ctx.decodeAudioData(arrayBuffer)
+    if (decoded.duration < 0.1) return null
+    if (decoded.sampleRate === WHISPER_SAMPLE_RATE) return decoded.getChannelData(0).slice()
+    return await resampleTo16k(decoded)
+  } catch (err) {
+    console.debug('[SwarmVoice] 16 kHz decode unavailable, falling back:', err)
+    const native = new AudioContext()
+    try {
+      const decoded = await native.decodeAudioData(arrayBuffer)
+      if (decoded.duration < 0.1) return null
+      return await resampleTo16k(decoded)
+    } finally {
+      await native.close().catch(() => {})
+    }
+  }
+}
+
+// Render an already-decoded buffer down to 16 kHz mono. Only reached when the
+// decode couldn't produce 16 kHz directly.
+async function resampleTo16k(decoded: AudioBuffer): Promise<Float32Array> {
+  const numSamples = Math.round(decoded.duration * WHISPER_SAMPLE_RATE)
+  const offline = new OfflineAudioContext(1, numSamples, WHISPER_SAMPLE_RATE)
+  const src = offline.createBufferSource()
+  src.buffer = decoded
+  src.connect(offline.destination)
+  src.start(0)
+  const rendered = await offline.startRendering()
+  return rendered.getChannelData(0).slice()
+}
+
 // Peak-normalise audio in place: scale a quiet recording up so its loudest
 // sample sits near full scale. Whisper recognises normal-volume speech more
 // reliably than faint speech, and laptop mics + conservative gain often produce
@@ -239,7 +307,6 @@ function normalizePeak(audio: Float32Array, target = 0.97): void {
 export interface UseVoiceReturn {
   status: VoiceStatus
   modelProgress: number
-  audioLevels: number[]
   lastTranscript: string
   start: () => Promise<void>
   stop: () => void
@@ -249,7 +316,6 @@ export interface UseVoiceReturn {
 export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [modelProgress, setModelProgress] = useState(0)
-  const [audioLevels, setAudioLevels] = useState<number[]>(Array(BAR_COUNT).fill(0))
   const [lastTranscript, setLastTranscript] = useState('')
   const [error, setError] = useState<string | null>(null)
 
@@ -259,6 +325,7 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
   const audioCtxRef       = useRef<AudioContext | null>(null)
   const analyserRef       = useRef<AnalyserNode | null>(null)
   const rafRef            = useRef<number | null>(null)
+  const vadRef            = useRef<VadState | null>(null)
   const callbackRef       = useRef(onTranscript)
   useEffect(() => { callbackRef.current = onTranscript }, [onTranscript])
 
@@ -268,7 +335,7 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
     try { audioCtxRef.current?.close() } catch { /* ignore */ }
     audioCtxRef.current = null
     analyserRef.current = null
-    setAudioLevels(Array(BAR_COUNT).fill(0))
+    _levels.fill(0)
   }, [])
 
   const cleanup = useCallback(() => {
@@ -334,15 +401,33 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
 
       const buf      = new Uint8Array(analyser.frequencyBinCount)
       const binCount = analyser.frequencyBinCount
+      // Auto-stop bookkeeping. Read the setting once per recording so toggling
+      // it mid-sentence can't end the clip the user is in the middle of.
+      const autoStop = useWorkspaceStore.getState().voiceAutoStop
+      vadRef.current = initVad(performance.now())
+
       const tick = () => {
         analyser.getByteFrequencyData(buf)
-        setAudioLevels(Array.from({ length: BAR_COUNT }, (_, i) => {
+        // Mutate the shared buffer in place — no React state, no re-render.
+        for (let i = 0; i < BAR_COUNT; i++) {
           const lo = Math.floor((i / BAR_COUNT) * binCount * 0.6)
           const hi = Math.floor(((i + 1) / BAR_COUNT) * binCount * 0.6)
           let sum = 0
           for (let j = lo; j < hi; j++) sum += buf[j]
-          return Math.min(1, (sum / Math.max(1, hi - lo)) / 140)
-        }))
+          _levels[i] = Math.min(1, (sum / Math.max(1, hi - lo)) / 140)
+        }
+
+        if (autoStop && vadRef.current) {
+          const { state, verdict } = stepVad(vadRef.current, frameLoudness(buf), performance.now())
+          vadRef.current = state
+          if (verdict === 'stop-silence' || verdict === 'stop-max') {
+            // End the clip from inside the frame loop: cancel first so the
+            // recorder's async onstop can't race another tick.
+            rafRef.current = null
+            if (mediaRecorderRef.current?.state === 'recording') mediaRecorderRef.current.stop()
+            return
+          }
+        }
         rafRef.current = requestAnimationFrame(tick)
       }
       rafRef.current = requestAnimationFrame(tick)
@@ -368,24 +453,11 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
       cleanup()
       setStatus('transcribing')
       try {
-        // Decode WebM/Opus → 16 kHz mono Float32 (Whisper's expected format)
+        // Decode WebM/Opus → 16 kHz mono Float32 (Whisper's expected format).
         const blob        = new Blob(chunksRef.current, { type: 'audio/webm' })
         const arrayBuffer = await blob.arrayBuffer()
-
-        const nativeCtx = new AudioContext()
-        const decoded   = await nativeCtx.decodeAudioData(arrayBuffer)
-        await nativeCtx.close()
-
-        if (decoded.duration < 0.1) { setStatus('idle'); return }
-
-        const numSamples  = Math.round(decoded.duration * 16000)
-        const offlineCtx  = new OfflineAudioContext(1, numSamples, 16000)
-        const src         = offlineCtx.createBufferSource()
-        src.buffer        = decoded
-        src.connect(offlineCtx.destination)
-        src.start(0)
-        const resampled   = await offlineCtx.startRendering()
-        const audio       = resampled.getChannelData(0).slice()
+        const audio       = await decodeTo16kMono(arrayBuffer)
+        if (!audio) { setStatus('idle'); return }
 
         // Boost quiet recordings toward full scale before transcription.
         normalizePeak(audio)
@@ -426,5 +498,5 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
     cleanup()
   }, [cleanup])
 
-  return { status, modelProgress, audioLevels, lastTranscript, start, stop, error }
+  return { status, modelProgress, lastTranscript, start, stop, error }
 }

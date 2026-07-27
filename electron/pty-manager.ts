@@ -103,6 +103,14 @@ interface PtyEntry {
   // Last cumulative cost (USD) parsed from this agent's output, so we only emit a
   // `cost` event when the figure actually advances.
   lastCostUsd?: number
+  // Output chunks emitted by the pty since the last flush, plus the timer that
+  // will drain them. See the output-batching note below.
+  outBuf?: string[]
+  flushTimer?: ReturnType<typeof setTimeout>
+  // Drains `outBuf` immediately. Held on the entry so the kill path can flush a
+  // dying pty's last frame *before* a replacement pty starts writing to the same
+  // pane — otherwise the two processes' output could interleave.
+  flush?: () => void
   // The renderer window, so input-side detectors (e.g. `/loop`) can post events.
   win?: BrowserWindow
   // Buffer of the current input line (printable keystrokes/paste since the last
@@ -320,6 +328,22 @@ function injectMcpConfig(agentId: AgentId, cwd: string, mcpUrl: string, workspac
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+// ── Output batching ──────────────────────────────────────────────────────────
+//
+// node-pty emits at sub-millisecond granularity: a build log or a streaming
+// agent produces thousands of small chunks a second. Forwarding each one on its
+// own costs an IPC hop (structured clone + a renderer task) and, for agent
+// panes, a fresh 4 KB tail allocation plus a full cost re-scan of that tail —
+// all on the main process, which also pumps every *other* pty, SQLite, the MCP
+// server and the language-service client. One noisy pane therefore degraded
+// every pane.
+//
+// So a pane's chunks are coalesced into a frame-sized window and the whole
+// analysis runs once per flush instead of once per chunk. Ordering is preserved
+// (one FIFO buffer per pane) and the added latency is invisible next to a
+// display frame, but the per-chunk work becomes per-frame work.
+const OUTPUT_FLUSH_MS = 12
+
 // Wire a freshly spawned pty's I/O to the renderer and register it. When
 // `agentId` is set (coding agent, not a bare shell) we also track activity and
 // emit `pty:state` ('working'/'waiting'), notifying the OS when an agent goes
@@ -356,35 +380,58 @@ function attachPty(paneId: string, ptyProcess: pty.IPty, win: BrowserWindow, age
     }
   }
 
-  ptyProcess.onData((data) => {
+  // Drain everything buffered for this pane in one IPC message, then run the
+  // agent-side analysis once over the coalesced text. Safe to call at any time —
+  // a no-op when nothing is pending.
+  const flushOutput = (): void => {
+    if (entry.flushTimer) {
+      clearTimeout(entry.flushTimer)
+      entry.flushTimer = undefined
+    }
+    const chunks = entry.outBuf
+    if (!chunks || chunks.length === 0) return
+    entry.outBuf = []
+    const data = chunks.length === 1 ? chunks[0] : chunks.join('')
+
     if (!win.isDestroyed()) win.webContents.send('pty:output', paneId, data)
-    if (entry.agentId) {
-      // Keep a rolling, ANSI-stripped tail of output so we can tell a question
-      // prompt from an ordinary finished turn when the agent goes quiet.
-      entry.recentOutput = ((entry.recentOutput ?? '') + stripAnsi(data)).slice(-4000)
-      setState('working')
-      if (entry.idleTimer) clearTimeout(entry.idleTimer)
-      entry.idleTimer = setTimeout(() => setState('waiting'), agentIdleMs)
-      // Cost meter: emit a `cost` event whenever the parsed cumulative spend
-      // advances. Cheap to run per chunk since it only scans the tail.
-      if (entry.workspaceId) {
-        const usd = parseCostUsd(entry.recentOutput)
-        if (usd !== null && usd > (entry.lastCostUsd ?? -1) + 1e-9) {
-          entry.lastCostUsd = usd
-          const tokens = parseTokens(entry.recentOutput ?? '') ?? undefined
-          runWithWorkspace(entry.workspaceId, () =>
-            eventEmit(entry.workspaceId!, 'cost', {
-              agentId: entry.agentId,
-              paneId,
-              payload: { usd, tokens },
-            }))
-        }
+    if (!entry.agentId) return
+
+    // Keep a rolling, ANSI-stripped tail of output so we can tell a question
+    // prompt from an ordinary finished turn when the agent goes quiet.
+    entry.recentOutput = ((entry.recentOutput ?? '') + stripAnsi(data)).slice(-4000)
+    setState('working')
+    if (entry.idleTimer) clearTimeout(entry.idleTimer)
+    entry.idleTimer = setTimeout(() => setState('waiting'), agentIdleMs)
+    // Cost meter: emit a `cost` event whenever the parsed cumulative spend
+    // advances. Only scans the tail, and now only once per flush.
+    if (entry.workspaceId) {
+      const usd = parseCostUsd(entry.recentOutput)
+      if (usd !== null && usd > (entry.lastCostUsd ?? -1) + 1e-9) {
+        entry.lastCostUsd = usd
+        const tokens = parseTokens(entry.recentOutput ?? '') ?? undefined
+        runWithWorkspace(entry.workspaceId, () =>
+          eventEmit(entry.workspaceId!, 'cost', {
+            agentId: entry.agentId,
+            paneId,
+            payload: { usd, tokens },
+          }))
       }
     }
+  }
+  entry.flush = flushOutput
+
+  ptyProcess.onData((data) => {
+    if (entry.outBuf) entry.outBuf.push(data)
+    else entry.outBuf = [data]
+    if (!entry.flushTimer) entry.flushTimer = setTimeout(flushOutput, OUTPUT_FLUSH_MS)
   })
 
   ptyProcess.onExit(({ exitCode }) => {
     entry.status = 'exited'
+    // Emit whatever the process wrote in its final frame *before* the exit
+    // event, so trailing output isn't dropped or delivered after the pane has
+    // already been torn down.
+    flushOutput()
     if (entry.idleTimer) clearTimeout(entry.idleTimer)
     if (entry.replaced) return  // silently replaced — don't notify the renderer
     if (entry.agentId && entry.workspaceId) {
@@ -586,7 +633,12 @@ export function ptyKill(paneId: string, silent = false): void {
   const entry = processes.get(paneId)
   if (entry) {
     if (silent) entry.replaced = true  // suppress the pty:exit event for this kill
+    // Drain the pending output frame now: this pane may be about to host a
+    // replacement pty, and a late flush would interleave the dead process's
+    // output with the new one's.
+    entry.flush?.()
     if (entry.idleTimer) clearTimeout(entry.idleTimer)
+    if (entry.flushTimer) clearTimeout(entry.flushTimer)
     try { entry.process.kill() } catch { /* already dead */ }
     processes.delete(paneId)
   }

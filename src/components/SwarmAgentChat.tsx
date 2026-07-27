@@ -6,6 +6,7 @@ import { useFileMentions } from '../hooks/useFileMentions'
 import { useT, type TFunction } from '../i18n'
 import { Markdown } from '../lib/markdown'
 import { extractFileBlocks } from '../lib/codeBlocks'
+import { WaveformBars } from './WaveformBars'
 import logoUrl from '../assets/logo.png'
 import './SwarmAgentChat.css'
 
@@ -206,7 +207,7 @@ export function SwarmAgentChat() {
             ) : voiceTranscribing ? (
               <span className="sa-mic-load"><span className="sa-spinner" />{t('voice.button.transcribing')}</span>
             ) : voiceRecording ? (
-              <WaveformBars levels={voice.audioLevels} />
+              <WaveformBars active={voice.status === 'recording'} className="sa-mic-wave" />
             ) : (
               <MicIcon />
             )}
@@ -307,24 +308,6 @@ function ApplyFromChat({ content, t }: { content: string; t: TFunction }) {
 
 // Live mic level bars while recording — mirrors SwarmVoice's waveform. Falls
 // back to a gentle idle pulse when there's no signal yet.
-function WaveformBars({ levels }: { levels: number[] }) {
-  const hasSignal = levels.some(l => l > 0.02)
-  return (
-    <span className="sa-mic-wave" aria-hidden>
-      {levels.map((level, i) => (
-        <i
-          key={i}
-          style={{
-            transition: hasSignal ? 'transform 55ms ease-out' : undefined,
-            transform: hasSignal ? `scaleY(${Math.max(0.18, level)})` : undefined,
-            animation: hasSignal ? 'none' : `voice-bar-pulse 0.55s ease-in-out ${i * 0.11}s infinite alternate`,
-          }}
-        />
-      ))}
-    </span>
-  )
-}
-
 // Suggestion chips shown on the empty state — clicking sends the prompt. Three
 // sets, chosen by workspace state so the assistant proposes a relevant next step.
 type TKey = Parameters<TFunction>[0]
