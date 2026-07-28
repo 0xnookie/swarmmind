@@ -6,6 +6,32 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.24.1]
+
+**The wake word reacts about twice as fast.** Saying "hey swarm" took around
+three and a half seconds to do anything; it's now closer to a second and a half.
+Dictation stops waiting around after you finish talking, too.
+
+### Changed
+- **Wake word latency roughly halved.** Three separate delays, all cut:
+  - The pause the app waits through before deciding you've finished the phrase
+    is down from 0.7s to 0.35s. If it ever cuts in early, nothing breaks — that
+    just becomes the ordinary "hey swarm" → talk flow.
+  - Recognising the phrase now runs on a smaller, faster model than the one used
+    for dictation — measured at **1.2s instead of 2.4s** per check. Dictation
+    keeps whichever model you chose, so nothing gets less accurate: the small
+    model only ever decides whether you said the wake phrase.
+  - When the phrase opens dictation, the microphone is passed straight across
+    instead of being closed and reopened, removing a device round trip from the
+    exact moment you're waiting to speak.
+- **Dictation responds sooner after you stop speaking** — the silence it waits
+  for before transcribing is down from 1.8s to 1.2s, still comfortably longer
+  than a pause for breath mid-sentence.
+
+### Fixed
+- Closed three paths where a microphone handed between the wake listener and
+  dictation could have been left open with nothing owning it.
+
 ## [0.24.0]
 
 **Hands-free dictation, and an editor that remembers where you were.** Say "hey
