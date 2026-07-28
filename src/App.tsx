@@ -35,6 +35,7 @@ import { useWidgetBridge } from './hooks/useWidgetBridge'
 import { useWorkspaceStore, buildLayoutForCount, selectTerminalsVisible, type AgentId, type ShellStyle } from './store/workspace'
 import { parseSnippets } from './lib/snippets'
 import { parsePosition } from './lib/dragWidget'
+import { isValidWakePhrase } from './lib/wakeWord'
 import { playCue } from './lib/audioCues'
 import { SHORTCUTS, matchEvent, getEffectiveKeys } from './shortcuts'
 import type { ThemePreset, UiDensity, UiFontId, MonoFontId } from './appearance'
@@ -117,6 +118,14 @@ export default function App() {
     window.swarmmind.getAppSetting('voicePreload').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ voicePreload: val !== '0' })
     }).catch(() => {})
+    window.swarmmind.getAppSetting('voiceWakeEnabled').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ voiceWakeEnabled: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('voiceWakePhrase').then(val => {
+      // Validate on the way in: a phrase saved by an older/hand-edited build
+      // that the matcher would reject must not leave wake mode silently dead.
+      if (val && isValidWakePhrase(val)) useWorkspaceStore.setState({ voiceWakePhrase: val })
+    }).catch(() => {})
     window.swarmmind.getAppSetting('voiceAutoStop').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ voiceAutoStop: val !== '0' })
     }).catch(() => {})
@@ -129,6 +138,9 @@ export default function App() {
     }).catch(() => {})
     window.swarmmind.getAppSetting('editorGhostText').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ ghostTextEnabled: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('editorWordWrap').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ editorWordWrap: val !== '0' })
     }).catch(() => {})
     window.swarmmind.getAppSetting('editorSnippets').then(val => {
       useWorkspaceStore.setState({ snippets: parseSnippets(val) })

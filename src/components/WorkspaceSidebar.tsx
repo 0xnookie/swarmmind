@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { confirmDialog } from './ConfirmDialog'
+import { ChevronDown } from './Icons'
 import { useT } from '../i18n'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -304,14 +305,6 @@ function IconPlus() {
   )
 }
 
-function IconChevronDown() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polyline points="6 9 12 15 18 9"/>
-    </svg>
-  )
-}
-
 // ── Icon button helper ────────────────────────────────────────────────────────
 
 function IconBtn({
@@ -529,7 +522,7 @@ function SectionHeader({ label, count, collapsed, onToggle, dropActive, onDragOv
         display: 'inline-flex', transition: 'transform 120ms ease-out',
         transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
       }}>
-        <IconChevronDown />
+        <ChevronDown />
       </span>
       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
       <span style={{ color: 'var(--text-dim)' }}>{count}</span>
@@ -911,7 +904,7 @@ export default function WorkspaceSidebar({ onOpenWorkspace }: WorkspaceSidebarPr
         </span>
         <div style={{ display: 'flex', gap: 4, position: 'relative' }}>
           <IconBtn label={t('sidebar.newWorkspace')} onClick={onOpenWorkspace}><IconPlus /></IconBtn>
-          <IconBtn label={t('sidebar.menu')} onClick={e => { e.stopPropagation(); setMenuOpen(v => !v) }}><IconChevronDown /></IconBtn>
+          <IconBtn label={t('sidebar.menu')} onClick={e => { e.stopPropagation(); setMenuOpen(v => !v) }}><ChevronDown /></IconBtn>
           {menuOpen && (
             <WorkspaceMenu
               onSortName={handleSortName}

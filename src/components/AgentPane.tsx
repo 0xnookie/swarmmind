@@ -7,6 +7,7 @@ import { AGENTS, AgentIcon } from '../data/agents'
 import { matchEvent, getEffectiveKeys } from '../shortcuts'
 import { resolveTemplate, extractInputTokens } from '../lib/skillTemplate'
 import { useT } from '../i18n'
+import { ChevronDown, ChevronUp } from './Icons'
 import '@xterm/xterm/css/xterm.css'
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -911,8 +912,8 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
                 else if (e.key === 'Escape') { e.preventDefault(); setSearchOpen(false); clearSearch() }
               }}
             />
-            <button style={styles.searchBtn} onClick={() => findPrevious(searchQuery)} title={t('pane.searchPrev')}>↑</button>
-            <button style={styles.searchBtn} onClick={() => findNext(searchQuery)} title={t('pane.searchNext')}>↓</button>
+            <button style={styles.searchBtn} onClick={() => findPrevious(searchQuery)} title={t('pane.searchPrev')}><ChevronUp size={12} /></button>
+            <button style={styles.searchBtn} onClick={() => findNext(searchQuery)} title={t('pane.searchNext')}><ChevronDown size={12} /></button>
             <button style={styles.searchBtn} onClick={() => { setSearchOpen(false); clearSearch() }} title={t('pane.searchClose')}>✕</button>
           </div>
         )}

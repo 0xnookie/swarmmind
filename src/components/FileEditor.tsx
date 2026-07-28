@@ -3,9 +3,11 @@ import { useT } from '../i18n'
 import { useWorkspaceStore } from '../store/workspace'
 import ReactCodeMirror, { type ViewUpdate } from '@uiw/react-codemirror'
 import { EditorView, keymap } from '@codemirror/view'
-import { Prec, type Extension } from '@codemirror/state'
+import { Compartment, EditorSelection, Prec, type Extension } from '@codemirror/state'
+import { gotoLine } from '@codemirror/search'
 import { indentationMarkers } from '@replit/codemirror-indentation-markers'
 import { editorTheme } from '../editor/theme'
+import { codeFolding, foldAll, unfoldAll } from '../editor/folding'
 import { loadLanguage, languageName } from '../editor/languages'
 import { inlineEdit, setEditHighlight } from '../editor/inlineEdit'
 import { ghostCompletion } from '../editor/autocomplete'
@@ -17,7 +19,11 @@ import { fuzzyRank } from '../lib/fuzzy'
 import { resolveNextEditTarget, type NextEditTarget } from '../lib/nextEdit'
 import { mergeDiagnostics, summarizeDiagnostics, type RawDiag } from '../lib/diagnostics'
 import { buildRenamePlan, toWorkspaceRelative } from '../lib/rename'
+import {
+  clampViewState, rememberViewState, type ViewStateMap,
+} from '../lib/editorViewState'
 import { renderDiffRows } from './DiffRows'
+import { BreadcrumbSep, FoldVertical, UnfoldVertical, WrapText } from './Icons'
 
 // How many lines of surrounding context to send the model with an inline edit.
 const CONTEXT_LINES = 40
@@ -71,6 +77,19 @@ interface CursorInfo {
   cursors: number
 }
 
+// Cursor + scroll position per file, so switching tabs and coming back lands
+// you where you left off instead of at line 1. Module scope, not component
+// state: FilePanel keys this component by path, so every tab switch unmounts it
+// — anything held in a hook dies with the instance. Bounded by the pure
+// `rememberViewState` (see `lib/editorViewState.ts`).
+let viewStates: ViewStateMap = {}
+
+// Word wrap is reconfigured through a compartment rather than by rebuilding the
+// extension array. Rebuilding would tear down and recreate the ghost-text and
+// inline-edit plugins — dropping an in-flight completion — just to toggle a
+// boolean.
+const wrapCompartment = new Compartment()
+
 // Static (per-mount) extensions: VS Code-style Alt+Click adds a cursor,
 // indent guides match the theme's border colours.
 const staticExtensions: Extension[] = [
@@ -88,6 +107,51 @@ const staticExtensions: Extension[] = [
     },
   }),
 ]
+
+// The one look for every control in the editor's status bar. Each of these used
+// to hand-roll the same six style properties, which is how a row of buttons ends
+// up with three different heights.
+function StatusButton({
+  onClick, title, children, active, disabled, color, square,
+}: {
+  onClick: () => void
+  title?: string
+  children: React.ReactNode
+  /** Toggled-on look (accent tint), for controls that hold a state. */
+  active?: boolean
+  disabled?: boolean
+  /** Overrides the label colour — used to carry diagnostic severity. */
+  color?: string
+  /** Icon-only: drop the horizontal padding to a square. */
+  square?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-pressed={active === undefined ? undefined : active}
+      style={{
+        height: 18,
+        minWidth: square ? 22 : undefined,
+        padding: square ? 0 : '0 8px',
+        fontSize: 10.5,
+        fontWeight: 600,
+        border: '1px solid var(--border)',
+        borderRadius: 3,
+        cursor: disabled ? 'default' : 'pointer',
+        background: active ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'transparent',
+        color: color ?? (active ? 'var(--accent)' : 'var(--text-secondary)'),
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 4,
+      }}
+    >
+      {children}
+    </button>
+  )
+}
 
 export function FileEditor({
   filePath,
@@ -156,6 +220,85 @@ export function FileEditor({
   const hintRef = useRef<NextEditTarget | null>(null)
   editRef.current = edit
   hintRef.current = nextEditHint
+
+  // ── Word wrap (Alt+Z) ───────────────────────────────────────────────────────
+  const wordWrap = useWorkspaceStore((s) => s.editorWordWrap)
+  const setEditorWordWrap = useWorkspaceStore((s) => s.setEditorWordWrap)
+  // Read by the extension builder (for the initial value) and by the keymap,
+  // both of which are built once and must not close over a stale boolean.
+  const wordWrapRef = useRef(wordWrap)
+  wordWrapRef.current = wordWrap
+  const toggleWrapRef = useRef<() => void>(() => {})
+  toggleWrapRef.current = () => setEditorWordWrap(!wordWrapRef.current)
+
+  // Push the setting into the live view. Reconfiguring a compartment leaves
+  // every other extension (and any in-flight ghost completion) untouched.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: wrapCompartment.reconfigure(wordWrap ? EditorView.lineWrapping : []),
+    })
+  }, [wordWrap])
+
+  // ── Per-file cursor + scroll memory ─────────────────────────────────────────
+  // The position is tracked *live* into a ref rather than read off the DOM when
+  // the component unmounts. Effect cleanups for a deleted subtree can run after
+  // React has already detached the node, and a detached element reports
+  // `scrollTop === 0` — so the save-at-teardown version faithfully remembered
+  // "top of file" every single time. Selection survived (it lives in CodeMirror
+  // state, not the DOM), which is what made the bug look half-working.
+  const posRef = useRef<{ anchor: number; head: number; scrollTop: number } | null>(null)
+  const recordPosition = (view: EditorView) => {
+    const sel = view.state.selection.main
+    posRef.current = { anchor: sel.anchor, head: sel.head, scrollTop: view.scrollDOM.scrollTop }
+  }
+
+  useEffect(() => {
+    const path = filePath
+    if (!path) return
+    return () => {
+      if (posRef.current) viewStates = rememberViewState(viewStates, path, posRef.current)
+    }
+    // Mount/unmount only: `filePath` is fixed for the lifetime of an instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Restore. `openFileAtLine` (the terminal→editor jump) takes precedence — it
+  // is an explicit request for a specific line, so it must not be overwritten by
+  // wherever the cursor happened to be last time.
+  const restoredRef = useRef(false)
+  const restoreView = (view: EditorView) => {
+    if (restoredRef.current || !filePath) return
+    restoredRef.current = true
+    const pending = useWorkspaceStore.getState().editorReveal
+    if (pending && pending.path === filePath) return
+    const st = clampViewState(viewStates[filePath], view.state.doc.length)
+    if (!st) return
+    view.dispatch({ selection: EditorSelection.range(st.anchor, st.head) })
+    if (st.scrollTop <= 0) return
+
+    // The scroll can't be applied yet. At creation time CodeMirror has rendered
+    // only the first viewport-worth of lines, so `scrollHeight` is barely more
+    // than `clientHeight` and any target beyond it clamps to 0 — which is why
+    // doing this in a `requestMeasure` write phase silently restored nothing.
+    // Retry across frames until the document is tall enough to hold the
+    // position, then stop. Bounded, so a file that genuinely doesn't scroll
+    // costs a handful of no-op frames and nothing more.
+    let frames = 0
+    const applyScroll = () => {
+      if (viewRef.current !== view) return // the editor was replaced meanwhile
+      const el = view.scrollDOM
+      const max = el.scrollHeight - el.clientHeight
+      if (max >= st.scrollTop || frames++ > 40) {
+        el.scrollTop = Math.min(st.scrollTop, Math.max(0, max))
+        recordPosition(view)
+        return
+      }
+      requestAnimationFrame(applyScroll)
+    }
+    requestAnimationFrame(applyScroll)
+  }
 
   // Terminal→editor bridge: consume a one-shot reveal seed (openFileAtLine) once
   // this editor shows the requested file. The CodeMirror view is created by
@@ -695,6 +838,12 @@ export function FileEditor({
       // gutter markers and a problem count with NO underline and no lint tooltip.
       // Installing the field up front means the very first dispatch renders.
       linter(null),
+      // Fold gutter with the app's chevron instead of CodeMirror's default text
+      // glyphs (basicSetup's own `foldGutter` is switched off below).
+      codeFolding,
+      // Seeded from the persisted setting; toggled later via the compartment so
+      // the surrounding plugins survive.
+      wrapCompartment.of(wordWrapRef.current ? EditorView.lineWrapping : []),
       // Language-service surfaces. Both read the open file through a ref, so the
       // extensions are built once and never rebuilt on a file switch.
       lspHover(() => filePathRef.current),
@@ -707,6 +856,20 @@ export function FileEditor({
             key: 'F2',
             run: (view) => {
               renameRef.current(view)
+              return true
+            },
+          },
+          {
+            // Ctrl/⌘-G → go to line. CodeMirror's search keymap files this
+            // under Mod-Alt-g; every IDE the user came from uses Mod-g.
+            key: 'Mod-g',
+            run: gotoLine,
+          },
+          {
+            // Alt+Z → toggle soft wrap, VS Code's binding.
+            key: 'Alt-z',
+            run: () => {
+              toggleWrapRef.current()
               return true
             },
           },
@@ -770,6 +933,7 @@ export function FileEditor({
     // A manual edit invalidates a pending next-edit hint (its line may have moved).
     if (vu.docChanged && hintRef.current) setNextEditHint(null)
     if (!vu.selectionSet && !vu.docChanged) return
+    recordPosition(vu.view)
     const sel = vu.state.selection
     const main = sel.main
     const line = vu.state.doc.lineAt(main.head)
@@ -830,12 +994,31 @@ export function FileEditor({
           onUpdate={handleUpdate}
           onCreateEditor={(view) => {
             viewRef.current = view
+            // Keep the remembered position current while the user scrolls. rAF
+            // coalesces a scroll gesture's ~60 events/sec into one record per
+            // frame; the listener is passive so it never blocks the scroll.
+            let queued = false
+            view.scrollDOM.addEventListener(
+              'scroll',
+              () => {
+                if (queued) return
+                queued = true
+                requestAnimationFrame(() => {
+                  queued = false
+                  if (viewRef.current === view) recordPosition(view)
+                })
+              },
+              { passive: true }
+            )
+            restoreView(view)
           }}
           height="100%"
           style={{ height: '100%' }}
           basicSetup={{
             lineNumbers: true,
-            foldGutter: true,
+            // Off: replaced by `codeFolding` above, which draws a real chevron.
+            // basicSetup's foldGutter takes no options, so it can't be styled.
+            foldGutter: false,
             dropCursor: true,
             allowMultipleSelections: true,
             indentOnInput: true,
@@ -1086,7 +1269,9 @@ export function FileEditor({
           whiteSpace: 'nowrap',
         }}
       >
-        {/* Breadcrumb */}
+        {/* Breadcrumb — real chevrons between the segments, so the separators
+            sit on the text's optical centre instead of hanging off the baseline
+            the way the `›` character does. */}
         <span
           style={{
             flex: 1,
@@ -1096,7 +1281,16 @@ export function FileEditor({
           }}
           title={filePath}
         >
-          {(relPath ?? fileName ?? '').split(/[\\/]/).join('  ›  ')}
+          {(relPath ?? fileName ?? '')
+            .split(/[\\/]/)
+            .map((seg, i, all) => (
+              <React.Fragment key={`${seg}-${i}`}>
+                <span style={i === all.length - 1 ? { color: 'var(--text-secondary)' } : undefined}>
+                  {seg}
+                </span>
+                {i < all.length - 1 && <BreadcrumbSep />}
+              </React.Fragment>
+            ))}
         </span>
 
         {cursor.cursors > 1 ? (
@@ -1109,6 +1303,43 @@ export function FileEditor({
         )}
 
         <span>{langName ?? t('file.plainText')}</span>
+
+        {/* View controls: folding and soft wrap. Icon-only — they're frequent,
+            and a labelled button for each would crowd out the AI controls. */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <StatusButton
+            onClick={() => {
+              const view = viewRef.current
+              if (!view) return
+              foldAll(view)
+              view.focus()
+            }}
+            title={t('file.fold.allTooltip')}
+            square
+          >
+            <FoldVertical size={14} />
+          </StatusButton>
+          <StatusButton
+            onClick={() => {
+              const view = viewRef.current
+              if (!view) return
+              unfoldAll(view)
+              view.focus()
+            }}
+            title={t('file.fold.unfoldAllTooltip')}
+            square
+          >
+            <UnfoldVertical size={14} />
+          </StatusButton>
+          <StatusButton
+            onClick={() => setEditorWordWrap(!wordWrap)}
+            title={t('file.wrap.tooltip')}
+            active={wordWrap}
+            square
+          >
+            <WrapText size={14} />
+          </StatusButton>
+        </div>
 
         {/* Compiler status — live, no click needed. Absent for non-TS/JS files. */}
         {tsSummary && (
@@ -1135,30 +1366,19 @@ export function FileEditor({
           </span>
         )}
 
-        <button
+        <StatusButton
           onClick={runDiagnostics}
           disabled={diagnosing}
           title={diagError ?? t('file.diag.tooltip')}
-          style={{
-            height: 18,
-            padding: '0 8px',
-            fontSize: 10.5,
-            fontWeight: 600,
-            border: '1px solid var(--border)',
-            borderRadius: 3,
-            cursor: diagnosing ? 'default' : 'pointer',
-            background: 'transparent',
-            color: diagError
+          color={
+            diagError
               ? '#e57373'
               : diagCount === 0
                 ? '#7cba7c'
                 : diagCount && diagCount > 0
                   ? '#e0a44a'
-                  : 'var(--text-secondary)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-          }}
+                  : 'var(--text-secondary)'
+          }
         >
           {diagnosing
             ? t('file.diag.analyzing')
@@ -1169,51 +1389,27 @@ export function FileEditor({
                 : diagCount && diagCount > 0
                   ? `⚠ ${t('file.diag.count', { n: diagCount })}`
                   : `⚠ ${t('file.diag.label')}`}
-        </button>
+        </StatusButton>
 
-        <button
+        <StatusButton
           onClick={() => setGhostTextEnabled(!ghostEnabled)}
           title={t('file.ghost.tooltip')}
-          style={{
-            height: 18,
-            padding: '0 8px',
-            fontSize: 10.5,
-            fontWeight: 600,
-            border: '1px solid var(--border)',
-            borderRadius: 3,
-            cursor: 'pointer',
-            background: ghostEnabled ? 'color-mix(in srgb, var(--accent) 18%, transparent)' : 'transparent',
-            color: ghostEnabled ? 'var(--accent)' : 'var(--text-dim)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-          }}
+          active={ghostEnabled}
+          color={ghostEnabled ? 'var(--accent)' : 'var(--text-dim)'}
         >
           {ghostEnabled ? '⊳' : '⊝'} {t('file.ghost.label')}
-        </button>
+        </StatusButton>
 
         <div style={{ position: 'relative' }}>
-          <button
+          <StatusButton
             onClick={() => setSnipOpen((o) => !o)}
             title={t('file.snip.tooltip')}
-            style={{
-              height: 18,
-              padding: '0 8px',
-              fontSize: 10.5,
-              fontWeight: 600,
-              border: '1px solid var(--border)',
-              borderRadius: 3,
-              cursor: 'pointer',
-              background: snipOpen ? 'var(--bg-elevated)' : 'transparent',
-              color: 'var(--text-secondary)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-            }}
+            active={snipOpen}
+            color="var(--text-secondary)"
           >
             ❏ {t('file.snip.label')}
             {snippets.length > 0 && <span style={{ opacity: 0.6 }}>({snippets.length})</span>}
-          </button>
+          </StatusButton>
           {snipOpen && (
             <div
               style={{

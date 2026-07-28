@@ -63,7 +63,11 @@ import {
   resolveProvider, providerErrorMessage, filterChatModels, toAnthropicTools,
   toAnthropicMessages, parseToolArguments, fromAnthropicContent, refusalMessage,
 } from '../electron/lib/aiProvider.ts'
-import { initVad, stepVad, frameLoudness } from '../src/lib/vad.ts'
+import { initVad, stepVad, frameLoudness, WAKE_VAD, DEFAULT_VAD } from '../src/lib/vad.ts'
+import {
+  normalizeSpeech, editDistance, wordsMatch, isValidWakePhrase, matchWakeWord,
+  DEFAULT_WAKE_PHRASE,
+} from '../src/lib/wakeWord.ts'
 import {
   clampToViewport, dragPosition, defaultPosition, parsePosition,
 } from '../src/lib/dragWidget.ts'
@@ -72,6 +76,10 @@ import {
   exportFileBase, agentPalette, renderSessionMarkdown, renderSessionHtml,
   type ExportEvent,
 } from '../src/lib/sessionExport.ts'
+import {
+  rememberViewState, forgetViewState, clampViewState, MAX_REMEMBERED_FILES,
+  type ViewStateMap,
+} from '../src/lib/editorViewState.ts'
 
 let pass = 0
 let fail = 0
@@ -2069,6 +2077,131 @@ t('aiProvider: a refusal is detectable before reading content', () => {
   assert.match(refusalMessage('refusal') ?? '', /declined/i)
   assert.equal(refusalMessage('end_turn'), null)
   assert.equal(refusalMessage(null), null)
+})
+
+// ---------- editorViewState (per-file cursor/scroll memory) ----------
+t('editorViewState: recording moves a path to the most-recent end', () => {
+  let m: ViewStateMap = {}
+  m = rememberViewState(m, 'a.ts', { anchor: 1, head: 1, scrollTop: 0 })
+  m = rememberViewState(m, 'b.ts', { anchor: 2, head: 2, scrollTop: 0 })
+  assert.deepEqual(Object.keys(m), ['a.ts', 'b.ts'])
+  // Re-recording a.ts makes it the newest, so b.ts becomes the eviction candidate.
+  m = rememberViewState(m, 'a.ts', { anchor: 9, head: 9, scrollTop: 40 })
+  assert.deepEqual(Object.keys(m), ['b.ts', 'a.ts'])
+  assert.equal(m['a.ts'].anchor, 9)
+})
+t('editorViewState: the map is bounded, dropping the least recent first', () => {
+  let m: ViewStateMap = {}
+  for (let i = 0; i < 5; i++) m = rememberViewState(m, `f${i}.ts`, { anchor: i, head: i, scrollTop: 0 }, 3)
+  assert.deepEqual(Object.keys(m), ['f2.ts', 'f3.ts', 'f4.ts'])
+  // The default cap is a real number, not accidentally 0/undefined.
+  assert.ok(MAX_REMEMBERED_FILES > 1)
+})
+t('editorViewState: forget drops one path and leaves the rest identical', () => {
+  const m: ViewStateMap = {
+    'a.ts': { anchor: 1, head: 1, scrollTop: 0 },
+    'b.ts': { anchor: 2, head: 2, scrollTop: 0 },
+  }
+  assert.deepEqual(Object.keys(forgetViewState(m, 'a.ts')), ['b.ts'])
+  // Nothing to remove → the same object back (no needless re-render churn).
+  assert.equal(forgetViewState(m, 'nope.ts'), m)
+})
+t('editorViewState: a stale offset is clamped into the document, never thrown', () => {
+  // The file shrank since we last saw it (an agent rewrote it). Dispatching the
+  // remembered offset unclamped would make CodeMirror throw and blank the panel.
+  assert.deepEqual(clampViewState({ anchor: 900, head: 950, scrollTop: 400 }, 100), {
+    anchor: 100, head: 100, scrollTop: 400,
+  })
+  assert.deepEqual(clampViewState({ anchor: -5, head: 12, scrollTop: -3 }, 100), {
+    anchor: 0, head: 12, scrollTop: 0,
+  })
+  assert.deepEqual(clampViewState({ anchor: NaN, head: Infinity, scrollTop: NaN }, 100), null)
+})
+t('editorViewState: top-of-file and missing states restore nothing', () => {
+  // Restoring "line 1, scroll 0" is indistinguishable from the default, so it
+  // reports null rather than costing a dispatch on every tab switch.
+  assert.equal(clampViewState({ anchor: 0, head: 0, scrollTop: 0 }, 500), null)
+  assert.equal(clampViewState(undefined, 500), null)
+  assert.equal(clampViewState(null, 500), null)
+  // But a pure scroll with no selection *is* worth restoring.
+  assert.deepEqual(clampViewState({ anchor: 0, head: 0, scrollTop: 220 }, 500), {
+    anchor: 0, head: 0, scrollTop: 220,
+  })
+})
+
+// ---------- wakeWord (SwarmVoice hands-free trigger) ----------
+t('wakeWord: the model’s punctuation and casing never block a match', () => {
+  // Whisper decides these, not the user — a string compare would miss every time.
+  for (const said of ['Hey, Swarm.', 'HEY SWARM', 'hey swarm!', '  Hey   swarm  ']) {
+    assert.equal(matchWakeWord(said, DEFAULT_WAKE_PHRASE).matched, true, said)
+  }
+})
+t('wakeWord: a command in the same breath comes back verbatim', () => {
+  // Original casing/punctuation survives — this text goes into a terminal.
+  assert.deepEqual(matchWakeWord('Hey swarm, run the Tests --watch', 'hey swarm'), {
+    matched: true, rest: 'run the Tests --watch',
+  })
+  assert.deepEqual(matchWakeWord('Hey swarm — git status', 'hey swarm'), {
+    matched: true, rest: 'git status',
+  })
+  // Phrase alone → empty rest, which the caller reads as "open dictation".
+  assert.deepEqual(matchWakeWord('Hey swarm.', 'hey swarm'), { matched: true, rest: '' })
+})
+t('wakeWord: tolerates a mishearing in a long word but not a short one', () => {
+  assert.equal(matchWakeWord('hey swarn, deploy', 'hey swarm').matched, true)
+  assert.equal(wordsMatch('swarn', 'swarm'), true)
+  // The budget is one edit at 5 chars and two at 6+, so "sworn" (two edits from
+  // "swarm") is out. Widening it here would also admit storm/swore/warm.
+  assert.equal(wordsMatch('sworn', 'swarm'), false)
+  assert.equal(wordsMatch('orchestrater', 'orchestrator'), true)
+  // Short words get NO budget: one edit from "hey" is also her/hen/hex/key/they,
+  // so a budget there would fire the wake word during ordinary conversation. A
+  // miss costs the user one repeat; a false fire types into their terminal.
+  assert.equal(wordsMatch('her', 'hey'), false)
+  assert.equal(wordsMatch('hay', 'hey'), false)
+  assert.equal(matchWakeWord('hay swarm, deploy', 'hey swarm').matched, false)
+})
+t('wakeWord: matching is anchored near the start, not anywhere in the sentence', () => {
+  // Leading filler is fine — the model prepends it constantly.
+  assert.equal(matchWakeWord('Uh, hey swarm, stop', 'hey swarm').matched, true)
+  // But mid-sentence mentions must not fire, or the wake word is worse than none.
+  assert.equal(matchWakeWord('I was going to tell the hey swarm thing', 'hey swarm').matched, false)
+  assert.equal(matchWakeWord('so anyway we should hey swarm now', 'hey swarm').matched, false)
+})
+t('wakeWord: unrelated speech does not match', () => {
+  for (const said of ['what time is it', 'the server is down', 'commit and push', '']) {
+    assert.equal(matchWakeWord(said, DEFAULT_WAKE_PHRASE).matched, false, said)
+  }
+})
+t('wakeWord: phrases too short to be distinct are rejected', () => {
+  // A lone short word appears many times an hour in normal speech, and every
+  // false fire hijacks the user's terminal.
+  assert.equal(isValidWakePhrase('hey'), false)
+  assert.equal(isValidWakePhrase('yo'), false)
+  assert.equal(isValidWakePhrase(''), false)
+  assert.equal(isValidWakePhrase('   ,, '), false)
+  assert.equal(isValidWakePhrase('swarm'), true)      // one long word is fine
+  assert.equal(isValidWakePhrase('hey swarm'), true)
+  assert.equal(isValidWakePhrase('ok computer'), true)
+  // An invalid phrase can never match, so a half-typed setting can't fire.
+  assert.equal(matchWakeWord('hey there', 'hey').matched, false)
+})
+t('wakeWord: normalizeSpeech folds accents, case and punctuation', () => {
+  assert.equal(normalizeSpeech('Héy, Swärm!'), 'hey swarm')
+  assert.equal(normalizeSpeech('  multiple   spaces  '), 'multiple spaces')
+})
+t('wakeWord: editDistance bails out past the budget instead of scoring fully', () => {
+  assert.equal(editDistance('swarm', 'swarm'), 0)
+  assert.equal(editDistance('swarm', 'swarn'), 1)
+  assert.ok(editDistance('swarm', 'completely different', 2) > 2)
+})
+t('vad: the wake profile ends an utterance far sooner than dictation', () => {
+  // Every wake segment costs a Whisper pass, so it must close quickly; dictation
+  // must instead wait out someone composing a sentence.
+  assert.ok(WAKE_VAD.hangoverMs < DEFAULT_VAD.hangoverMs)
+  assert.ok(WAKE_VAD.maxDurationMs < DEFAULT_VAD.maxDurationMs)
+  // Still long enough to hold a wake phrase plus a command in one breath.
+  assert.ok(WAKE_VAD.maxDurationMs >= 8000)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

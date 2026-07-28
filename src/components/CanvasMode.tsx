@@ -4,6 +4,7 @@ import { AgentPane } from './AgentPane'
 import { useWorkspaceStore, type PaneNode, type PaneLeaf, type AgentId, type PtyStatus } from '../store/workspace'
 import { useT } from '../i18n'
 import { confirmDialog } from './ConfirmDialog'
+import { ChevronDisclosure, ChevronLeft, ChevronRight } from './Icons'
 import {
   resizeRect, RESIZE_DIRS, RESIZE_CURSOR, type ResizeDir,
   GRID, snapToGrid, gridBackgroundOffset,
@@ -1269,7 +1270,7 @@ export function CanvasMode() {
             active={false}
             label={t('canvas.rail.expand')}
             onClick={() => setRailCollapsed(false)}
-          ><IconChevronRight /></ToolButton>
+          ><ChevronRight size={16} strokeWidth={2.2} /></ToolButton>
         </div>
       ) : (
       <div ref={railRef} style={railStyle}>
@@ -1284,7 +1285,7 @@ export function CanvasMode() {
             onClick={() => setRailCollapsed(true)}
             title={t('canvas.rail.collapse')}
             style={styles.railCollapseBtn}
-          ><IconChevronLeft /></button>
+          ><ChevronLeft size={13} strokeWidth={2.2} /></button>
         </div>
         <div style={styles.railDivider} />
         <ToolButton active={tool === 'select'} label={t('canvas.tool.select')} onClick={() => setTool('select')}><IconCursor /></ToolButton>
@@ -2120,8 +2121,8 @@ function CanvasBrowser({ item, onUpdate, onCapture, t }: { item: CanvasItem; onU
       )}
 
       <div style={styles.browserBar} onPointerDown={e => e.stopPropagation()}>
-        <button style={styles.browserBtn} title={t('preview.back')} onClick={() => withActive(wv => wv.goBack())}>‹</button>
-        <button style={styles.browserBtn} title={t('preview.forward')} onClick={() => withActive(wv => wv.goForward())}>›</button>
+        <button style={styles.browserBtn} title={t('preview.back')} onClick={() => withActive(wv => wv.goBack())}><ChevronLeft size={13} /></button>
+        <button style={styles.browserBtn} title={t('preview.forward')} onClick={() => withActive(wv => wv.goForward())}><ChevronRight size={13} /></button>
         <button style={styles.browserBtn} title={t('preview.reload')} onClick={() => withActive(wv => wv.reload())}>⟳</button>
         <input
           style={styles.browserInput}
@@ -2243,8 +2244,8 @@ function CanvasDevice({ item, onUpdate, onCapture, t }: { item: CanvasItem; onUp
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-base)', borderRadius: '0 0 12px 12px', overflow: 'hidden' }}>
       {/* URL row */}
       <div style={styles.browserBar} onPointerDown={e => e.stopPropagation()}>
-        <button style={styles.browserBtn} title={t('preview.back')} onClick={() => { try { webviewRef.current?.goBack() } catch { /* */ } }}>‹</button>
-        <button style={styles.browserBtn} title={t('preview.forward')} onClick={() => { try { webviewRef.current?.goForward() } catch { /* */ } }}>›</button>
+        <button style={styles.browserBtn} title={t('preview.back')} onClick={() => { try { webviewRef.current?.goBack() } catch { /* */ } }}><ChevronLeft size={13} /></button>
+        <button style={styles.browserBtn} title={t('preview.forward')} onClick={() => { try { webviewRef.current?.goForward() } catch { /* */ } }}><ChevronRight size={13} /></button>
         <button style={styles.browserBtn} title={t('preview.reload')} onClick={() => { try { webviewRef.current?.reload() } catch { /* */ } }}>⟳</button>
         <input
           style={styles.browserInput}
@@ -2274,7 +2275,7 @@ function CanvasDevice({ item, onUpdate, onCapture, t }: { item: CanvasItem; onUp
           <button style={styles.deviceSelect} onClick={() => setPickerOpen(o => !o)} title={t('canvas.device.choose')}>
             <IconDevice />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{preset.label}</span>
-            <span style={{ opacity: 0.55, fontSize: 9 }}>▾</span>
+            <ChevronDisclosure open={pickerOpen} size={10} style={{ opacity: 0.55 }} />
           </button>
           {pickerOpen && <DevicePicker current={preset.id} onPick={chooseDevice} onClose={() => setPickerOpen(false)} t={t} />}
         </div>
@@ -2687,16 +2688,6 @@ const IconFit = () => (
     <path d="M4 9V5a1 1 0 0 1 1-1h4M20 9V5a1 1 0 0 0-1-1h-4M4 15v4a1 1 0 0 0 1 1h4M20 15v4a1 1 0 0 1-1 1h-4" />
   </svg>
 )
-const IconChevronLeft = () => (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="m15 18-6-6 6-6" />
-  </svg>
-)
-const IconChevronRight = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <path d="m9 18 6-6-6-6" />
-  </svg>
-)
 const GripDots = () => (
   <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" aria-hidden="true">
     <circle cx="2.5" cy="3" r="1.2" /><circle cx="7.5" cy="3" r="1.2" />
@@ -2799,6 +2790,7 @@ const styles: Record<string, React.CSSProperties> = {
   browserBtn: {
     width: 22, height: 22, border: 'none', background: 'transparent', color: 'var(--text-muted)',
     cursor: 'pointer', fontSize: 15, lineHeight: 1, borderRadius: 5, flexShrink: 0,
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
   },
   browserInput: {
     flex: 1, minWidth: 0, background: 'var(--bg-base)', border: '1px solid var(--border)', borderRadius: 6,

@@ -42,6 +42,23 @@ export const DEFAULT_VAD: VadOptions = {
   maxDurationMs: 120_000,
 }
 
+// Wake-word listening is the same detector with a much shorter fuse. Every
+// segment it captures gets a Whisper pass, so the tuning goal is the opposite of
+// dictation's: end each utterance quickly and cap it hard, rather than wait
+// patiently for someone composing a long sentence.
+//
+// `hangoverMs` is the one that matters — at dictation's 1.8s the wake phrase
+// wouldn't reach the model until nearly two seconds after it was spoken, which
+// reads as an unresponsive assistant. The ceiling still has to be generous
+// enough to hold "hey swarm, run the test suite and show me what failed" in one
+// breath, since that whole sentence is one segment.
+export const WAKE_VAD: VadOptions = {
+  threshold: 0.055,
+  hangoverMs: 700,
+  minDurationMs: 350,
+  maxDurationMs: 10_000,
+}
+
 export function initVad(now: number): VadState {
   return { speechStarted: false, lastLoudAt: now, startedAt: now }
 }

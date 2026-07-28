@@ -8,6 +8,7 @@ import {
 import { SHORTCUTS, getEffectiveKeys, formatKeys, eventToKeys, findConflict } from '../shortcuts'
 import { useT, LANGUAGES, type TFunction, type Language } from '../i18n'
 import { type VoiceModel } from '../hooks/useVoice'
+import { isValidWakePhrase, DEFAULT_WAKE_PHRASE } from '../lib/wakeWord'
 import { AgentIcon } from '../data/agents'
 import { LoginTerminal } from './LoginTerminal'
 
@@ -134,6 +135,10 @@ export function SettingsModal() {
   const storeVoiceAutoStop = useWorkspaceStore(s => s.voiceAutoStop)
   const setVoicePreloadStore = useWorkspaceStore(s => s.setVoicePreload)
   const setVoiceAutoStopStore = useWorkspaceStore(s => s.setVoiceAutoStop)
+  const storeVoiceWakeEnabled = useWorkspaceStore(s => s.voiceWakeEnabled)
+  const storeVoiceWakePhrase = useWorkspaceStore(s => s.voiceWakePhrase)
+  const setVoiceWakeEnabledStore = useWorkspaceStore(s => s.setVoiceWakeEnabled)
+  const setVoiceWakePhraseStore = useWorkspaceStore(s => s.setVoiceWakePhrase)
 
   // Appearance + shortcuts apply instantly (no draft/Save), so we read live
   // store values and call setters directly from the controls.
@@ -168,6 +173,9 @@ export function SettingsModal() {
   const [voiceModelDraft, setVoiceModelDraft] = useState<VoiceModel>(storeVoiceModel)
   const [voicePreloadDraft, setVoicePreloadDraft] = useState(storeVoicePreload)
   const [voiceAutoStopDraft, setVoiceAutoStopDraft] = useState(storeVoiceAutoStop)
+  const [voiceWakeEnabledDraft, setVoiceWakeEnabledDraft] = useState(storeVoiceWakeEnabled)
+  const [voiceWakePhraseDraft, setVoiceWakePhraseDraft] = useState(storeVoiceWakePhrase)
+  const wakePhraseValid = isValidWakePhrase(voiceWakePhraseDraft)
   // SwarmAgent — key is write-only (never read back); provider/model are plain.
   const [swarmAgentKeyDraft, setSwarmAgentKeyDraft] = useState('')
   const [swarmAgentHasKey, setSwarmAgentHasKey] = useState(false)
@@ -318,6 +326,10 @@ export function SettingsModal() {
       setVoiceModelStore(voiceModelDraft)
       setVoicePreloadStore(voicePreloadDraft)
       setVoiceAutoStopStore(voiceAutoStopDraft)
+      setVoiceWakeEnabledStore(voiceWakeEnabledDraft)
+      // The store re-validates and falls back to the default, so an invalid
+      // draft can never be persisted as a dead wake phrase.
+      setVoiceWakePhraseStore(voiceWakePhraseDraft)
       // Pass the provider explicitly: the key belongs to the provider the user
       // just picked, which isn't the saved one yet.
       if (swarmAgentKeyDraft.trim()) {
@@ -356,8 +368,9 @@ export function SettingsModal() {
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, agentAccounts, shell, defaultAgent, idleSeconds, closeTray,
-      voiceModelDraft, voicePreloadDraft, voiceAutoStopDraft,
-      setVoiceModelStore, setVoicePreloadStore, setVoiceAutoStopStore, swarmAgentKeyDraft, swarmAgentModelDraft,
+      voiceModelDraft, voicePreloadDraft, voiceAutoStopDraft, voiceWakeEnabledDraft, voiceWakePhraseDraft,
+      setVoiceModelStore, setVoicePreloadStore, setVoiceAutoStopStore,
+      setVoiceWakeEnabledStore, setVoiceWakePhraseStore, swarmAgentKeyDraft, swarmAgentModelDraft,
       fontSize, cursorBlink, setShellStyle, setDefaultAgentId, setTerminalFontSize, setTerminalCursorBlink, setCloseToTray])
 
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
@@ -655,6 +668,55 @@ export function SettingsModal() {
                       onClick={() => { setVoiceAutoStopDraft(v => !v); setGeneralDirty(true) }}
                     />
                   </div>
+
+                  {/* ── Wake word ─────────────────────────────────────────── */}
+                  <div style={styles.rowBetween}>
+                    <div>
+                      <FieldLabel>{t('settings.voice.wake')}</FieldLabel>
+                      <p style={{ ...styles.desc, marginTop: 2 }}>
+                        {t('settings.voice.wakeDesc', {
+                          phrase: wakePhraseValid ? voiceWakePhraseDraft.trim() : DEFAULT_WAKE_PHRASE,
+                        })}
+                      </p>
+                    </div>
+                    <button
+                      className="settings-toggle"
+                      role="switch"
+                      aria-checked={voiceWakeEnabledDraft}
+                      aria-label={t('settings.voice.wake')}
+                      onClick={() => { setVoiceWakeEnabledDraft(v => !v); setGeneralDirty(true) }}
+                    />
+                  </div>
+
+                  {voiceWakeEnabledDraft && (
+                    <>
+                      <FieldLabel htmlFor="voice-wake-phrase">
+                        {t('settings.voice.wakePhrase')}
+                      </FieldLabel>
+                      <input
+                        id="voice-wake-phrase"
+                        style={{
+                          ...styles.input,
+                          borderColor: wakePhraseValid ? undefined : 'var(--error)',
+                        }}
+                        value={voiceWakePhraseDraft}
+                        placeholder={t('settings.voice.wakePhrasePlaceholder')}
+                        spellCheck={false}
+                        onChange={e => { setVoiceWakePhraseDraft(e.target.value); setGeneralDirty(true) }}
+                      />
+                      {/* Say why it won't be accepted rather than silently
+                          reverting on save — a wake word that quietly isn't the
+                          one you typed is impossible to debug by ear. */}
+                      {!wakePhraseValid && (
+                        <p style={{ ...styles.desc, marginTop: 4, color: 'var(--error)' }}>
+                          {t('settings.voice.wakePhraseInvalid')}
+                        </p>
+                      )}
+                      <p style={{ ...styles.desc, marginTop: 4 }}>
+                        {t('settings.voice.wakeCost')}
+                      </p>
+                    </>
+                  )}
 
                   <p style={styles.desc}>
                     {t('settings.voice.desc')}{' '}

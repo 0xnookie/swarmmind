@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { useWorkspaceStore, selectTerminalsVisible } from '../store/workspace'
 import { useT } from '../i18n'
 import { IconBtn } from './IconBtn'
+import { ChevronRight } from './Icons'
 import { SwarmVoice } from './SwarmVoice'
 import { NotificationCenter } from './NotificationCenter'
 import logoUrl from '../assets/logo.png'
@@ -415,10 +416,11 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
               style={{
                 margin: '0 4px',
                 color: 'var(--text-muted)',
-                fontSize: 14,
+                display: 'flex',
+                alignItems: 'center',
               }}
             >
-              ›
+              <ChevronRight size={13} strokeWidth={2.2} />
             </span>
             <span
               style={{

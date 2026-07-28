@@ -227,6 +227,15 @@ async function loadModel(model: VoiceModel): Promise<void> {
   }
 }
 
+/**
+ * Load (or reload) the Whisper model for the current selection, awaiting any
+ * in-flight load. Exported so the wake-word listener can wait for the same
+ * singleton instead of racing a second one into existence.
+ */
+export function ensureVoiceModel(): Promise<void> {
+  return ensureModel()
+}
+
 // Kick off model download + init + warm-up in the background. Called shortly
 // after app start so the first real use of SwarmVoice is instant instead of
 // waiting for a download and WASM warm-up. Errors are swallowed — a normal
@@ -300,6 +309,37 @@ function normalizePeak(audio: Float32Array, target = 0.97): void {
   if (peak < 0.02 || peak >= target) return
   const gain = target / peak
   for (let i = 0; i < audio.length; i++) audio[i] *= gain
+}
+
+/**
+ * Recorded clip → text. The whole decode/normalise/transcribe path in one call,
+ * shared by dictation and the wake-word listener.
+ *
+ * Everything subtle about talking to Whisper lives here, which is exactly why it
+ * is shared rather than reimplemented: the single-pass 16 kHz decode, the peak
+ * normalisation quiet laptop mics need, awaiting a model that may be mid-reload,
+ * and above all the `{ language, task }` trap below. Returns '' for a clip too
+ * short to be speech.
+ */
+export async function transcribeAudio(blob: Blob): Promise<string> {
+  const audio = await decodeTo16kMono(await blob.arrayBuffer())
+  if (!audio) return ''
+
+  // Boost quiet recordings toward full scale before transcription.
+  normalizePeak(audio)
+
+  // The transcriber may be mid-reload (user switched models while recording, or
+  // the background preload is still warming). Instant when it's already live.
+  await ensureModel()
+
+  // NOTE: Do NOT pass { language, task } here. The `.en` models are
+  // English-only; forcing decoder prompt ids makes the WASM (onnxruntime-web)
+  // backend emit empty output — even though the same call works on the native
+  // onnxruntime-node backend. Verified in the real renderer: with the options →
+  // "", without → correct transcript. The options are redundant anyway.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = await (_transcriber as any)(audio) as any
+  return ((Array.isArray(result) ? result[0]?.text : result?.text) ?? '').trim()
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -453,29 +493,8 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
       cleanup()
       setStatus('transcribing')
       try {
-        // Decode WebM/Opus → 16 kHz mono Float32 (Whisper's expected format).
-        const blob        = new Blob(chunksRef.current, { type: 'audio/webm' })
-        const arrayBuffer = await blob.arrayBuffer()
-        const audio       = await decodeTo16kMono(arrayBuffer)
-        if (!audio) { setStatus('idle'); return }
-
-        // Boost quiet recordings toward full scale before transcription.
-        normalizePeak(audio)
-
-        // The transcriber may be mid-reload (user switched models while
-        // recording, or background preload still warming). Instant when the
-        // selected model is already live.
-        await ensureModel()
-
-        // NOTE: Do NOT pass { language, task } here. whisper-tiny.en is an
-        // English-only model; forcing decoder prompt ids makes the WASM
-        // (onnxruntime-web) backend emit empty output — even though the same
-        // call works on the native onnxruntime-node backend. Verified in the
-        // real renderer: with the options → "", without → correct transcript.
-        // The .en model always transcribes English, so the options are redundant.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const result = await (_transcriber as any)(audio) as any
-        const text   = ((Array.isArray(result) ? result[0]?.text : result?.text) ?? '').trim()
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        const text = await transcribeAudio(blob)
         if (text) {
           setLastTranscript(text)
           callbackRef.current(text)

@@ -45,6 +45,8 @@ export function VoiceWidget({
   modelProgress,
   lastTranscript,
   error,
+  wakeListening,
+  wakePhrase,
   onToggle,
   onClose,
 }: {
@@ -52,6 +54,9 @@ export function VoiceWidget({
   modelProgress: number
   lastTranscript: string
   error: string | null
+  /** Wake word armed: the mic is open, waiting to hear the phrase. */
+  wakeListening: boolean
+  wakePhrase: string
   onToggle: () => void
   onClose: () => void
 }) {
@@ -142,6 +147,7 @@ export function VoiceWidget({
     : isTranscribing ? t('voice.button.transcribing')
     : isRecording ? t('voiceWidget.listening')
     : isError ? (error ?? t('voice.tooltip.error'))
+    : wakeListening ? t('voice.wake.armed', { phrase: wakePhrase })
     : t('voiceWidget.ready')
 
   const tooltip = [
@@ -174,7 +180,14 @@ export function VoiceWidget({
         // side keeps a normal inset so the waveform isn't jammed into the curve.
         padding: `0 14px 0 ${ORB_INSET}px`,
         borderRadius: CAP_RADIUS,
-        border: `1px solid ${isRecording ? 'var(--accent)' : 'var(--border-strong)'}`,
+        // Armed sits between idle and recording on purpose: the mic *is* open,
+        // so the pill must not look dormant, but it isn't capturing you yet, so
+        // it must not look like it is either.
+        border: `1px solid ${
+          isRecording ? 'var(--accent)'
+          : wakeListening ? 'var(--accent-glow)'
+          : 'var(--border-strong)'
+        }`,
         background: isRecording ? 'var(--accent-subtle)' : 'var(--bg-elevated)',
         color: accent,
         boxShadow: isRecording ? '0 4px 20px var(--accent-glow)' : 'var(--shadow-md)',
@@ -200,6 +213,19 @@ export function VoiceWidget({
         <img src={logoUrl} alt="" draggable={false} />
       </span>
       <WaveformBars active={isRecording} minScale={0.15} />
+      {/* Armed marker. The bars stay still (nothing is being captured), so
+          without this the pill looks identical to idle while the mic is open. */}
+      {wakeListening && !isRecording && (
+        <span
+          aria-hidden="true"
+          style={{
+            position: 'absolute', right: 5, top: 5,
+            width: 5, height: 5, borderRadius: '50%',
+            background: 'var(--accent)',
+            animation: 'voice-wake-pulse 2s ease-in-out infinite',
+          }}
+        />
+      )}
     </button>
   )
 }

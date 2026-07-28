@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { useMemory, type MemoryEntry, type Task } from '../hooks/useMemory'
 import { useT, type TFunction, type TranslationKey } from '../i18n'
+import { ChevronDisclosure } from './Icons'
 
 const STATUS_KEY: Record<string, TranslationKey> = {
   pending: 'status.pending',
@@ -122,7 +123,9 @@ export function MemoryPanel() {
                       >
                         <span style={styles.entryKey}>{e.key}</span>
                         {e.agent_id && <span style={styles.entryAgent}>@{e.agent_id}</span>}
-                        <span style={styles.entryChevron}>{expanded === e.id ? '▾' : '▸'}</span>
+                        <span style={styles.entryChevron}>
+                          <ChevronDisclosure open={expanded === e.id} size={11} />
+                        </span>
                       </button>
                       {expanded === e.id && (
                         editing?.id === e.id ? (
@@ -322,7 +325,7 @@ const styles: Record<string, React.CSSProperties> = {
   },
   entryKey: { flex: 1, fontSize: 11, fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   entryAgent: { fontSize: 10, color: 'var(--accent)', background: 'var(--bg-active)', padding: '1px 5px', borderRadius: 8 },
-  entryChevron: { color: 'var(--text-dim)', fontSize: 10, flexShrink: 0 },
+  entryChevron: { color: 'var(--text-dim)', display: 'flex', alignItems: 'center', flexShrink: 0 },
   agentFilterRow: { display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0 8px 6px' },
   agentChip: { fontSize: 10, padding: '2px 8px', borderRadius: 9999, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' },
   agentChipActive: { borderColor: 'var(--accent)', color: 'var(--accent)', background: 'var(--accent-subtle)' },

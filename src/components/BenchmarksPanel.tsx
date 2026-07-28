@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react'
 import { useT, type TranslationKey } from '../i18n'
+import { ArrowDown, ArrowUp } from './Icons'
 import {
   BENCHMARK_SNAPSHOT,
   BENCHMARK_SOURCE_URL,
@@ -164,7 +165,13 @@ function LeaderTable<Row>({
                   }}
                   title={col.desc ? `${t(col.desc)} · ${t('benchmarks.sortHint')}` : t('benchmarks.sortHint')}
                 >
-                  {t(col.label)}{active ? (dir === 'asc' ? ' ▲' : ' ▼') : ''}
+                  {t(col.label)}
+                  {/* Sort direction is "which way this orders", not a
+                      disclosure — an arrow, not a chevron. */}
+                  {active &&
+                    (dir === 'asc'
+                      ? <ArrowUp size={11} style={{ display: 'inline-block', verticalAlign: '-1px', marginLeft: 4 }} />
+                      : <ArrowDown size={11} style={{ display: 'inline-block', verticalAlign: '-1px', marginLeft: 4 }} />)}
                 </th>
               )
             })}

@@ -4,6 +4,7 @@ import type { Language } from '../i18n'
 import type { VoiceModel } from '../hooks/useVoice'
 import { addSnippet as addSnippetTo, removeSnippet as removeSnippetFrom, type Snippet } from '../lib/snippets'
 import { nextRunAfter } from '../lib/loopSchedule'
+import { DEFAULT_WAKE_PHRASE, isValidWakePhrase } from '../lib/wakeWord'
 import {
   applyAppearance,
   clampEditorFontSize,
@@ -219,6 +220,13 @@ interface WorkspaceState {
   // Stop recording automatically after a pause in speech, so dictation doesn't
   // need a second keypress. Persisted as `voiceAutoStop`.
   voiceAutoStop: boolean
+  // Hands-free trigger: keep the mic armed and start dictation when the wake
+  // phrase is heard, instead of clicking the pill every time. Off by default —
+  // it holds the microphone open and spends a Whisper pass on each utterance
+  // near it (all on-device, but it is real CPU). Persisted as
+  // `voiceWakeEnabled` / `voiceWakePhrase`.
+  voiceWakeEnabled: boolean
+  voiceWakePhrase: string
   // The floating dictation widget: whether it's shown, and where the user
   // dragged it (null = not yet placed → default corner). Persisted as
   // `voiceWidgetOpen` / `voiceWidgetPos`.
@@ -234,6 +242,10 @@ interface WorkspaceState {
   // AI ghost-text autocomplete in the file editor (Copilot-style). Off by
   // default since it spends model tokens on every pause in typing.
   ghostTextEnabled: boolean
+  // Soft-wrap long lines in the file editor (VS Code's Alt+Z). Off by default:
+  // code is written to a column, and wrapping breaks the line/column mapping
+  // people navigate by. Persisted as the `editorWordWrap` app setting.
+  editorWordWrap: boolean
   // Reusable code snippets saved from the editor (persisted globally as the
   // `editorSnippets` JSON app-setting).
   snippets: Snippet[]
@@ -369,6 +381,8 @@ interface WorkspaceState {
   setVoiceModel: (m: VoiceModel) => void
   setVoicePreload: (b: boolean) => void
   setVoiceAutoStop: (b: boolean) => void
+  setVoiceWakeEnabled: (b: boolean) => void
+  setVoiceWakePhrase: (s: string) => void
   toggleVoiceWidget: () => void
   setVoiceWidgetPos: (pos: { x: number; y: number }) => void
   // Appearance setters — each persists and re-applies immediately.
@@ -379,6 +393,7 @@ interface WorkspaceState {
   setMonoFont: (f: MonoFontId) => void
   setEditorFontSize: (n: number) => void
   setGhostTextEnabled: (b: boolean) => void
+  setEditorWordWrap: (b: boolean) => void
   addSnippet: (name: string, body: string, lang?: string) => void
   removeSnippet: (id: string) => void
   hydrateAppearance: (a: Partial<AppearanceSettings>) => void
@@ -627,6 +642,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   voiceModel: 'base',
   voicePreload: true,
   voiceAutoStop: true,
+  voiceWakeEnabled: false,
+  voiceWakePhrase: DEFAULT_WAKE_PHRASE,
   voiceWidgetOpen: false,
   voiceWidgetPos: null,
   themePreset: DEFAULT_APPEARANCE.themePreset,
@@ -636,6 +653,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   monoFont: DEFAULT_APPEARANCE.monoFont,
   editorFontSize: DEFAULT_APPEARANCE.editorFontSize,
   ghostTextEnabled: false,
+  editorWordWrap: false,
   snippets: [],
   appearanceVersion: 0,
   keybindings: {},
@@ -1163,6 +1181,20 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     window.swarmmind.setAppSetting('voiceAutoStop', b ? '1' : '0').catch(() => {})
   },
 
+  setVoiceWakeEnabled: (b) => {
+    set({ voiceWakeEnabled: b })
+    window.swarmmind.setAppSetting('voiceWakeEnabled', b ? '1' : '0').catch(() => {})
+  },
+
+  setVoiceWakePhrase: (s) => {
+    // Keep an unusable phrase out of the store entirely: the listener would
+    // reject it anyway (`isValidWakePhrase`), and persisting it would leave wake
+    // mode silently dead after a restart with no visible cause.
+    const phrase = isValidWakePhrase(s) ? s.trim() : DEFAULT_WAKE_PHRASE
+    set({ voiceWakePhrase: phrase })
+    window.swarmmind.setAppSetting('voiceWakePhrase', phrase).catch(() => {})
+  },
+
   toggleVoiceWidget: () => {
     const open = !get().voiceWidgetOpen
     set({ voiceWidgetOpen: open })
@@ -1215,6 +1247,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setGhostTextEnabled: (b) => {
     set({ ghostTextEnabled: b })
     window.swarmmind.setAppSetting('editorGhostText', b ? '1' : '0').catch(() => {})
+  },
+
+  setEditorWordWrap: (b) => {
+    set({ editorWordWrap: b })
+    window.swarmmind.setAppSetting('editorWordWrap', b ? '1' : '0').catch(() => {})
   },
 
   addSnippet: (name, body, lang) => {

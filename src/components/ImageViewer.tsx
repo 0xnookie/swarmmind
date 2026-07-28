@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useT } from '../i18n'
+import { BreadcrumbSep } from './Icons'
 
 export interface ImageViewerProps {
   filePath: string
@@ -251,7 +252,18 @@ export function ImageViewer({
           style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}
           title={filePath}
         >
-          {(relPath ?? fileName).split(/[\\/]/).join('  ›  ')}
+          {/* Same chevron separator as the code editor's breadcrumb, so the two
+              status bars don't disagree about what a path looks like. */}
+          {(relPath ?? fileName)
+            .split(/[\\/]/)
+            .map((seg, i, all) => (
+              <React.Fragment key={`${seg}-${i}`}>
+                <span style={i === all.length - 1 ? { color: 'var(--text-secondary)' } : undefined}>
+                  {seg}
+                </span>
+                {i < all.length - 1 && <BreadcrumbSep />}
+              </React.Fragment>
+            ))}
         </span>
 
         {dims && (

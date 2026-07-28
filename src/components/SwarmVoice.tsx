@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useWorkspaceStore } from '../store/workspace'
 import { useVoice, preloadVoiceModel, VOICE_MODELS } from '../hooks/useVoice'
+import { useWakeWord } from '../hooks/useWakeWord'
 import { useLoadingStore } from '../store/loading'
 import { matchEvent, getEffectiveKeys, formatKeys } from '../shortcuts'
 import { useT } from '../i18n'
@@ -152,6 +153,43 @@ export function SwarmVoice() {
     setTimeout(() => setFlashMsg(null), 1800)
   }, [])
 
+  // ── Wake word ───────────────────────────────────────────────────────────────
+  // Hands-free trigger: armed, the user says the phrase instead of reaching for
+  // the pill. Two shapes, both handled here:
+  //
+  //   "hey swarm, run the tests"  → the command rode along with the phrase, so
+  //                                 inject it directly; no dictation needed.
+  //   "hey swarm"                 → open dictation and let them talk.
+  //
+  // Suspended (`paused`) whenever the recorder is doing anything, so the wake
+  // listener and dictation never hold the mic at once — and so the listener
+  // can't hear the user's own dictation and re-trigger off it.
+  const wakeEnabled = useWorkspaceStore(s => s.voiceWakeEnabled)
+  const wakePhrase = useWorkspaceStore(s => s.voiceWakePhrase)
+  const startRef = useRef(start)
+  startRef.current = start
+
+  const handleWake = useCallback((command: string) => {
+    if (!activePaneIdRef.current) {
+      showFlash(t('voice.flash.noPane'))
+      return
+    }
+    if (command) {
+      window.swarmmind.ptyInput(activePaneIdRef.current, command)
+      setTranscriptFlash(command)
+      return
+    }
+    void startRef.current()
+  }, [showFlash, t])
+
+  const { wakeStatus, wakeError } = useWakeWord({
+    enabled: wakeEnabled,
+    phrase: wakePhrase,
+    onWake: handleWake,
+    paused: status !== 'idle',
+  })
+  const wakeListening = wakeStatus === 'armed' || wakeStatus === 'checking'
+
   const handleToggle = useCallback(() => {
     switch (status) {
       case 'transcribing':
@@ -200,6 +238,8 @@ export function SwarmVoice() {
     : isTranscribing  ? t('voice.tooltip.transcribing')
     : isRecording     ? t('voice.tooltip.recording', { keys: voiceKeys })
     : isError         ? (error ?? t('voice.tooltip.error'))
+    : wakeError       ? t('voice.wake.failed', { error: wakeError })
+    : wakeListening   ? t('voice.wake.armed', { phrase: wakePhrase })
     : t('voice.tooltip.idle', { keys: voiceKeys })
 
   return (
@@ -211,6 +251,8 @@ export function SwarmVoice() {
           modelProgress={modelProgress}
           lastTranscript={lastTranscript}
           error={error}
+          wakeListening={wakeListening}
+          wakePhrase={wakePhrase}
           onToggle={handleToggle}
           onClose={toggleWidget}
         />
@@ -263,6 +305,20 @@ export function SwarmVoice() {
       >
         {/* Busy states still read from the TopBar even when the pill is hidden. */}
         {isModelLoading || isTranscribing ? <SpinnerIcon /> : isRecording ? <BoltIcon /> : <MicIcon />}
+        {/* A hands-free mic is listening even when nothing else says so, and
+            that's exactly the state a user must never be in unknowingly — so
+            the dot shows on the TopBar regardless of whether the pill is open. */}
+        {wakeListening && !isActive && (
+          <span
+            aria-hidden="true"
+            style={{
+              position: 'absolute', right: 4, bottom: 4,
+              width: 5, height: 5, borderRadius: '50%',
+              background: 'var(--accent)',
+              boxShadow: '0 0 4px var(--accent-glow)',
+            }}
+          />
+        )}
       </IconBtn>
     </>
   )

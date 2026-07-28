@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useT, type TFunction } from '../i18n'
 import { confirmDialog } from './ConfirmDialog'
+import { ChevronDisclosure } from './Icons'
 import {
   baseName, parentDir, rewritePath, selectRange, toggleSelection,
   canMoveInto, canCopyInto, topLevelPaths, relativeToRoot, isUnder,
@@ -1601,6 +1602,19 @@ function TreeRow({
       onDrop={onDrop}
       title={renaming ? undefined : node.entry.path}
     >
+      {/* Disclosure chevron. Files render it invisible rather than omitting it,
+          so a file and the folder above it start at the same x — a tree whose
+          leaves are inset differently from its branches reads as misaligned.
+          The row's own click handler does the toggling; this is the affordance
+          that tells you the row *can* be toggled, which the folder icon alone
+          (open vs closed) never made obvious. */}
+      <ChevronDisclosure
+        open={node.entry.type === 'dir' && node.expanded}
+        invisible={node.entry.type !== 'dir'}
+        size={11}
+        strokeWidth={2.4}
+        style={{ color: 'var(--text-dim)', marginRight: -2 }}
+      />
       {node.entry.type === 'dir' ? (
         node.expanded ? (
           <FolderOpenIcon color={FOLDER_COLOR} />
@@ -1655,6 +1669,9 @@ function CreateRow({
         boxSizing: 'border-box',
       }}
     >
+      {/* Matches TreeRow's chevron slot so the ghost row lines up with the
+          real rows it will sit between. */}
+      <ChevronDisclosure open={false} invisible size={11} style={{ marginRight: -2 }} />
       {kind === 'dir' ? <FolderClosedIcon color={FOLDER_COLOR} /> : <FileIcon ext="" />}
       <NameInput initial="" isDir={kind === 'dir'} onCommit={onCommit} onCancel={onCancel} />
     </div>

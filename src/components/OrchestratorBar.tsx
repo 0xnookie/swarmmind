@@ -13,6 +13,7 @@ import { SWARM_RECIPES, buildRecipeLayout, type SwarmRecipe } from '../lib/recip
 import { totalSpend, budgetStatus, parseBudget, formatUsd } from '../lib/conductor'
 import { AgentIcon } from '../data/agents'
 import { confirmDialog } from './ConfirmDialog'
+import { ChevronDisclosure } from './Icons'
 import { useT, type TranslationKey } from '../i18n'
 
 const AGENT_LABEL: Record<AgentId, string> = {
@@ -139,7 +140,8 @@ export function OrchestratorBar() {
             onClick={e => { e.stopPropagation(); setRecipesOpen(o => !o) }}
             title={t('recipes.title')}
           >
-            {t('recipes.button')} ▾
+            {t('recipes.button')}
+            <ChevronDisclosure open={recipesOpen} size={10} style={{ marginLeft: 2 }} />
           </button>
           {recipesOpen && (
             <div style={styles.recipesMenu} onClick={e => e.stopPropagation()}>
@@ -327,6 +329,7 @@ const styles: Record<string, React.CSSProperties> = {
   recipesBtn: {
     background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
     color: 'var(--text-secondary)', fontSize: 11, fontWeight: 600, padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap',
+    display: 'inline-flex', alignItems: 'center', gap: 2,
   },
   recipesMenu: {
     position: 'absolute', bottom: 'calc(100% + 6px)', left: 0, zIndex: 1000, minWidth: 300,

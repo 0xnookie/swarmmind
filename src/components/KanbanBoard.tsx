@@ -3,6 +3,7 @@ import { useWorkspaceStore, type AgentId, type PaneLeaf, type PaneNode } from '.
 import { AGENTS, AgentIcon } from '../data/agents'
 import { UnifiedDiff } from './UnifiedDiff'
 import { useT, type TranslationKey } from '../i18n'
+import { ChevronDown, ChevronUp } from './Icons'
 
 export interface KanbanTask {
   id: string
@@ -428,14 +429,14 @@ export function KanbanBoard() {
                               title={t('kanban.lowerPriority')}
                               onClick={() => handlePriority(task, -1)}
                             >
-                              ▼
+                              <ChevronDown size={11} />
                             </button>
                             <button
                               style={styles.priorityBtn}
                               title={t('kanban.raisePriority')}
                               onClick={() => handlePriority(task, 1)}
                             >
-                              ▲
+                              <ChevronUp size={11} />
                             </button>
                           </div>
 
@@ -900,10 +901,13 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid var(--border-mid)',
     borderRadius: 'var(--radius)',
     color: 'var(--text-secondary)',
-    padding: '2px 8px',
+    padding: '3px 8px',
     cursor: 'pointer',
     fontSize: 11,
-    lineHeight: 1.2
+    lineHeight: 1.2,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   blockedChip: {
     fontSize: 11,

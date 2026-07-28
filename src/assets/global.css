@@ -125,6 +125,14 @@ button:disabled { opacity: 0.38; cursor: not-allowed; }
   to   { transform: rotate(360deg) }
 }
 
+/* SwarmVoice — wake word armed. A slow breath rather than a blink: the mic is
+   open and the user has to be able to tell, but this sits on screen for hours at
+   a time, so it must not pull the eye the way a recording indicator should. */
+@keyframes voice-wake-pulse {
+  0%, 100% { opacity: 0.25; transform: scale(0.85) }
+  50%      { opacity: 1;    transform: scale(1) }
+}
+
 /* SwarmVoice widget — the brand orb at the pill's right cap. Sized and
    positioned from JS (it has to sit concentric with the rounded end), so this
    only carries the parts inline styles can't express: the rotating conic ring
