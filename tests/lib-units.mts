@@ -2196,12 +2196,21 @@ t('wakeWord: editDistance bails out past the budget instead of scoring fully', (
   assert.ok(editDistance('swarm', 'completely different', 2) > 2)
 })
 t('vad: the wake profile ends an utterance far sooner than dictation', () => {
-  // Every wake segment costs a Whisper pass, so it must close quickly; dictation
-  // must instead wait out someone composing a sentence.
+  // The hangover is pure dead time between the user finishing and the model
+  // seeing the audio, and it dominates the felt reaction time. It can be this
+  // aggressive because an early cut degrades into the two-step flow.
+  assert.ok(WAKE_VAD.hangoverMs <= 400, `wake hangover regressed to ${WAKE_VAD.hangoverMs}ms`)
   assert.ok(WAKE_VAD.hangoverMs < DEFAULT_VAD.hangoverMs)
   assert.ok(WAKE_VAD.maxDurationMs < DEFAULT_VAD.maxDurationMs)
   // Still long enough to hold a wake phrase plus a command in one breath.
   assert.ok(WAKE_VAD.maxDurationMs >= 8000)
+})
+t('vad: dictation does not make the user wait around after they stop talking', () => {
+  // Sized to the longest pause *inside* a sentence, not a comfortable margin on
+  // top of it — at 1.8s dictation felt like it had stopped listening.
+  assert.ok(DEFAULT_VAD.hangoverMs <= 1300, `dictation hangover regressed to ${DEFAULT_VAD.hangoverMs}ms`)
+  // But never so short that a mid-sentence breath ends the clip.
+  assert.ok(DEFAULT_VAD.hangoverMs >= 900)
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

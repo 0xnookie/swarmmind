@@ -169,8 +169,11 @@ export function SwarmVoice() {
   const startRef = useRef(start)
   startRef.current = start
 
-  const handleWake = useCallback((command: string) => {
+  const handleWake = useCallback((command: string, stream: MediaStream | null) => {
     if (!activePaneIdRef.current) {
+      // Nothing will adopt the handed-over mic, so close it here rather than
+      // leaving a live microphone owned by nobody.
+      stream?.getTracks().forEach(tr => tr.stop())
       showFlash(t('voice.flash.noPane'))
       return
     }
@@ -179,7 +182,9 @@ export function SwarmVoice() {
       setTranscriptFlash(command)
       return
     }
-    void startRef.current()
+    // Adopt the listener's live stream — dictation is now recording without
+    // waiting on another getUserMedia.
+    void startRef.current(stream ?? undefined)
   }, [showFlash, t])
 
   const { wakeStatus, wakeError } = useWakeWord({

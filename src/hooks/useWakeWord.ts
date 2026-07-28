@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ensureVoiceModel, transcribeAudio, voiceModelReady } from './useVoice'
+import { ensureVoiceModel, transcribeAudio, isVoiceModelLoaded, WAKE_MODEL } from './useVoice'
 import { initVad, stepVad, frameLoudness, WAKE_VAD } from '../lib/vad'
 import { matchWakeWord, isValidWakePhrase } from '../lib/wakeWord'
 
@@ -15,10 +15,19 @@ import { matchWakeWord, isValidWakePhrase } from '../lib/wakeWord'
 // `{language, task}` notes there), and threading a second lifecycle through its
 // `start`/`stop` state machine would put every dictation at risk to add a
 // feature that is off by default. This owns its own mic and recorder and shares
-// the parts that are actually subtle — `ensureVoiceModel` (the same model
-// singleton, never a second load) and `transcribeAudio` (decode + normalise +
-// the Whisper call). What is duplicated is the mechanical `getUserMedia` +
-// `MediaRecorder` + rAF-VAD wiring, and only that.
+// the machinery that's actually subtle — the model registry and
+// `transcribeAudio` (decode + normalise + the Whisper call). What is duplicated
+// is the mechanical `getUserMedia` + `MediaRecorder` + rAF-VAD wiring, and only
+// that.
+//
+// **Latency is the whole design constraint.** What the user feels is the gap
+// between finishing the phrase and the app reacting, and it has exactly three
+// terms: the VAD hangover (`WAKE_VAD.hangoverMs`, pure dead time), the Whisper
+// pass, and — on a phrase-only wake — getting dictation recording. Each is
+// attacked directly: the hangover is set as low as it can go given that an
+// early cut degrades into the two-step flow, the pass runs on `WAKE_MODEL`
+// rather than the dictation model with a bounded decoder, and the microphone is
+// handed to dictation live instead of being released and re-acquired.
 //
 // **Cost.** A Whisper pass runs per *utterance*, not per second: the VAD gates
 // it, so a silent room costs one analyser rAF and nothing else. Speech near the
@@ -34,8 +43,14 @@ export interface UseWakeWordOptions {
    * Fired when the wake phrase is heard. `command` is anything said after it in
    * the same breath, or '' when the phrase was spoken alone — which the caller
    * should treat as "open dictation now".
+   *
+   * On that phrase-alone hand-off, `stream` is the listener's **still-live**
+   * microphone: dictation should adopt it rather than call `getUserMedia`
+   * again, which is a device round trip in the one moment the user is waiting.
+   * The listener has already given up ownership, so whoever takes it must stop
+   * it. `null` when a command came along and nothing else needs the mic.
    */
-  onWake: (command: string) => void
+  onWake: (command: string, stream: MediaStream | null) => void
   /**
    * Suspends listening and releases the mic. Set while dictation (or anything
    * else) owns the microphone, so the two never record each other.
@@ -136,8 +151,8 @@ export function useWakeWord({
 
     const run = async () => {
       try {
-        if (!voiceModelReady()) setWakeStatus('loading')
-        await ensureVoiceModel()
+        if (!isVoiceModelLoaded(WAKE_MODEL)) setWakeStatus('loading')
+        await ensureVoiceModel(WAKE_MODEL)
         if (aborted) return
 
         stream = await navigator.mediaDevices.getUserMedia({
@@ -154,7 +169,13 @@ export function useWakeWord({
         ctx = new AudioContext()
         const analyser = ctx.createAnalyser()
         analyser.fftSize = 512
-        analyser.smoothingTimeConstant = 0.65
+        // Barely smoothed, unlike dictation's analyser. Smoothing is a decaying
+        // average, so it makes the reading *trail* the actual audio — which is
+        // exactly what a silence detector must not do, since every frame of lag
+        // is added to the wake latency. Dictation keeps 0.65 because its
+        // analyser also drives the waveform bars, where the smoothing is the
+        // point; nothing here is drawn, so there's nothing to trade away.
+        analyser.smoothingTimeConstant = 0.2
         ctx.createMediaStreamSource(stream).connect(analyser)
 
         setWakeError(null)
@@ -166,7 +187,11 @@ export function useWakeWord({
           if (!blob) continue
 
           setWakeStatus('checking')
-          const text = await transcribeAudio(blob)
+          // `WAKE_MODEL`, not the dictation selection: this runs on every
+          // utterance and sits in the latency the user feels. `maxTokens` bounds
+          // the decoder so a long background conversation can't make the model
+          // narrate for seconds before we discard it.
+          const text = await transcribeAudio(blob, { model: WAKE_MODEL, maxTokens: 48 })
           if (aborted) return
 
           const hit = matchWakeWord(text, phraseRef.current)
@@ -175,20 +200,23 @@ export function useWakeWord({
           if (hit.rest) {
             // The command rode along with the phrase, so nothing else needs the
             // mic — handle it and stay armed.
-            onWakeRef.current(hit.rest)
+            onWakeRef.current(hit.rest, null)
             continue
           }
 
           // The phrase was spoken alone: the caller is about to open dictation
-          // and needs the microphone. Hand it over *before* calling back, rather
-          // than waiting for React to process `paused` and run our cleanup —
-          // otherwise dictation's getUserMedia races our still-open stream.
-          stream.getTracks().forEach((tr) => tr.stop())
+          // and needs the microphone. Hand the *live* stream over rather than
+          // stopping it and letting dictation re-acquire — `getUserMedia` is a
+          // device round trip, and this is precisely the moment the user is
+          // waiting. Ownership transfers with it: we drop the reference (so
+          // neither this loop nor the effect cleanup stops it) and dictation
+          // stops it when it's done.
+          const handOff = stream
           stream = null
           try { ctx?.close() } catch { /* ignore */ }
           ctx = null
           setWakeStatus('off')
-          onWakeRef.current('')
+          onWakeRef.current('', handOff)
 
           // Re-arm. Normally `paused` going true→false does it once dictation
           // ends; the cycle bump is the fallback for when the hand-off never

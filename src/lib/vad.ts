@@ -37,7 +37,11 @@ export interface VadOptions {
 
 export const DEFAULT_VAD: VadOptions = {
   threshold: 0.055,
-  hangoverMs: 1800,
+  // Every millisecond here is dead time the user spends staring at a recording
+  // indicator after they've stopped talking, so it's tuned to the longest pause
+  // *inside* a sentence rather than a comfortable margin on top of it. 1.8s was
+  // the latter and made dictation feel like it had stopped listening.
+  hangoverMs: 1200,
   minDurationMs: 900,
   maxDurationMs: 120_000,
 }
@@ -47,15 +51,21 @@ export const DEFAULT_VAD: VadOptions = {
 // dictation's: end each utterance quickly and cap it hard, rather than wait
 // patiently for someone composing a long sentence.
 //
-// `hangoverMs` is the one that matters — at dictation's 1.8s the wake phrase
-// wouldn't reach the model until nearly two seconds after it was spoken, which
-// reads as an unresponsive assistant. The ceiling still has to be generous
-// enough to hold "hey swarm, run the test suite and show me what failed" in one
-// breath, since that whole sentence is one segment.
+// `hangoverMs` is the one that matters: it is pure, unavoidable delay between
+// the user finishing the phrase and the model even seeing it, and it dominates
+// the perceived reaction time. It can be this aggressive because **a segment
+// that ends too early degrades gracefully** — "hey swarm" and a command split
+// across two segments is exactly the phrase-then-dictate flow, which works. The
+// failure mode of being too *slow*, by contrast, is one the user feels on every
+// single wake.
+//
+// The ceiling still has to hold "hey swarm, run the test suite and show me what
+// failed" when it's said without pausing, since that whole sentence is one
+// segment.
 export const WAKE_VAD: VadOptions = {
   threshold: 0.055,
-  hangoverMs: 700,
-  minDurationMs: 350,
+  hangoverMs: 350,
+  minDurationMs: 250,
   maxDurationMs: 10_000,
 }
 

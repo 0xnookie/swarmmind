@@ -41,17 +41,31 @@ export const VOICE_MODELS: Record<VoiceModel, { repo: string; sizeMB: number }> 
   small: { repo: 'Xenova/whisper-small.en', sizeMB: 250 },
 }
 
-// ── Model singleton ────────────────────────────────────────────────────────────
-// Lives at module scope so the loaded model survives component remounts.
-// `_loadedModel` tracks which VoiceModel the live transcriber was built from, so
-// changing the setting simply makes the next ensureModel() reload.
+// ── Model registry ─────────────────────────────────────────────────────────────
+// Loaded pipelines live at module scope so they survive component remounts.
+//
+// Keyed **per model** rather than a single slot, because two are wanted at once:
+// dictation uses whatever the user picked for accuracy, while wake-word
+// detection uses `WAKE_MODEL` (below) for speed. A single slot would make the
+// two evict each other on every utterance — the worst of both. When the user has
+// already selected the wake model for dictation, both simply share one entry.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ASRFn = (audio: Float32Array, opts?: object) => Promise<any>
-let _transcriber: ASRFn | null = null
-let _loadedModel: VoiceModel | null = null
-let _loadingModel: VoiceModel | null = null
-let _loadPromise: Promise<void> | null = null
+const _pipelines = new Map<VoiceModel, ASRFn>()
+const _loads = new Map<VoiceModel, Promise<ASRFn>>()
+
+/**
+ * The model wake-word detection runs on, independent of the dictation setting.
+ *
+ * Wake detection is a fuzzy match against a two-word phrase, not transcription
+ * anyone reads — `tiny.en` is entirely good enough for it and roughly halves the
+ * inference cost of `base.en`. That cost is paid on *every* utterance near the
+ * mic while armed, and it sits directly in the latency the user feels between
+ * saying the phrase and the app reacting, so it's the one place where the
+ * smallest model is unambiguously the right call.
+ */
+export const WAKE_MODEL: VoiceModel = 'tiny'
 
 // Filesystem-backed cache for @xenova/transformers, implementing the Web Cache
 // `match`/`put` interface it expects from `env.customCache`. The browser Cache
@@ -100,50 +114,64 @@ async function purgeStaleModelCacheOnce(): Promise<void> {
   } catch { /* ignore */ }
 }
 
-// Download-progress fan-out: the model is loaded once (module singleton), but
-// both the background preload and a user click may be awaiting it. Every
-// interested party registers a listener; the single pipeline progress_callback
-// dispatches to all of them.
-const _progressListeners = new Set<(pct: number) => void>()
+// Download-progress fan-out, per model: a model is loaded once, but the
+// background preload and a user click may both be awaiting it. Every interested
+// party registers a listener; that model's progress_callback dispatches to all
+// of them. Keyed by model so a background wake-model load can't drive the
+// dictation download's progress bar.
+const _progress = new Map<VoiceModel, Set<(pct: number) => void>>()
 
 // The model the user currently has selected in Settings.
 function selectedModel(): VoiceModel {
   return useWorkspaceStore.getState().voiceModel
 }
 
-// True when the live transcriber matches the *currently selected* model — the
-// hook uses this to decide whether starting voice input needs a loading phase.
+// True when the *currently selected* model is live — the hook uses this to
+// decide whether starting voice input needs a loading phase.
 export function voiceModelReady(): boolean {
-  return _transcriber !== null && _loadedModel === selectedModel()
+  return _pipelines.has(selectedModel())
 }
 
-async function ensureModel(onProgress?: (pct: number) => void): Promise<void> {
-  if (onProgress) _progressListeners.add(onProgress)
+/** Is this specific model resident? (Wake-word arming checks its own model.) */
+export function isVoiceModelLoaded(model: VoiceModel): boolean {
+  return _pipelines.has(model)
+}
+
+/**
+ * Resolve a live pipeline for `model`, loading it if needed and joining an
+ * in-flight load for the same model rather than starting a second one.
+ */
+async function ensureModelFor(
+  model: VoiceModel,
+  onProgress?: (pct: number) => void
+): Promise<ASRFn> {
+  const live = _pipelines.get(model)
+  if (live) return live
+
+  if (onProgress) {
+    const set = _progress.get(model) ?? new Set()
+    set.add(onProgress)
+    _progress.set(model, set)
+  }
   try {
-    // Loop: an in-flight load may be for a different (stale) model selection;
-    // await it, then re-check against the selection and reload if needed.
-    for (;;) {
-      const want = selectedModel()
-      if (_transcriber && _loadedModel === want) return
-      if (_loadPromise) {
-        if (_loadingModel === want) return await _loadPromise
-        await _loadPromise.catch(() => { /* stale load's error is not ours */ })
-        continue
-      }
-      _transcriber = null
-      _loadedModel = null
-      _loadingModel = want
-      _loadPromise = loadModel(want)
-        .then(() => { _loadedModel = want })
-        .finally(() => { _loadPromise = null; _loadingModel = null })
-      return await _loadPromise
+    let load = _loads.get(model)
+    if (!load) {
+      load = loadModel(model)
+        .then((fn) => { _pipelines.set(model, fn); return fn })
+        .finally(() => { _loads.delete(model) })
+      _loads.set(model, load)
     }
+    return await load
   } finally {
-    if (onProgress) _progressListeners.delete(onProgress)
+    if (onProgress) _progress.get(model)?.delete(onProgress)
   }
 }
 
-async function loadModel(model: VoiceModel): Promise<void> {
+async function ensureModel(onProgress?: (pct: number) => void): Promise<void> {
+  await ensureModelFor(selectedModel(), onProgress)
+}
+
+async function loadModel(model: VoiceModel): Promise<ASRFn> {
   await purgeStaleModelCacheOnce()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const T = await import('@xenova/transformers') as any
@@ -188,7 +216,7 @@ async function loadModel(model: VoiceModel): Promise<void> {
         const prog = p as { status?: string; progress?: number }
         if (prog?.status === 'progress' && typeof prog.progress === 'number') {
           const pct = Math.round(prog.progress)
-          for (const fn of _progressListeners) fn(pct)
+          for (const fn of _progress.get(model) ?? []) fn(pct)
         }
       },
     }
@@ -205,13 +233,14 @@ async function loadModel(model: VoiceModel): Promise<void> {
   if (env?.backends?.onnx?.wasm) env.backends.onnx.wasm.numThreads = threads
   console.debug(`[SwarmVoice] SAB=${typeof SharedArrayBuffer !== 'undefined'}, numThreads=${threads}`)
 
+  let transcriber: ASRFn
   try {
-    _transcriber = await createPipeline()
+    transcriber = await createPipeline()
   } catch (err) {
     if (threads <= 1) throw err
     console.warn('[SwarmVoice] threaded WASM init failed, retrying single-threaded:', err)
     env.backends.onnx.wasm.numThreads = 1
-    _transcriber = await createPipeline()
+    transcriber = await createPipeline()
   }
 
   // Warm-up: run a short silent clip through the model once so WASM
@@ -220,20 +249,21 @@ async function loadModel(model: VoiceModel): Promise<void> {
   // Silence transcribes to "" almost immediately after the fixed encoder pass.
   try {
     const t0 = performance.now()
-    await _transcriber!(new Float32Array(8000)) // 0.5 s @ 16 kHz
-    console.debug(`[SwarmVoice] warm-up inference: ${Math.round(performance.now() - t0)} ms`)
+    await transcriber(new Float32Array(8000)) // 0.5 s @ 16 kHz
+    console.debug(`[SwarmVoice] ${model} warm-up inference: ${Math.round(performance.now() - t0)} ms`)
   } catch (err) {
     console.warn('[SwarmVoice] warm-up inference failed (non-fatal):', err)
   }
+  return transcriber
 }
 
 /**
- * Load (or reload) the Whisper model for the current selection, awaiting any
- * in-flight load. Exported so the wake-word listener can wait for the same
- * singleton instead of racing a second one into existence.
+ * Load the given Whisper model (default: the user's dictation selection),
+ * joining any in-flight load rather than racing a second one into existence.
+ * Exported so the wake-word listener can warm `WAKE_MODEL` in the background.
  */
-export function ensureVoiceModel(): Promise<void> {
-  return ensureModel()
+export async function ensureVoiceModel(model?: VoiceModel): Promise<void> {
+  await ensureModelFor(model ?? selectedModel())
 }
 
 // Kick off model download + init + warm-up in the background. Called shortly
@@ -321,24 +351,35 @@ function normalizePeak(audio: Float32Array, target = 0.97): void {
  * and above all the `{ language, task }` trap below. Returns '' for a clip too
  * short to be speech.
  */
-export async function transcribeAudio(blob: Blob): Promise<string> {
+export async function transcribeAudio(
+  blob: Blob,
+  opts: { model?: VoiceModel; maxTokens?: number } = {}
+): Promise<string> {
   const audio = await decodeTo16kMono(await blob.arrayBuffer())
   if (!audio) return ''
 
   // Boost quiet recordings toward full scale before transcription.
   normalizePeak(audio)
 
-  // The transcriber may be mid-reload (user switched models while recording, or
-  // the background preload is still warming). Instant when it's already live.
-  await ensureModel()
+  // The model may still be loading (the user switched models mid-recording, or
+  // the background preload is still warming). Instant once it's live.
+  const transcriber = await ensureModelFor(opts.model ?? selectedModel())
 
   // NOTE: Do NOT pass { language, task } here. The `.en` models are
   // English-only; forcing decoder prompt ids makes the WASM (onnxruntime-web)
   // backend emit empty output — even though the same call works on the native
   // onnxruntime-node backend. Verified in the real renderer: with the options →
   // "", without → correct transcript. The options are redundant anyway.
+  //
+  // `max_new_tokens` is safe to pass (unlike language/task, it's a generation
+  // limit rather than a forced decoder prompt) and bounds the *decoder*, which
+  // is the only part of the cost that scales with utterance length — Whisper's
+  // encoder always runs over a padded 30-second window no matter how short the
+  // clip is. Wake detection uses it to stop the model narrating a long
+  // background conversation it was never going to match anyway.
+  const genOpts = opts.maxTokens ? { max_new_tokens: opts.maxTokens } : undefined
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const result = await (_transcriber as any)(audio) as any
+  const result = await (transcriber as any)(audio, genOpts) as any
   return ((Array.isArray(result) ? result[0]?.text : result?.text) ?? '').trim()
 }
 
@@ -348,7 +389,12 @@ export interface UseVoiceReturn {
   status: VoiceStatus
   modelProgress: number
   lastTranscript: string
-  start: () => Promise<void>
+  /**
+   * Begin dictation. `existingStream` lets a caller that already holds a live
+   * microphone (the wake-word listener) hand it straight over, which removes a
+   * `getUserMedia` round trip from the moment the user is actually waiting.
+   */
+  start: (existingStream?: MediaStream) => Promise<void>
   stop: () => void
   error: string | null
 }
@@ -390,9 +436,14 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
     }
   }, [])
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (existingStream?: MediaStream) => {
+    // A handed-over microphone has already been disowned by whoever gave it to
+    // us, so every path that declines to take it must close it — otherwise
+    // bailing out here leaves a live mic belonging to nobody.
+    const dropHandOff = () => existingStream?.getTracks().forEach(t => t.stop())
+
     // Allow start from idle OR from a previous error (retry)
-    if (status !== 'idle' && status !== 'error') return
+    if (status !== 'idle' && status !== 'error') { dropHandOff(); return }
     setError(null)
 
     // Load Whisper on first click, after an error (retry), or after the user
@@ -407,6 +458,7 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
         console.error('[SwarmVoice] model load failed:', err)
         setError(msg)
         setStatus('error')
+        dropHandOff()
         return
       }
     }
@@ -416,11 +468,18 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
     // Microphone + waveform visualiser
     let stream: MediaStream
     try {
+      // A handed-over stream is already open and configured — reusing it skips
+      // the device negotiation entirely. Only fall back to acquiring one when
+      // nobody handed us a live mic (or the one we were given has since ended).
+      const handedOver =
+        existingStream && existingStream.getAudioTracks().some((t) => t.readyState === 'live')
+          ? existingStream
+          : null
       // Enable the browser's mic DSP — echo cancellation, noise suppression and
       // automatic gain — which noticeably cleans up the audio Whisper sees
       // (fewer dropped/garbled words on noisy or quiet mics). Mono is all
       // Whisper uses, so don't bother capturing stereo.
-      stream = await navigator.mediaDevices.getUserMedia({
+      stream = handedOver ?? await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
           echoCancellation: true,
@@ -476,6 +535,11 @@ export function useVoice(onTranscript: (text: string) => void): UseVoiceReturn {
       console.error('[SwarmVoice] getUserMedia failed:', err)
       setError(msg)
       setStatus('error')
+      // Covers the handed-over stream too: by this point it's in streamRef, and
+      // failing *after* the mic was open (e.g. the AudioContext threw) would
+      // otherwise strand it live.
+      cleanup()
+      dropHandOff()
       return
     }
 

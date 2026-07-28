@@ -174,18 +174,24 @@ try {
   // the user's own dictation and could re-trigger off it. Start dictation while
   // armed and watch the live-track count — it must never reach two.
   await win.keyboard.press('Control+Shift+M')
+  //
+  // NB this drives dictation from the *keyboard shortcut*, not from a wake —
+  // firing the wake word needs real speech, which this environment can't
+  // produce. So it covers the manual-dictation-while-armed path: the listener
+  // must release before dictation acquires. The wake→dictation hand-off (where
+  // dictation adopts the listener's live stream instead of acquiring a new one)
+  // is *not* covered here and has no automated test.
   let peak = 0
-  let handedOver = false
+  let tookOver = false
   for (let i = 0; i < 24; i++) {
     const live = await liveTracks()
     if (live > peak) peak = live
-    // A *new* stream while the count stays at one is the hand-off working.
     const total = await win.evaluate(() => (window.__micTracks ?? []).length)
-    if (total > 1 && live === 1) handedOver = true
+    if (total > 1 && live === 1) tookOver = true
     await win.waitForTimeout(250)
   }
   check('dictation and the wake listener never hold the mic at once', peak <= 1, `peak live tracks: ${peak}`)
-  console.log(`[wakeverify] mic handed over to a new stream while armed: ${handedOver}`)
+  console.log(`[wakeverify] dictation acquired its own stream after the listener released: ${tookOver}`)
 
   console.log('[wakeverify] screenshot -> tests/wakeword-verify.png')
 } catch (err) {
