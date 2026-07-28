@@ -6,6 +6,49 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.24.0]
+
+**Hands-free dictation, and an editor that remembers where you were.** Say "hey
+swarm" instead of reaching for the mic. The code editor picks up the view
+affordances it was missing — real code folding, word wrap, and per-file cursor
+memory — and every arrow in the app is now a drawn icon rather than a text
+character borrowed from the UI font.
+
+### Added
+- **Wake word for SwarmVoice.** Leave it armed and say **"hey swarm"** instead
+  of clicking the dictation pill each time. The phrase on its own opens
+  dictation; **"hey swarm, run the tests"** sends the command in one breath, no
+  second step. The phrase is configurable, and it stays fully offline — there is
+  no wake-word service, just the Whisper model already running on your machine.
+  Off by default: it holds the microphone open and spends CPU checking what it
+  hears, so it's yours to turn on. When it's listening, the app says so — a lit
+  marker on the toolbar and on the pill, whether or not anything else is open.
+- **Word wrap in the editor** (`Alt+Z`, or the status-bar button). Remembered
+  between sessions.
+- **Fold all / unfold all** buttons in the editor status bar, alongside the
+  existing `Ctrl+Alt+[` / `]` shortcuts.
+- **Go to line** with `Ctrl/⌘+G`.
+- **Disclosure arrows in the file explorer.** Folders previously announced
+  open/closed only by changing icon shape; they now carry a chevron that rotates
+  as they expand, like every other tree in the app.
+
+### Changed
+- **The editor remembers where you were in each file.** Switching tabs and
+  coming back restores your cursor and scroll position instead of dropping you
+  at line 1 of a 2000-line file.
+- **Code folding markers are properly drawn.** The fold gutter used text
+  characters whose size and alignment depended on the terminal font; it now uses
+  a single chevron that rotates between states, revealed on hover and left lit
+  in the accent colour wherever a region is actually folded.
+- **Every arrow in the app is now an icon**, not a font glyph — the explorer,
+  fold gutter, memory panel, board, benchmarks table, orchestrator menu,
+  terminal search, canvas browser and breadcrumbs. They now share one geometry,
+  scale with their control, and follow hover and disabled states properly.
+
+### Fixed
+- Dictation transcription paths were consolidated, so the wake word and the
+  regular pill can't drift apart in how they decode or transcribe audio.
+
 ## [0.23.0]
 
 **Your models, your budget, your terminals.** The AI behind every in-app feature
