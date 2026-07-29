@@ -25,6 +25,7 @@ import { resizeRect, RESIZE_DIRS, RESIZE_CURSOR, GRID, snapToGrid, gridBackgroun
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
 import { stripCodeFences, extractJsonObject } from '../electron/lib/aiParse.ts'
 import { selectClaimable, isClaimable, doneIdSet, type ClaimableTask } from '../electron/lib/taskBoard.ts'
+import { pickAccount, needsFreshSession, signedInState, credentialCandidates } from '../electron/lib/accounts.ts'
 import {
   severityOf, flattenMessage, displayPartsToText, formatHover, isTsLike, samePath, chooseProject,
   applyTextEdits, offsetToLine, lineTextAt, isValidIdentifier,
@@ -2211,6 +2212,67 @@ t('vad: dictation does not make the user wait around after they stop talking', (
   assert.ok(DEFAULT_VAD.hangoverMs <= 1300, `dictation hangover regressed to ${DEFAULT_VAD.hangoverMs}ms`)
   // But never so short that a mid-sentence breath ends the clip.
   assert.ok(DEFAULT_VAD.hangoverMs >= 900)
+})
+
+// ---------- agent accounts (which login a pane runs on) ----------
+const ACCS = [
+  { id: 'a', profileDir: '/p/a' },
+  { id: 'b', profileDir: '/p/b' },
+  { id: 'k' },                      // API-key account: no profile dir
+]
+t('accounts: a pane pinned to an account gets that one, not the global default', () => {
+  assert.equal(pickAccount(ACCS, 'a', 'b')?.id, 'b')
+  assert.equal(pickAccount(ACCS, 'b', 'a')?.id, 'a')
+})
+t('accounts: an unpinned pane follows the global default', () => {
+  assert.equal(pickAccount(ACCS, 'b', null)?.id, 'b')
+  assert.equal(pickAccount(ACCS, 'b', undefined)?.id, 'b')
+})
+t('accounts: a stale pin falls back to the default, never to nothing', () => {
+  // The account was deleted in Settings but the layout still names it. Spawning
+  // with no credential would drop the user into an unexpected login prompt.
+  assert.equal(pickAccount(ACCS, 'b', 'deleted')?.id, 'b')
+  assert.equal(pickAccount(ACCS, undefined, 'deleted')?.id, 'a')
+})
+t('accounts: no accounts resolves to null so the workspace config still applies', () => {
+  assert.equal(pickAccount([], 'a', 'a'), null)
+})
+t('accounts: two panes can resolve to two different logins at once', () => {
+  // The whole point of connecting more than one account. A single global
+  // "active" account made this impossible.
+  const left = pickAccount(ACCS, 'a', 'a')
+  const right = pickAccount(ACCS, 'a', 'b')
+  assert.notEqual(left?.id, right?.id)
+  assert.notEqual(left?.profileDir, right?.profileDir)
+})
+t('accounts: switching profile dirs invalidates the resumable session', () => {
+  // `claude --resume <id>` under a different CLAUDE_CONFIG_DIR finds no such
+  // session and fails — which is what "the account switch did nothing" is.
+  assert.equal(needsFreshSession(ACCS[0], ACCS[1]), true)
+  assert.equal(needsFreshSession(ACCS[0], ACCS[2]), true)
+})
+t('accounts: staying within one config dir keeps the conversation', () => {
+  assert.equal(needsFreshSession(ACCS[0], ACCS[0]), false)
+  assert.equal(needsFreshSession({ id: 'x' }, { id: 'y' }), false)  // two API-key accounts
+  assert.equal(needsFreshSession(null, null), false)
+})
+t('accounts: signedInState spots a login that was started but never finished', () => {
+  const dirOnly = (p: string) => p === '/p/a'
+  assert.equal(signedInState('claude', ACCS[0], dirOnly), false)
+  const withCred = (p: string) => p === '/p/a' || p.endsWith('.credentials.json')
+  assert.equal(signedInState('claude', ACCS[0], withCred), true)
+})
+t('accounts: login state is unknown — never false — when it cannot be told', () => {
+  // An API-key account carries its credential inline, and an agent we have no
+  // marker for must not be flagged. `false` here would be a false alarm on a
+  // perfectly working account.
+  assert.equal(signedInState('claude', ACCS[2], () => false), null)
+  assert.equal(signedInState('cursor', ACCS[0], () => false), null)
+})
+t('accounts: credential candidates live inside the account profile dir', () => {
+  const paths = credentialCandidates('claude', '/p/a')
+  assert.ok(paths.length > 0)
+  assert.ok(paths.every(p => p.startsWith('/p/a') || p.startsWith('\\p\\a') || p.includes('p')))
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

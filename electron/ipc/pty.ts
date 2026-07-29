@@ -5,7 +5,7 @@ import { type AgentId, getWorkspaceById } from '../../memory/queries'
 import { ensureWorkspaceConnection } from '../../memory/db'
 
 export function registerPtyHandlers(getWin: () => BrowserWindow | null, getWorkspaceId: () => string | null): void {
-  ipcMain.handle('pty:create', (_event, paneId: string, agentId: AgentId, cwd: string, shellStyle: ShellStyle, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string, paneWorkspaceId?: string) => {
+  ipcMain.handle('pty:create', (_event, paneId: string, agentId: AgentId, cwd: string, shellStyle: ShellStyle, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string, paneWorkspaceId?: string, accountId?: string | null) => {
     const win = getWin()
     const activeWorkspaceId = getWorkspaceId()
     if (!win) return { error: 'No window' }
@@ -28,7 +28,7 @@ export function registerPtyHandlers(getWin: () => BrowserWindow | null, getWorks
     if (!workspaceId) return { error: 'No workspace' }
 
     try {
-      ptyCreate(paneId, agentId, workspaceId, cwd, win, shellStyle, taskContext, cols, rows, resume, sessionId)
+      ptyCreate(paneId, agentId, workspaceId, cwd, win, shellStyle, taskContext, cols, rows, resume, sessionId, accountId)
       return { ok: true }
     } catch (err) {
       return { error: String(err) }

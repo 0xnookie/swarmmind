@@ -296,22 +296,42 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       .catch(() => {})
   }, [contextMenu, paneWorkspaceId])
 
+  // This pane's account binding (persisted). Null/undefined = follow the
+  // agent's global default account.
+  const paneAccountId = useWorkspaceStore(s => {
+    function findLeaf(node: import('../store/workspace').PaneNode): import('../store/workspace').PaneLeaf | null {
+      if (node.type === 'leaf') return node.id === paneId ? node : null
+      for (const c of node.children) { const f = findLeaf(c); if (f) return f }
+      return null
+    }
+    return findLeaf(s.rootPane)?.accountId ?? null
+  })
+  const setPaneAccount = useWorkspaceStore(s => s.setPaneAccount)
+
   // Connected accounts for this pane's agent — drives both the title-bar badge
   // and the in-menu quick switcher. Loaded on agent change, and re-loaded each
-  // time the context menu opens so a switch made elsewhere (Settings, another
-  // pane) is reflected.
-  const [paneAccounts, setPaneAccounts] = useState<{ accounts: AgentAccount[]; activeId?: string }>({ accounts: [] })
+  // time the context menu opens so an account connected or removed elsewhere
+  // (Settings) is reflected. `states` flags accounts whose profile dir holds no
+  // credential yet, i.e. a login that was started but never completed.
+  const [paneAccounts, setPaneAccounts] = useState<{ accounts: AgentAccount[]; activeId?: string; states: Record<string, boolean | null> }>({ accounts: [], states: {} })
   const loadAccounts = useCallback(() => {
-    if (!agentId) { setPaneAccounts({ accounts: [] }); return }
+    if (!agentId) { setPaneAccounts({ accounts: [], states: {} }); return }
     window.swarmmind.listAgentAccounts(agentId)
-      .then(res => setPaneAccounts({ accounts: res?.accounts ?? [], activeId: res?.activeId }))
+      .then(res => setPaneAccounts({ accounts: res?.accounts ?? [], activeId: res?.activeId, states: res?.states ?? {} }))
       .catch(() => {})
   }, [agentId])
   useEffect(() => { loadAccounts() }, [loadAccounts])
   useEffect(() => { if (contextMenu) loadAccounts() }, [contextMenu, loadAccounts])
-  // The account currently in effect for this pane's agent (falls back to the
-  // first connected one, matching the main-process spawn resolution).
-  const activeAccount = paneAccounts.accounts.find(a => a.id === paneAccounts.activeId) ?? paneAccounts.accounts[0]
+  // The account this pane spawns with — mirrors resolveAccount() in the main
+  // process: the pane's own pin first, then the agent's global default, then the
+  // first connected account. A stale pin (account deleted in Settings) falls
+  // through to the default rather than showing a phantom login.
+  const activeAccount =
+    paneAccounts.accounts.find(a => a.id === paneAccountId) ??
+    paneAccounts.accounts.find(a => a.id === paneAccounts.activeId) ??
+    paneAccounts.accounts[0]
+  // Undefined = we can't tell (API-key account / unknown CLI) → treat as fine.
+  const activeAccountSignedIn = activeAccount ? paneAccounts.states[activeAccount.id] : null
   const openSettings = useWorkspaceStore(s => s.openSettings)
 
   const agentInfo = AGENTS.find(a => a.id === agentId)
@@ -409,7 +429,11 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
     return res.path
   }, [worktreeEnabled, ownerRootPath, worktreePath, worktreeName, paneTitle, agentId, paneId, effectiveCwd, writeNotice, setPaneWorktree, setPaneWorktreeInfo])
 
-  const handleSpawn = useCallback(async (resume = false, explicitSessionId?: string) => {
+  // `accountOverride` is used by the account switcher: the store write that pins
+  // the pane hasn't re-rendered this component yet when the relaunch fires, so
+  // the new account is passed straight through instead of being read from a
+  // stale closure.
+  const handleSpawn = useCallback(async (resume = false, explicitSessionId?: string, accountOverride?: string | null) => {
     if (!agentId || !effectiveCwd) return
     startBooting()
     const spawnCwd = await resolveSpawnCwd()
@@ -428,31 +452,53 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       setSessionId(paneId, sid)
       doResume = false
     }
-    await spawn(agentId, spawnCwd, shellStyle, undefined, doResume, sid, paneWorkspaceId)
-  }, [agentId, effectiveCwd, resolveSpawnCwd, spawn, shellStyle, paneId, setPtyStatus, setAgentRunning, setSessionId, sessionId, paneWorkspaceId, startBooting])
+    await spawn(agentId, spawnCwd, shellStyle, undefined, doResume, sid, paneWorkspaceId, accountOverride !== undefined ? accountOverride : paneAccountId)
+  }, [agentId, effectiveCwd, resolveSpawnCwd, spawn, shellStyle, paneId, setPtyStatus, setAgentRunning, setSessionId, sessionId, paneWorkspaceId, paneAccountId, startBooting])
 
   const handleKill = useCallback(async () => { await kill() }, [kill])
 
-  // Quick-switch the active global account for this pane's agent. Accounts are
-  // applied at spawn time (the credential env is injected when the process
-  // starts), so the switch only takes effect on (re)launch. If an agent is live
-  // in this pane we restart it right here — resuming its session — so the new
-  // login is in effect immediately instead of leaving the user to stop/start by
-  // hand; otherwise the next spawn just picks it up. (ptyCreate replaces the old
-  // process silently, so there's no shell flash between kill and respawn.)
+  // Switch the account THIS pane runs on. The binding is per pane (persisted on
+  // the leaf), so other panes of the same agent keep their own login — several
+  // accounts can be live at once, which is the entire point of connecting more
+  // than one. It also updates the agent's global default, so the next pane you
+  // open starts on the login you last chose.
+  //
+  // Accounts are applied at spawn time (the credential env is injected when the
+  // process starts), so a live agent has to be relaunched for the switch to take
+  // effect. Two things make that correct rather than merely convenient:
+  //
+  //  • Resume is only safe within one profile dir. A CLI-login account redirects
+  //    the agent's config dir, and the conversation for `sessionId` lives inside
+  //    the OLD one — `claude --resume <id>` under the new dir finds no such
+  //    session and the launch fails, which is precisely the "switching accounts
+  //    didn't work" symptom. So we resume only when both accounts share a config
+  //    dir, and otherwise start a fresh session on the new login.
+  //  • A profile dir with no credential in it means the login flow was never
+  //    finished; the CLI would just start onboarding again. Say so instead of
+  //    letting it look like a broken switch.
   const switchAccount = useCallback(async (acc: AgentAccount) => {
     if (!agentId) return
     const label = acc.label || acc.id
-    if (acc.id === (paneAccounts.activeId ?? paneAccounts.accounts[0]?.id)) return  // already active — no-op
-    await window.swarmmind.setActiveAgentAccount(agentId, acc.id)
+    const previous = activeAccount
+    if (paneAccountId === acc.id && previous?.id === acc.id) return  // already this pane's account
+    setPaneAccount(paneId, acc.id)
+    // Keep the global default pointing at the most recently chosen login, so
+    // panes that aren't pinned (and hand-typed CLIs in plain shells) follow it.
+    await window.swarmmind.setActiveAgentAccount(agentId, acc.id).catch(() => {})
     setPaneAccounts(prev => ({ ...prev, activeId: acc.id }))
+    if (paneAccounts.states[acc.id] === false) {
+      writeNotice(t('pane.ctx.accountNotSignedIn', { label }))
+    }
     if (ptyStatusRef.current === 'running') {
-      writeNotice(t('pane.ctx.accountSwitchedRestart', { label }))
-      await handleSpawn(true)
+      // Mirrors needsFreshSession() in electron/lib/accounts.ts, where the rule
+      // is unit-tested (the renderer can't import from electron/).
+      const sameProfile = (previous?.profileDir ?? null) === (acc.profileDir ?? null)
+      writeNotice(t(sameProfile ? 'pane.ctx.accountSwitchedRestart' : 'pane.ctx.accountSwitchedFresh', { label }))
+      await handleSpawn(sameProfile, undefined, acc.id)
     } else {
       writeNotice(t('pane.ctx.accountSwitched', { label }))
     }
-  }, [agentId, paneAccounts, writeNotice, t, handleSpawn])
+  }, [agentId, activeAccount, paneAccountId, paneAccounts.states, paneId, setPaneAccount, writeNotice, t, handleSpawn])
 
   // Remove this pane's worktree from disk (branch kept, so committed work
   // survives). Best done while no agent is running in it.
@@ -832,10 +878,22 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
             uses, and clicking it opens the context menu (positioned under the
             badge) so the account submenu is one click away. Only shown when more
             than one account exists, since switching is meaningless otherwise. */}
-        {activeAccount && paneAccounts.accounts.length > 1 && (
+        {activeAccount && (paneAccounts.accounts.length > 1 || activeAccountSignedIn === false) && (
           <span
-            style={styles.accountBadge}
-            title={t('pane.activeAccount', { label: activeAccount.label || agentInfo?.label || agentId || '' })}
+            style={{
+              ...styles.accountBadge,
+              // An account whose login was never completed is called out here:
+              // it's the difference between "switched" and "switched to a login
+              // that can't actually run".
+              ...(activeAccountSignedIn === false
+                ? { color: 'var(--warning)', borderColor: 'var(--warning)' }
+                : null),
+            }}
+            title={
+              activeAccountSignedIn === false
+                ? t('pane.accountNeedsLogin', { label: activeAccount.label || agentId || '' })
+                : t('pane.activeAccount', { label: activeAccount.label || agentInfo?.label || agentId || '' })
+            }
             onClick={e => {
               e.stopPropagation()
               const r = e.currentTarget.getBoundingClientRect()
@@ -844,6 +902,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
           >
             <UserIcon />
             {activeAccount.label || t('settings.agent.accounts.untitled', { n: 1 })}
+            {activeAccountSignedIn === false && <span aria-hidden>⚠</span>}
           </span>
         )}
 
@@ -1022,22 +1081,36 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
                 <div style={styles.ctxHint}>{t('pane.ctx.accountNone')}</div>
               )}
               {paneAccounts.accounts.map((acc, idx) => {
-                const active = (paneAccounts.activeId ?? paneAccounts.accounts[0]?.id) === acc.id
-                const typeLabel = acc.profileDir ? t('pane.ctx.accountTypeCli') : t('pane.ctx.accountTypeApi')
+                const active = activeAccount?.id === acc.id
+                const needsLogin = paneAccounts.states[acc.id] === false
+                const typeLabel = needsLogin
+                  ? t('pane.ctx.accountTypeNoLogin')
+                  : acc.profileDir ? t('pane.ctx.accountTypeCli') : t('pane.ctx.accountTypeApi')
                 return (
                   <button
                     key={acc.id}
                     className="ctx-menu-item"
+                    title={needsLogin ? t('pane.accountNeedsLogin', { label: acc.label || acc.id }) : undefined}
                     onClick={() => { switchAccount(acc); setContextMenu(null) }}
                   >
                     <span style={{ flex: 1, color: active ? 'var(--accent)' : undefined, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {acc.label || t('settings.agent.accounts.untitled', { n: idx + 1 })}
                     </span>
-                    <span style={styles.ctxTypeBadge}>{typeLabel}</span>
+                    <span style={{ ...styles.ctxTypeBadge, ...(needsLogin ? { color: 'var(--warning)' } : null) }}>{typeLabel}</span>
                     {active && <CheckIcon />}
                   </button>
                 )
               })}
+              {/* Unpin: go back to following whichever account is the agent's
+                  global default (what an untouched pane does). */}
+              {paneAccountId && paneAccounts.accounts.length > 1 && (
+                <button
+                  className="ctx-menu-item"
+                  onClick={() => { setPaneAccount(paneId, null); setContextMenu(null) }}
+                >
+                  <span style={{ flex: 1, color: 'var(--text-muted)' }}>{t('pane.ctx.accountFollowDefault')}</span>
+                </button>
+              )}
               <button
                 className="ctx-menu-item"
                 onClick={() => { setContextMenu(null); openSettings(agentId) }}

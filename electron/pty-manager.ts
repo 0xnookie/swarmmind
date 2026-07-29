@@ -4,7 +4,7 @@ import { join } from 'path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { type AgentId } from '../memory/queries'
 import { readAgentConfigForSpawn } from './agent-config'
-import { getActiveAccount, profileEnv, allProfileEnv, PROFILE_LOGIN } from './agent-accounts'
+import { resolveAccount, profileEnv, allProfileEnv, PROFILE_LOGIN } from './agent-accounts'
 import { getMcpPort, getMcpToken } from '../mcp/server'
 import { eventEmit } from '../memory/events'
 import { runWithWorkspace } from '../memory/db'
@@ -530,7 +530,8 @@ export function ptyCreate(
   cols = 120,
   rows = 30,
   resume = false,
-  sessionId?: string
+  sessionId?: string,
+  accountId?: string | null
 ): void {
   // Replace any existing process (e.g. the idle shell) without emitting an exit.
   ptyKill(paneId, true)
@@ -544,16 +545,31 @@ export function ptyCreate(
   // signed by this install, so an untrusted workspace DB can't dictate the command.
   const storedConfig = readAgentConfigForSpawn(workspaceId, agentId)
 
-  // Overlay the active global account (if any). Accounts live in app.db (userData),
-  // so they're trusted and let the user switch credentials when one hits a limit.
+  // Overlay this pane's account. Accounts live in app.db (userData), so they're
+  // trusted and let the user switch credentials when one hits a limit. A pane
+  // pinned to an account (`accountId`) uses that one; otherwise the agent's
+  // global default. That distinction is what lets two panes of the same agent
+  // run on two different logins at once.
+  //
   // A connected account fully defines the credential: a CLI-login account routes
   // the agent at its profile dir (profileEnv) and must NOT inherit the workspace
   // apiKey (a stray ANTHROPIC_API_KEY would shadow the OAuth login); an API-key
   // account brings its own key. Only with no accounts at all do we fall back to
   // the per-workspace config key.
-  const account = getActiveAccount(agentId)
+  const account = resolveAccount(agentId, accountId)
   const effectiveApiKey = account ? account.apiKey : storedConfig.apiKey
   const accountEnv = { ...profileEnv(agentId, account), ...(account?.env ?? {}) }
+  // Every agent's default profile env goes in first, so a *different* CLI typed
+  // by hand in this pane's wrapper shell also connects. But this pane's own
+  // agent is resolved above and must not be shadowed by the global default:
+  // drop its config-dir var here, since `accountEnv` re-adds the right one (and
+  // for an API-key account there must be none at all — a stale config dir would
+  // silently win over the key).
+  const otherAgentsProfileEnv = allProfileEnv()
+  if (account) {
+    const sup = PROFILE_LOGIN[agentId]
+    if (sup) delete otherAgentsProfileEnv[sup.envVar]
+  }
   const defaults = AGENT_DEFAULTS[agentId]
   const baseCmd = storedConfig.executablePath ?? defaults.cmd
   const baseArgs = buildLaunchArgs(agentId, resume, sessionId, defaults.args)
@@ -570,10 +586,7 @@ export function ptyCreate(
     KILOCODE_MCP_URL: mcpUrl,
     CODEX_MCP_URL: mcpUrl,
     CLINE_MCP_URL: mcpUrl,
-    // Every agent's active account env first (so a *different* CLI typed by hand
-    // in this pane's wrapper shell also connects), then this pane's own agent
-    // account/config overlays, which win on conflict.
-    ...allProfileEnv(),
+    ...otherAgentsProfileEnv,
     ...(effectiveApiKey
       ? agentId === 'claude'
         ? { ANTHROPIC_API_KEY: effectiveApiKey }

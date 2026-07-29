@@ -98,6 +98,11 @@ interface AgentAccount {
 interface AgentAccountsState {
   accounts: AgentAccount[]
   activeId?: string
+  // Per account: does its profile dir actually hold a credential? `false` means
+  // the login flow was started but never finished, which otherwise only shows up
+  // as an agent that mysteriously re-runs onboarding when you switch to it.
+  // Undefined/null = not knowable (API-key account).
+  states?: Record<string, boolean | null>
 }
 
 type Section = 'general' | 'appearance' | 'shortcuts' | 'terminal' | AgentId
@@ -280,9 +285,17 @@ export function SettingsModal() {
       setAgentConfigs(prev => ({ ...prev, [id]: cfg ?? {} }))
     }).catch(() => {})
     window.swarmmind.listAgentAccounts(id).then((res) => {
-      setAgentAccounts(prev => ({ ...prev, [id]: { accounts: res?.accounts ?? [], activeId: res?.activeId } }))
+      setAgentAccounts(prev => ({ ...prev, [id]: { accounts: res?.accounts ?? [], activeId: res?.activeId, states: res?.states } }))
     }).catch(() => {})
   }, [section, settingsOpen])
+
+  // Re-read the login state after a login terminal closes, so finishing (or
+  // abandoning) a sign-in updates the badge without reopening Settings.
+  const refreshAccountStates = useCallback((id: AgentId) => {
+    window.swarmmind.listAgentAccounts(id).then((res) => {
+      setAgentAccounts(prev => ({ ...prev, [id]: { ...(prev[id] ?? { accounts: [] }), states: res?.states } }))
+    }).catch(() => {})
+  }, [])
 
   // Focus management: remember what was focused, trap focus inside the dialog,
   // restore on close.
@@ -1063,6 +1076,7 @@ export function SettingsModal() {
 
                     {acctState.accounts.map((acc, idx) => {
                       const active = acctState.activeId === acc.id
+                      const needsLogin = acctState.states?.[acc.id] === false
                       return (
                         <div key={acc.id} style={{ ...styles.accountCard, ...(active ? styles.accountCardActive : {}) }}>
                           <div style={styles.accountHead}>
@@ -1100,16 +1114,19 @@ export function SettingsModal() {
                             // dir (written by the agent's own login flow) — nothing
                             // to type here. Offer a re-login for expired sessions.
                             <div style={styles.rowBetween}>
-                              <span style={styles.cliBadge} title={acc.profileDir}>
-                                <span style={styles.cliBadgeDot} />
-                                {t('settings.agent.accounts.cliBadge')}
+                              <span
+                                style={{ ...styles.cliBadge, ...(needsLogin ? { color: 'var(--warning)', borderColor: 'var(--warning)' } : null) }}
+                                title={needsLogin ? t('settings.agent.accounts.noLoginHint') : acc.profileDir}
+                              >
+                                <span style={{ ...styles.cliBadgeDot, ...(needsLogin ? { background: 'var(--warning)' } : null) }} />
+                                {needsLogin ? t('settings.agent.accounts.noLoginBadge') : t('settings.agent.accounts.cliBadge')}
                               </span>
                               <button
                                 className="settings-card"
                                 style={styles.inlineBtn}
                                 onClick={() => setLoginSession({ agentId: id, agentLabel, accountId: acc.id, profileDir: acc.profileDir! })}
                               >
-                                {t('settings.agent.accounts.relogin')}
+                                {needsLogin ? t('settings.agent.accounts.finishLogin') : t('settings.agent.accounts.relogin')}
                               </button>
                             </div>
                           ) : (
@@ -1193,7 +1210,7 @@ export function SettingsModal() {
           agentLabel={loginSession.agentLabel}
           accountId={loginSession.accountId}
           profileDir={loginSession.profileDir}
-          onClose={() => setLoginSession(null)}
+          onClose={() => { refreshAccountStates(loginSession.agentId); setLoginSession(null) }}
         />
       )}
     </div>

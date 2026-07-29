@@ -49,6 +49,64 @@ function appendToCache(paneId: string, data: string): void {
   rawOutputCache.set(paneId, next.length > MAX_CACHE_BYTES ? next.slice(-MAX_CACHE_BYTES) : next)
 }
 
+// ── The pty bus: one app-wide subscription, not one per mounted pane ─────────
+//
+// A pane's terminal component is NOT always mounted: switching to canvas mode,
+// the file panel, the board — any center overlay — unmounts every AgentPane,
+// and a lazily-imported view leaves a real gap (chunk fetch + its own async
+// load) before the panes come back. If the `pty:output` listener lives in the
+// component, everything the agents print during that gap is delivered to
+// nobody: not drawn, and — worse — never written to `rawOutputCache`, so the
+// remounted terminal replays a tail that is missing the middle. The pane looks
+// frozen or dead, which is exactly "the terminals lost their connection".
+//
+// So the IPC listeners are installed once, at the module level, and always
+// cache. Mounted terminals are just subscribers on top of that cache. With no
+// subscriber the output is still recorded and replays in full on the next
+// mount, so a view switch can never lose a byte.
+type OutputSub = (data: string) => void
+type ExitSub = (code: number) => void
+
+const outputSubs = new Map<string, Set<OutputSub>>()
+const exitSubs = new Map<string, Set<ExitSub>>()
+// An exit that arrived with nobody listening (agent finished while the user was
+// in canvas mode). Held so the pane can react — drop back to a shell, clear the
+// running flag — as soon as it mounts again, instead of silently staying
+// "running" forever. Cleared whenever the pane starts a new process.
+const pendingExits = new Map<string, number>()
+
+let busWired = false
+
+function ensurePtyBus(): void {
+  if (busWired) return
+  busWired = true
+  window.swarmmind.onPtyOutput((id, data) => {
+    // Cache first, always — subscribers are optional.
+    appendToCache(id, data)
+    scheduleScrollbackSave(id)
+    scheduleDevUrlScan(id)
+    const subs = outputSubs.get(id)
+    if (subs) for (const fn of subs) fn(data)
+  })
+  window.swarmmind.onPtyExit((id, code) => {
+    const subs = exitSubs.get(id)
+    if (subs && subs.size > 0) for (const fn of subs) fn(code)
+    else pendingExits.set(id, code)
+  })
+}
+
+function subscribe<T>(map: Map<string, Set<T>>, paneId: string, fn: T): () => void {
+  let set = map.get(paneId)
+  if (!set) { set = new Set(); map.set(paneId, set) }
+  set.add(fn)
+  return () => {
+    const s = map.get(paneId)
+    if (!s) return
+    s.delete(fn)
+    if (s.size === 0) map.delete(paneId)
+  }
+}
+
 // Debounced persistence of a pane's scrollback to disk so it survives an app
 // restart (handled in the main process under the workspace's .swarmmind dir).
 const saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -77,6 +135,7 @@ function stripAnsi(s: string): string {
 // lets non-pane callers (e.g. the SwarmAgent tools) "read" what an agent is
 // doing without holding a usePty() instance. Returns '' for an unknown pane.
 export function readPaneOutput(paneId: string, maxChars = 4000): string {
+  ensurePtyBus()
   const raw = rawOutputCache.get(paneId) ?? ''
   const text = stripAnsi(raw).replace(/\n{3,}/g, '\n\n').trimEnd()
   return text.length > maxChars ? text.slice(-maxChars) : text
@@ -173,6 +232,7 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
 
   useEffect(() => {
     if (!containerRef.current) return
+    ensurePtyBus()
 
     // Read display prefs at creation time from the store so a freshly-opened
     // pane honours the user's saved font size / cursor settings. Live changes
@@ -307,27 +367,37 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
       window.swarmmind.ptyInput(paneId, data)
     })
 
-    // Receive PTY output
-    const unsubOutput = window.swarmmind.onPtyOutput((id, data) => {
-      if (id === paneId) {
-        term.write(data)
-        appendToCache(paneId, data)
-        scheduleScrollbackSave(paneId)
-        scheduleDevUrlScan(paneId)
-        optsRef.current?.onOutput?.()
-      }
+    // Receive PTY output. Caching/scrollback/dev-URL scanning already happened
+    // on the bus (which runs mounted or not); this only draws.
+    const unsubOutput = subscribe(outputSubs, paneId, (data: string) => {
+      term.write(data)
+      optsRef.current?.onOutput?.()
     })
 
     // Track PTY exit
-    const unsubExit = window.swarmmind.onPtyExit((id, code) => {
-      if (id !== paneId) return
+    let disposed = false
+    const handleExit = (code: number) => {
+      if (disposed) return
       if (optsRef.current?.onExit) {
         optsRef.current.onExit(code)
       } else {
         setPtyStatus(paneId, 'exited')
         term.writeln(`\r\n\x1b[2m[process exited with code ${code}]\x1b[0m`)
       }
-    })
+    }
+    const unsubExit = subscribe(exitSubs, paneId, handleExit)
+    // An exit that landed while this pane had no mounted terminal (a view
+    // switch) is delivered now, so the pane still reacts to it.
+    const missedExit = pendingExits.get(paneId)
+    if (missedExit !== undefined) {
+      // Only consumed once it's actually delivered — if this mount is torn down
+      // first (StrictMode), the next one must still see it.
+      queueMicrotask(() => {
+        if (disposed) return
+        pendingExits.delete(paneId)
+        handleExit(missedExit)
+      })
+    }
 
     let rafHandle = 0
 
@@ -355,6 +425,9 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
     document.fonts.ready.then(doFit)
 
     return () => {
+      // Stops a pending missed-exit delivery from writing to a disposed
+      // terminal (StrictMode's mount→cleanup→mount runs both in one tick).
+      disposed = true
       clearTimeout(t1)
       clearTimeout(t2)
       clearTimeout(t3)
@@ -398,13 +471,15 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
   const findPrevious = useCallback((q: string) => { try { searchAddonRef.current?.findPrevious(q) } catch { /* ignore */ } }, [])
   const clearSearch = useCallback(() => { try { searchAddonRef.current?.clearDecorations() } catch { /* ignore */ } }, [])
 
-  const spawn = useCallback(async (agentId: AgentId, cwd: string, shellStyle: ShellStyle = 'powershell', taskContext?: string, resume = false, sessionId?: string, workspaceId?: string) => {
+  const spawn = useCallback(async (agentId: AgentId, cwd: string, shellStyle: ShellStyle = 'powershell', taskContext?: string, resume = false, sessionId?: string, workspaceId?: string, accountId?: string | null) => {
+    ensurePtyBus()
     rawOutputCache.delete(paneId)
+    pendingExits.delete(paneId)   // a new process supersedes any unread exit
     termRef.current?.clear()
     termRef.current?.writeln(`\x1b[2m[${resume ? 'resuming' : 'spawning'} ${agentId} in ${cwd}]\x1b[0m\r\n`)
     const cols = termRef.current?.cols ?? 120
     const rows = termRef.current?.rows ?? 30
-    const result = await window.swarmmind.ptyCreate(paneId, agentId, cwd, shellStyle, taskContext, cols, rows, resume, sessionId, workspaceId)
+    const result = await window.swarmmind.ptyCreate(paneId, agentId, cwd, shellStyle, taskContext, cols, rows, resume, sessionId, workspaceId, accountId ?? undefined)
     if (result?.error) {
       termRef.current?.writeln(`\x1b[31m[error: ${result.error}]\x1b[0m`)
     }
@@ -433,6 +508,8 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
   // below whatever is already on screen — like a normal terminal prompt — so a
   // shell that follows an exited agent doesn't wipe the agent's final output.
   const spawnShell = useCallback(async (cwd: string, shellStyle: ShellStyle = 'powershell') => {
+    ensurePtyBus()
+    pendingExits.delete(paneId)
     const cols = termRef.current?.cols ?? 120
     const rows = termRef.current?.rows ?? 30
     const result = await window.swarmmind.ptyCreateShell(paneId, cwd, shellStyle, cols, rows)

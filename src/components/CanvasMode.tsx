@@ -277,6 +277,22 @@ export function CanvasMode() {
   const penRef = useRef({ color: penColor, width: penWidth })
   penRef.current = { color: penColor, width: penWidth }
 
+  // Live board size, needed to maximize a card *in place* (see the maximize
+  // note on CanvasCard) rather than mounting a second copy of it.
+  const [viewport, setViewport] = useState({ w: 0, h: 0 })
+  useEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    const read = () => {
+      const r = el.getBoundingClientRect()
+      setViewport(v => (v.w === r.width && v.h === r.height ? v : { w: r.width, h: r.height }))
+    }
+    read()
+    const ro = new ResizeObserver(read)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
   const [loaded, setLoaded] = useState(false)
   // Mid-interaction pointer shield: covers the viewport during a drag/resize/pan
   // so embedded <webview>s (browser cards) can't swallow the pointermove stream
@@ -1105,7 +1121,14 @@ export function CanvasMode() {
       {/* ── Board surface ── */}
       <div
         ref={rootRef}
-        style={{ ...styles.board, cursor, background: background.type === 'solid' ? background.color : 'var(--bg-base)' }}
+        style={{
+          ...styles.board, cursor,
+          background: background.type === 'solid' ? background.color : 'var(--bg-base)',
+          // The maximized card lives inside this (transformed) subtree, so the
+          // board itself has to out-stack the floating chrome — tool rail and
+          // minimap sit at z 20 as siblings. The restore button is above both.
+          ...(maximizedId ? { zIndex: 50 } : null),
+        }}
         onPointerDown={onCanvasPointerDown}
         onDoubleClick={(e) => {
           if (e.target !== e.currentTarget) return
@@ -1180,10 +1203,13 @@ export function CanvasMode() {
             })()}
           </svg>
 
-          {/* Skip the maximized item here — it's rendered full-size in the
-              overlay below. Mounting it in both places would attach two xterms /
-              webviews to one pane and they'd fight over input. */}
-          {items.filter(item => item.id !== maximizedId).map(item => (
+          {/* Every item is rendered exactly once, here — including the maximized
+              one, which CanvasCard styles to fill the viewport in place. It used
+              to be skipped here and re-mounted in a full-screen overlay, but a
+              different parent means a fresh React mount: the pane's xterm was
+              disposed and rebuilt (and a browser card's webview reloaded) just
+              to make it bigger. */}
+          {items.map(item => (
             item.kind === 'draw' ? (
               <CanvasDrawing
                 key={item.id}
@@ -1196,13 +1222,16 @@ export function CanvasMode() {
               <CanvasCard
                 key={item.id}
                 item={item}
-                selected={selectedId === item.id}
+                selected={selectedId === item.id && item.id !== maximizedId}
                 zoom={camera.zoom}
+                maximized={item.id === maximizedId}
+                camera={camera}
+                viewport={viewport}
                 onDragStart={startDrag}
                 onResizeStart={startResize}
                 onSelect={(id) => { setSelectedId(id); bringToFront(id) }}
                 onRemove={removeItem}
-                onMaximize={(id) => setMaximizedId(id)}
+                onMaximize={(id) => setMaximizedId(m => (m === id ? null : id))}
                 onUpdate={updateItem}
                 onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); setSelectedId(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
                 onCapture={(dataUrl) => handleCapture(item, dataUrl)}
@@ -1533,17 +1562,12 @@ export function CanvasMode() {
         </div>
       )}
 
-      {/* ── Maximized overlay (fills the viewport, still the same live pane) ── */}
+      {/* A maximized card is rendered in place by CanvasCard (see
+          maximizedGeometry) — there is deliberately no overlay copy of it. */}
       {maximized && (
-        <div style={styles.maxOverlay}>
-          <div style={styles.maxHeader}>
-            <span style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600 }}>{t('canvas.maximized')}</span>
-            <button style={styles.maxRestore} onClick={() => setMaximizedId(null)}>{t('canvas.restore')}</button>
-          </div>
-          <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex' }}>
-            <CardBody item={maximized} onUpdate={updateItem} noteColors={NOTE_COLORS} t={t} maximized />
-          </div>
-        </div>
+        <button style={styles.maxRestoreFloating} onClick={() => setMaximizedId(null)}>
+          {t('canvas.restore')}
+        </button>
       )}
 
       {/* ── Minimap navigator (bottom-right) ── */}
@@ -1708,15 +1732,47 @@ interface CanvasCardProps {
   noteColors: string[]
   /** Background transparency for this card (1 = opaque). Content never fades. */
   alpha: number
+  /** Fill the whole board, in place — see the geometry note below. */
+  maximized?: boolean
+  camera?: Camera
+  viewport?: { w: number; h: number }
   t: (k: any, p?: any) => string
 }
 
-function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, onCapture, task, onTaskRename, noteColors, t }: CanvasCardProps) {
+// Geometry that makes a card cover the viewport **without leaving the world
+// layer** — the point being that it stays the same mounted React subtree, so a
+// terminal's xterm (and its live pty subscription) and a browser's webview are
+// untouched by maximizing.
+//
+// The world is `translate(cam) scale(zoom)`, so the viewport's top-left corner
+// is at world (-cam.x/zoom, -cam.y/zoom). Sizing the card in *screen* pixels and
+// counter-scaling by 1/zoom leaves its content rendering at exactly 1:1 no
+// matter how far the board is zoomed — a maximized terminal must never be a
+// scaled-up bitmap of a small one.
+function maximizedGeometry(camera: Camera, viewport: { w: number; h: number }): React.CSSProperties {
+  return {
+    left: -camera.x / camera.zoom,
+    top: -camera.y / camera.zoom,
+    width: viewport.w,
+    height: viewport.h,
+    transform: `scale(${1 / camera.zoom})`,
+    transformOrigin: '0 0',
+    zIndex: 999999,
+  }
+}
+
+function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, onCapture, task, onTaskRename, noteColors, t }: CanvasCardProps) {
   const isShape = item.kind === 'shape'
-  const frameless = isShape || item.kind === 'text'
+  const frameless = (isShape || item.kind === 'text') && !maximized
   // Task cards wear their status as a coloured ring so the board reads as a
   // pipeline at a glance, even zoomed out.
   const statusRing = item.kind === 'task' && task && !selected ? taskStatusColor(task.status) : null
+  const maxStyle = maximized && camera && viewport && viewport.w > 0
+    ? maximizedGeometry(camera, viewport)
+    : null
+  // A maximized card fills the screen, so transparency there would just show the
+  // rest of the app behind it — always opaque.
+  const effAlpha = maxStyle ? 1 : alpha
 
   return (
     <div
@@ -1736,6 +1792,7 @@ function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, o
         // carries the alpha, leaving all content at full opacity.
         background: 'transparent',
         overflow: 'visible',
+        ...maxStyle,
       }}
       onPointerDown={() => onSelect(item.id)}
       onContextMenu={(e) => onContextMenu(e, item.id)}
@@ -1749,7 +1806,7 @@ function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, o
           aria-hidden
           style={{
             position: 'absolute', inset: 0, borderRadius: 12,
-            background: 'var(--bg-panel)', opacity: alpha, pointerEvents: 'none',
+            background: 'var(--bg-panel)', opacity: effAlpha, pointerEvents: 'none',
             // Explicit 0 against the content's 1: a positioned child would
             // otherwise paint *over* its in-flow siblings and hide them.
             zIndex: 0,
@@ -1764,16 +1821,24 @@ function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, o
             ...styles.cardHeader, position: 'relative', zIndex: 1,
             // Let the faded backdrop show through the title bar too, so the
             // whole card reads as translucent — its text stays fully opaque.
-            ...(alpha < 1 ? { background: 'transparent' } : null),
+            ...(effAlpha < 1 ? { background: 'transparent' } : null),
+            ...(maxStyle ? { cursor: 'default' } : null),
           }}
-          onPointerDown={(e) => { if (e.button === 0) onDragStart(e, item.id) }}
+          // Dragging/resizing a viewport-filling card is meaningless (and would
+          // fight the geometry above), so both are inert while maximized.
+          onPointerDown={(e) => { if (e.button === 0 && !maxStyle) onDragStart(e, item.id) }}
           onDoubleClick={() => onMaximize(item.id)}
         >
-          <span style={styles.grip}><GripDots /></span>
+          {!maxStyle && <span style={styles.grip}><GripDots /></span>}
           <span style={styles.cardLabel}>{cardLabel(item, t)}</span>
           <div style={{ flex: 1 }} />
-          {item.kind === 'terminal' && (
-            <button style={styles.cardHdrBtn} title={t('canvas.maximize')} onPointerDown={e => e.stopPropagation()} onClick={() => onMaximize(item.id)}>⤢</button>
+          {(item.kind === 'terminal' || maxStyle) && (
+            <button
+              style={styles.cardHdrBtn}
+              title={maxStyle ? t('canvas.restore') : t('canvas.maximize')}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={() => onMaximize(item.id)}
+            >{maxStyle ? '⤡' : '⤢'}</button>
           )}
           <button style={styles.cardHdrBtn} title={t('canvas.removeCard')} onPointerDown={e => e.stopPropagation()} onClick={() => onRemove(item.id)}>✕</button>
         </div>
@@ -1785,7 +1850,7 @@ function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, o
         // Shapes/text are dragged by their body since they have no header.
         onPointerDown={frameless ? (e) => { if (e.button === 0 && item.kind !== 'text') onDragStart(e, item.id) } : undefined}
       >
-        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} onCapture={onCapture} task={task} onTaskRename={onTaskRename} noteColors={noteColors} alpha={alpha} t={t} />
+        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} onCapture={onCapture} task={task} onTaskRename={onTaskRename} noteColors={noteColors} alpha={effAlpha} t={t} maximized={!!maxStyle} />
         {/* frameless move/delete affordances when selected (text can't drag from
             its body — the textarea captures the pointer for editing). */}
         {frameless && selected && (
@@ -1808,7 +1873,7 @@ function CanvasCard({ item, selected, zoom, alpha, onDragStart, onResizeStart, o
       {/* Resize handles — all 8 edges/corners. Sized in *screen* px (divided by
           zoom) so they stay grabbable when zoomed far out, and only painted
           while the card is selected so the board stays clean. */}
-      {RESIZE_DIRS.map(dir => (
+      {!maxStyle && RESIZE_DIRS.map(dir => (
         <div
           key={dir}
           onPointerDown={(e) => onResizeStart(e, item.id, dir)}
@@ -2829,18 +2894,14 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 11.5, flex: '1 1 auto',
   },
   bgTypeBtnActive: { background: 'var(--accent)', color: 'var(--accent-fg)', borderColor: 'var(--accent)' },
-  maxOverlay: {
-    position: 'absolute', inset: 12, zIndex: 40, display: 'flex', flexDirection: 'column',
-    background: 'var(--bg-panel)', border: '1px solid var(--border-active)', borderRadius: 12,
-    boxShadow: '0 20px 60px rgba(0,0,0,0.7)', overflow: 'hidden',
-  },
-  maxHeader: {
-    height: 34, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '0 12px', background: 'var(--bg-elevated)', borderBottom: '1px solid var(--border-subtle)',
-  },
-  maxRestore: {
-    height: 24, padding: '0 12px', background: 'var(--accent)', border: 'none', borderRadius: 7,
+  // Escape hatch for a maximized card. It floats above the card (which itself
+  // sits at a very high z within the world layer) so there's always a visible
+  // way back, whatever the card is rendering.
+  maxRestoreFloating: {
+    position: 'absolute', top: 10, right: 12, zIndex: 60,
+    height: 26, padding: '0 12px', background: 'var(--accent)', border: 'none', borderRadius: 7,
     color: 'var(--accent-fg)', cursor: 'pointer', fontSize: 11.5, fontWeight: 600,
+    boxShadow: '0 6px 20px rgba(0,0,0,0.5)',
   },
   ctxMenu: {
     position: 'fixed', minWidth: 190, padding: 4, zIndex: 99999,

@@ -1,9 +1,10 @@
 import { app } from 'electron'
 import { join, sep } from 'path'
-import { mkdirSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, rmSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { getAppState, setAppState, type AgentId } from '../memory/queries'
 import { encryptSecret, decryptSecret } from './secrets'
+import { pickAccount, signedInState } from './lib/accounts'
 
 // ── Global agent accounts ───────────────────────────────────────────────────────
 // A user can connect multiple accounts per agent (e.g. several Claude or OpenAI
@@ -66,9 +67,8 @@ export function allProfileEnv(): Record<string, string> {
   const env: Record<string, string> = {}
   for (const agentId of Object.keys(PROFILE_LOGIN) as AgentId[]) {
     const st = blob[agentId]
-    if (!st || st.accounts.length === 0) continue
-    const acc = st.accounts.find(a => a.id === st.activeId) ?? st.accounts[0]
-    Object.assign(env, profileEnv(agentId, acc))
+    if (!st) continue
+    Object.assign(env, profileEnv(agentId, pickAccount(st.accounts, st.activeId)))
   }
   return env
 }
@@ -176,8 +176,39 @@ export function setActiveAccount(agentId: AgentId, accountId: string): void {
 // Main-process spawn path: the active account, decrypted, or null when the agent
 // has no connected accounts (callers then fall back to the per-workspace config).
 export function getActiveAccount(agentId: AgentId): AgentAccount | null {
+  return resolveAccount(agentId, null)
+}
+
+// Spawn-path resolution for ONE pane. A pane may be pinned to a specific account
+// (`PaneLeaf.accountId`), which is what makes several logins usable at the same
+// time — the global `activeId` is only the default for panes that aren't pinned.
+// An unknown/stale id (the account was deleted in Settings) falls back to the
+// default rather than spawning with no credential at all.
+export function resolveAccount(agentId: AgentId, accountId?: string | null): AgentAccount | null {
   const st = readBlob()[agentId]
-  if (!st || st.accounts.length === 0) return null
-  const acc = st.accounts.find(a => a.id === st.activeId) ?? st.accounts[0]
+  if (!st) return null
+  const acc = pickAccount(st.accounts, st.activeId, accountId)
   return acc ? decryptAccount(acc) : null
+}
+
+// ── Login state ─────────────────────────────────────────────────────────────
+// A CLI-login account is just an empty directory until the agent's own login
+// flow writes its credential there. Connecting an account and then closing the
+// login terminal before finishing leaves a *listed but unusable* account —
+// switching to it looks like "the switch did nothing", because the CLI simply
+// starts its onboarding again. So we look for the credential file each CLI
+// writes (see `electron/lib/accounts.ts`) and let the UI say so.
+
+// true = credential present, false = profile dir exists but holds none,
+// null = not knowable (API-key account, or an agent we have no marker for).
+export function accountSignedIn(agentId: AgentId, account: AgentAccount): boolean | null {
+  return signedInState(agentId, account, existsSync)
+}
+
+// Renderer-facing: {accountId: signed-in state} for one agent.
+export function accountStates(agentId: AgentId): Record<string, boolean | null> {
+  const st = readBlob()[agentId]
+  const out: Record<string, boolean | null> = {}
+  for (const a of st?.accounts ?? []) out[a.id] = accountSignedIn(agentId, a)
+  return out
 }

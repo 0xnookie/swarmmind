@@ -18,6 +18,7 @@
     "fileops-verify": "node tests/fileops-verify.mjs",
     "canvas-verify": "node tests/canvas-verify.mjs",
     "canvas-tasks-verify": "node tests/canvas-tasks-verify.mjs",
+    "canvas-terminal-verify": "node tests/canvas-terminal-verify.mjs",
     "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",

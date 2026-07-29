@@ -24,7 +24,7 @@ declare global {
   interface Window {
     swarmmind: {
       // PTY
-      ptyCreate: (paneId: string, agentId: string, cwd: string, shellStyle: string, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string, workspaceId?: string) => Promise<{ ok?: boolean; error?: string }>
+      ptyCreate: (paneId: string, agentId: string, cwd: string, shellStyle: string, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string, workspaceId?: string, accountId?: string | null) => Promise<{ ok?: boolean; error?: string }>
       ptyCreateShell: (paneId: string, cwd: string, shellStyle: string, cols?: number, rows?: number) => Promise<{ ok?: boolean; error?: string }>
       ptyInput: (paneId: string, data: string) => void
       ptyResize: (paneId: string, cols: number, rows: number) => void
@@ -91,7 +91,10 @@ declare global {
       getAgentConfig: (agentId: string) => Promise<Record<string, unknown>>
       setAgentConfig: (agentId: string, config: unknown) => Promise<void>
       // Global agent accounts
-      listAgentAccounts: (agentId: string) => Promise<{ accounts: AgentAccount[]; activeId?: string }>
+      // `states[accountId]`: true = the profile dir holds a credential, false =
+      // connected but never signed in, null/absent = not knowable (API-key
+      // account, or an agent with no known credential marker).
+      listAgentAccounts: (agentId: string) => Promise<{ accounts: AgentAccount[]; activeId?: string; states?: Record<string, boolean | null> }>
       saveAgentAccounts: (agentId: string, accounts: AgentAccount[], activeId?: string) => Promise<void>
       setActiveAgentAccount: (agentId: string, accountId: string) => Promise<void>
       connectAgentAccount: (agentId: string, label: string) => Promise<{ account?: AgentAccount; error?: string }>

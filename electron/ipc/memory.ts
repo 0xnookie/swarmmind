@@ -27,7 +27,7 @@ import {
   type AgentId
 } from '../../memory/queries'
 import { readAgentConfig, writeAgentConfig } from '../agent-config'
-import { listAccounts, saveAccounts, setActiveAccount, createProfileAccount, type AgentAccount } from '../agent-accounts'
+import { listAccounts, saveAccounts, setActiveAccount, createProfileAccount, accountStates, type AgentAccount } from '../agent-accounts'
 
 export function registerMemoryHandlers(getWorkspaceId: () => string | null): void {
   ipcMain.handle('memory:list', (_event, type?: MemoryType, agentId?: string) => {
@@ -127,7 +127,13 @@ export function registerMemoryHandlers(getWorkspaceId: () => string | null): voi
   })
 
   // ── Agent accounts (global, in app.db — not per-workspace) ────────────────
-  ipcMain.handle('accounts:list', (_event, agentId: AgentId) => listAccounts(agentId))
+  // `states` reports, per account, whether its profile dir actually holds a
+  // credential — so the UI can flag a connected-but-never-signed-in account
+  // instead of letting a switch to it silently do nothing.
+  ipcMain.handle('accounts:list', (_event, agentId: AgentId) => ({
+    ...listAccounts(agentId),
+    states: accountStates(agentId),
+  }))
 
   ipcMain.handle('accounts:save', (_event, agentId: AgentId, accounts: unknown, activeId?: string) => {
     saveAccounts(agentId, accounts as AgentAccount[], activeId)

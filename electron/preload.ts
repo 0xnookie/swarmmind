@@ -1,8 +1,8 @@
 ﻿import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('swarmmind', {
-  ptyCreate: (paneId: string, agentId: string, cwd: string, shellStyle: string, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string, workspaceId?: string) =>
-    ipcRenderer.invoke('pty:create', paneId, agentId, cwd, shellStyle, taskContext, cols, rows, resume, sessionId, workspaceId),
+  ptyCreate: (paneId: string, agentId: string, cwd: string, shellStyle: string, taskContext?: string, cols?: number, rows?: number, resume?: boolean, sessionId?: string, workspaceId?: string, accountId?: string | null) =>
+    ipcRenderer.invoke('pty:create', paneId, agentId, cwd, shellStyle, taskContext, cols, rows, resume, sessionId, workspaceId, accountId),
   ptyCreateShell: (paneId: string, cwd: string, shellStyle: string, cols?: number, rows?: number) =>
     ipcRenderer.invoke('pty:createShell', paneId, cwd, shellStyle, cols, rows),
   ptyInput: (paneId: string, data: string) =>

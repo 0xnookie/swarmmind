@@ -59,6 +59,13 @@ export interface PaneLeaf {
   // `swarmmind/<sanitized name>`. Empty/undefined falls back to title → agent →
   // pane id. Only affects a worktree that hasn't been materialised yet.
   worktreeName?: string
+  // Persisted: the connected account (agent login) this pane spawns with. When
+  // unset the pane follows the agent's global default account, which is what
+  // every pane did before — so an existing layout keeps working untouched.
+  // Pinning it per pane is what allows two panes of the same agent to run on two
+  // different logins at once (e.g. one hit its usage limit). Resolved in
+  // electron/agent-accounts.ts::resolveAccount at spawn time.
+  accountId?: string | null
   // Mixed workspace (persisted): the workspace this pane's agent belongs to,
   // when it differs from the currently-open (host) workspace. Undefined = the
   // host workspace (the default). A foreign pane spawns with this workspace's
@@ -353,6 +360,7 @@ interface WorkspaceState {
   setPaneColor: (paneId: string, color: string | null) => void
   setPaneWorktree: (paneId: string, enabled: boolean) => void
   setPaneWorktreeName: (paneId: string, name: string | null) => void
+  setPaneAccount: (paneId: string, accountId: string | null) => void
   setPaneWorktreeInfo: (paneId: string, info: { path: string; branch: string } | null) => void
   splitPane: (paneId: string, direction: 'horizontal' | 'vertical') => void
   addPane: (agentId?: AgentId, taskId?: string) => void
@@ -805,6 +813,16 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set(s => {
       const n = name?.trim()
       const updated = makeRoot(updateLeaf(s.rootPane, paneId, l => ({ ...l, worktreeName: n || undefined })))
+      saveLayout(JSON.stringify(updated))
+      return { rootPane: updated }
+    }),
+
+  // Pin this pane to a specific connected account (null = follow the agent's
+  // global default). Persisted with the layout, so the binding survives a
+  // restart and the pane resumes on the same login it was using.
+  setPaneAccount: (paneId, accountId) =>
+    set(s => {
+      const updated = makeRoot(updateLeaf(s.rootPane, paneId, l => ({ ...l, accountId: accountId ?? null })))
       saveLayout(JSON.stringify(updated))
       return { rootPane: updated }
     }),
