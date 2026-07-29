@@ -6,6 +6,48 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.25.0]
+
+**Your terminals stay connected wherever you are in the app, and every pane can
+run on its own account.** Switching to canvas mode (or the board, or the file
+panel) no longer leaves agents looking dead when you come back — and if you've
+connected more than one login for an agent, you can now use several of them at
+the same time instead of one at a time.
+
+### Added
+- **Each pane can run on its own connected account.** Pick an account from a
+  pane's right-click menu and it sticks to that pane, so one Claude pane can run
+  on your first login while another runs on a second — useful when one hits a
+  usage limit and you don't want to stop the work in the other. Panes you
+  haven't touched keep following the default account, and "Follow default
+  account" puts a pane back that way. The choice is remembered across restarts.
+- **Accounts that were never signed in are called out.** Connecting an account
+  and closing the login window before finishing used to leave an account that
+  looked ready but simply re-ran the sign-up flow when you switched to it.
+  Settings now shows "Sign-in not completed" with a **Finish login** button, and
+  the pane's account badge shows a warning.
+
+### Fixed
+- **Agent output produced while you were in another view is no longer lost.**
+  Canvas mode, the Kanban board and the file panel all hide the terminals, and
+  anything the agents printed in the moment of switching never made it into the
+  pane — so returning to a terminal could show a gap, or a pane that looked
+  frozen. Everything is now recorded whether or not a terminal is on screen.
+- **A pane whose agent finished while you were in another view no longer stays
+  stuck showing "running".** It now drops back to a shell as it would have if
+  you'd been watching.
+- **Maximizing a terminal card on the canvas no longer rebuilds the terminal.**
+  It used to be re-created from scratch (and a browser card's page reloaded)
+  just to make it bigger; maximize and restore are now instant and lossless.
+  Browser and device cards can be maximized too, and keep their page state.
+- **Switching a running agent to a different account works.** It used to try to
+  resume the old conversation on the new login, which can't work — conversations
+  belong to the account they were started on — and the relaunch simply failed.
+  It now resumes when the two accounts share a login and otherwise starts a
+  fresh session, telling you which it did.
+- **An account's API key is no longer shadowed by a different account's CLI
+  login**, which could quietly send a pane to the wrong credentials.
+
 ## [0.24.1]
 
 **The wake word reacts about twice as fast.** Saying "hey swarm" took around
