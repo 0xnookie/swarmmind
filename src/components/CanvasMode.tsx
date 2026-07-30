@@ -12,6 +12,10 @@ import {
 import {
   fitBox, rectsIntersect, projectPointToImage, strokeScale, buildHandoffPrompt,
 } from '../lib/canvasHandoff'
+import {
+  focusLayout, snapAll, tidyGrid, eraserHits, isErasableKind, ERASER_RADIUS,
+  type Rect as ScreenRect,
+} from '../lib/canvasLayout'
 import type { KanbanTask } from './KanbanBoard'
 import { addDep, removeDep, wouldCycle, parseDeps, taskStatusColor } from '../lib/canvasTasks'
 
@@ -23,7 +27,7 @@ import { addDep, removeDep, wouldCycle, parseDeps, taskStatusColor } from '../li
 // terminal↔pane link is persisted per-workspace under the `canvas:<id>` setting.
 
 type CanvasTool =
-  | 'select' | 'hand' | 'draw' | 'connect'
+  | 'select' | 'hand' | 'draw' | 'erase' | 'connect'
   | 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'image' | 'task'
   | 'rect' | 'ellipse' | 'triangle'
 
@@ -51,6 +55,10 @@ interface CanvasItem {
   src?: string             // image — data URL
   opacity?: number         // terminal — card opacity, 0.2…1 (default 1)
   taskId?: string          // task — row id in the tasks table (see KanbanTask)
+  // Pinned in place: no drag, no resize, no erase, no Delete. For the reference
+  // material you draw on top of (a screenshot, a frame) which otherwise moves
+  // the moment you miss the stroke.
+  locked?: boolean
 }
 
 // One page inside a browser card. A card with several of these renders a tab
@@ -247,6 +255,14 @@ export function CanvasMode() {
   const [background, setBackground] = useState<Background>(DEFAULT_BG)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [maximizedId, setMaximizedId] = useState<string | null>(null)
+  // Focus mode: one terminal on the stage, the others stacked down the right
+  // edge. Session-only — it's a way of looking at the board, not part of it, so
+  // reopening the workspace gives you the board back rather than a view you
+  // left days ago. Cleared automatically if the focused pane goes away.
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+  // Keyboard-shortcut cheat sheet (`?`). The board leans on bare-key tools, so
+  // there has to be somewhere to read them.
+  const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [bgPickerOpen, setBgPickerOpen] = useState(false)
   // Tool rail placement. `null` = the default left-centred spot; once dragged it
   // becomes an explicit {x,y} in board coords. Collapsing shrinks it to a puck.
@@ -271,6 +287,9 @@ export function CanvasMode() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pendingImgPos = useRef<{ x: number; y: number } | null>(null)
   // Pen tool: current colour/width and the in-progress stroke (world coords).
+  // Live eraser cursor (screen coords) — the ring that shows what a swipe would
+  // catch. A plain crosshair gives no sense of the radius.
+  const [eraserAt, setEraserAt] = useState<{ x: number; y: number } | null>(null)
   const [penColor, setPenColor] = useState(PEN_COLORS[0])
   const [penWidth, setPenWidth] = useState(PEN_WIDTHS[1])
   const [draft, setDraft] = useState<{ x: number; y: number }[] | null>(null)
@@ -318,6 +337,12 @@ export function CanvasMode() {
   itemsRef.current = items
   const connectorsRef = useRef(connectors)
   connectorsRef.current = connectors
+  const focusedRef = useRef(focusedId)
+  focusedRef.current = focusedId
+  // The last eraser pass, so it can be taken back (Ctrl+Z). Erasing is the one
+  // gesture here that destroys work in bulk without a confirmation, and a
+  // hand-drawn annotation can't be re-created from anything.
+  const lastErasedRef = useRef<CanvasItem[]>([])
   const zTopRef = useRef(1)
 
   const leaves = useMemo(() => getLeaves(rootPane), [rootPane])
@@ -592,7 +617,11 @@ export function CanvasMode() {
     setMenu(null)
     const zoom = cameraRef.current.zoom
     const it = itemsRef.current.find(i => i.id === id)
-    if (!it) return
+    if (!it || it.locked) return
+    // Focus mode places cards by computed geometry, so dragging one would edit
+    // a position nothing is reading — and would silently move the card on the
+    // board underneath.
+    if (focusedRef.current) return
     const startX = e.clientX, startY = e.clientY
     const ox = it.x, oy = it.y
     let moved = false
@@ -638,7 +667,7 @@ export function CanvasMode() {
     setMenu(null)
     const zoom = cameraRef.current.zoom
     const it = itemsRef.current.find(i => i.id === id)
-    if (!it) return
+    if (!it || it.locked || focusedRef.current) return
     const startX = e.clientX, startY = e.clientY
     const orig = { x: it.x, y: it.y, w: it.w, h: it.h }
     setInteracting(RESIZE_CURSOR[dir])
@@ -663,15 +692,21 @@ export function CanvasMode() {
   const removeItem = useCallback((id: string) => {
     setItems(prev => {
       const it = prev.find(i => i.id === id)
+      if (it?.locked) return prev
       if (it?.kind === 'terminal' && it.paneId) closePane(it.paneId)
       return prev.filter(i => i.id !== id)
     })
     setSelectedId(sel => sel === id ? null : sel)
     setMaximizedId(m => m === id ? null : m)
+    setFocusedId(f => f === id ? null : f)
   }, [closePane])
 
   const updateItem = useCallback((id: string, patch: Partial<CanvasItem>) => {
     setItems(prev => prev.map(it => it.id === id ? { ...it, ...patch } : it))
+  }, [])
+
+  const toggleLock = useCallback((id: string) => {
+    setItems(prev => prev.map(it => it.id === id ? { ...it, locked: !it.locked } : it))
   }, [])
 
   // Duplicate an item, offset a little. Terminals spawn a fresh pane (you can't
@@ -946,11 +981,125 @@ export function CanvasMode() {
     window.addEventListener('pointerup', up)
   }, [screenToWorld])
 
+  // ── Eraser ──
+  // Swipe to remove annotation: whole strokes (tested against the real path, so
+  // erasing inside the open loop of a drawn circle doesn't delete it), notes,
+  // text, shapes and images. Terminals, browsers, devices and task cards are
+  // immune — those are a live pty, page state and a row in the tasks table, and
+  // losing one to a stray swipe isn't an "oops, redraw it". The rules live in
+  // `canvasLayout.ts::eraserHits`.
+  const startErase = useCallback((e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    setMenu(null)
+    const erased: CanvasItem[] = []
+    let blockedByProtected = false
+
+    const eraseAt = (sx: number, sy: number) => {
+      const p = screenToWorld(sx, sy)
+      const r = ERASER_RADIUS / cameraRef.current.zoom
+      const hits = itemsRef.current.filter(i => eraserHits(i, p.x, p.y, r))
+      if (!hits.length) {
+        // Nothing erasable under the cursor, but something protected is: worth
+        // saying once, so "the eraser is broken" never becomes the conclusion.
+        blockedByProtected ||= itemsRef.current.some(i =>
+          !isErasableKind(i.kind) && p.x >= i.x && p.x <= i.x + i.w && p.y >= i.y && p.y <= i.y + i.h)
+        return
+      }
+      erased.push(...hits)
+      const gone = new Set(hits.map(i => i.id))
+      setItems(prev => prev.filter(i => !gone.has(i.id)))
+    }
+
+    setInteracting('none')
+    eraseAt(e.clientX, e.clientY)
+    const move = (ev: PointerEvent) => {
+      setEraserAt({ x: ev.clientX, y: ev.clientY })
+      eraseAt(ev.clientX, ev.clientY)
+    }
+    const up = () => {
+      setInteracting(false)
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      if (erased.length) {
+        lastErasedRef.current = erased
+        setToast(t('canvas.erase.done', { n: erased.length }))
+      } else if (blockedByProtected) {
+        setToast(t('canvas.erase.protected'))
+      }
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }, [screenToWorld, t])
+
+  // Put back everything the last eraser pass removed (Ctrl+Z).
+  const undoErase = useCallback(() => {
+    const back = lastErasedRef.current
+    if (!back.length) return
+    lastErasedRef.current = []
+    setItems(prev => {
+      const have = new Set(prev.map(i => i.id))
+      return [...prev, ...back.filter(i => !have.has(i.id))]
+    })
+    setToast(t('canvas.erase.undone', { n: back.length }))
+  }, [t])
+
+  // ── Arrange ──
+  // Two different wishes, so two commands: "align" quantises what's already
+  // there onto the grid (positions AND sizes — a 503px-wide card never looks
+  // aligned however well its corner sits), while "tidy" reflows everything into
+  // an even grid, keeping each card's size and its reading order.
+  const alignAllToGrid = useCallback(() => {
+    const rects = snapAll(itemsRef.current.filter(i => i.kind !== 'draw' && !i.locked), GRID)
+    if (rects.size === 0) { setToast(t('canvas.arrange.nothing')); return }
+    setItems(prev => prev.map(i => {
+      const r = rects.get(i.id)
+      return r ? { ...i, ...r } : i
+    }))
+    setSnap(true)
+    setToast(t('canvas.arrange.aligned', { n: rects.size }))
+  }, [t])
+
+  const tidyBoard = useCallback(() => {
+    // Freehand strokes are annotation *of* the cards; reflowing them into the
+    // grid would scatter every scribble away from what it points at.
+    const movable = itemsRef.current.filter(i => i.kind !== 'draw' && !i.locked)
+    if (movable.length === 0) { setToast(t('canvas.arrange.nothing')); return }
+    const pos = tidyGrid(movable, GRID)
+    setItems(prev => prev.map(i => {
+      const p = pos.get(i.id)
+      return p ? { ...i, ...p } : i
+    }))
+    setToast(t('canvas.arrange.tidied', { n: pos.size }))
+  }, [t])
+
+  // ── Focus mode ──
+  // Enter on a terminal card: it takes the stage, the other terminals queue up
+  // the right-hand edge, everything else steps out of the way. Cards are never
+  // unmounted to do this (that would rebuild the xterm and drop the pane's
+  // scrollback) — only their geometry is overridden, exactly like maximize.
+  const focusTerminal = useCallback((itemId: string | null) => {
+    setFocusedId(prev => {
+      const next = prev === itemId ? null : itemId
+      if (next) { setMaximizedId(null); setTool('select') }
+      return next
+    })
+  }, [])
+
+  // A focused card whose pane was closed elsewhere leaves focus mode showing an
+  // empty stage, so drop out of it.
+  useEffect(() => {
+    if (focusedId && !items.some(i => i.id === focusedId && i.kind === 'terminal')) setFocusedId(null)
+  }, [items, focusedId])
+
   // ── Wheel: ctrl/cmd = zoom to cursor, otherwise pan ──
   useEffect(() => {
     const el = rootRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
+      // Focus mode places cards in screen space, so panning/zooming the camera
+      // would move only the background — all motion, no effect.
+      if (focusedRef.current) return
       const overCard = !!(e.target as HTMLElement)?.closest?.('[data-canvas-card]')
       const zooming = e.ctrlKey || e.metaKey
       // Let a card's own scroll surface (terminal history, webview, note text)
@@ -984,7 +1133,14 @@ export function CanvasMode() {
       if (isTyping(e.target)) return
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedConnectorId) { e.preventDefault(); removeConnector(selectedConnectorId); return }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) { e.preventDefault(); removeItem(selectedId); return }
-      if (e.key === 'Escape') { setMaximizedId(null); setMenu(null); setTool('select'); setSelectedId(null); setSelectedConnectorId(null); setConnectFrom(null); return }
+      if (e.key === 'Escape') {
+        setShortcutsOpen(false); setFocusedId(null); setMaximizedId(null); setMenu(null)
+        setTool('select'); setSelectedId(null); setSelectedConnectorId(null); setConnectFrom(null)
+        return
+      }
+      // Ctrl/⌘+Z takes back the last eraser pass — the only gesture here that
+      // destroys a batch of work without asking.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoErase(); return }
       // Ctrl/⌘+D duplicates the selected item.
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && selectedId) { e.preventDefault(); duplicateItem(selectedId); return }
       // Arrow keys nudge the selection (Shift = coarse). No modifier needed.
@@ -999,10 +1155,22 @@ export function CanvasMode() {
       // Bare-key tool shortcuts only — never hijack Ctrl/⌘/Alt combos (e.g.
       // Ctrl+B broadcast, ⌘+K palette).
       if (e.ctrlKey || e.metaKey || e.altKey) return
+      // `?` opens the shortcut sheet — the board is full of bare-key tools, so
+      // there has to be somewhere to read them.
+      if (e.key === '?') { e.preventDefault(); setShortcutsOpen(o => !o); return }
+      // F focuses the selected terminal (or leaves focus mode).
+      if (e.key.toLowerCase() === 'f') {
+        const sel = itemsRef.current.find(i => i.id === selectedId)
+        if (focusedRef.current) { setFocusedId(null); return }
+        if (sel?.kind === 'terminal') { focusTerminal(sel.id); return }
+      }
+      // L locks/unlocks the selection.
+      if (e.key.toLowerCase() === 'l' && selectedId) { toggleLock(selectedId); return }
       switch (e.key.toLowerCase()) {
         case 'v': setTool('select'); break
         case 'h': setTool('hand'); break
         case 'p': setTool('draw'); break
+        case 'e': setTool('erase'); break
         case 'c': setTool('connect'); break
         case 't': setTool('terminal'); break
         case 'b': setTool('browser'); break
@@ -1012,14 +1180,15 @@ export function CanvasMode() {
         case 'i': openImagePicker(); break
         case 'r': setTool('rect'); break
         case 'o': setTool('ellipse'); break
-        case 'g': setSnap(s => !s); break
+        case 'g': e.shiftKey ? alignAllToGrid() : setSnap(s => !s); break
+        case 'u': tidyBoard(); break
       }
     }
     const up = (e: KeyboardEvent) => { if (e.code === 'Space') setSpaceDown(false) }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
-  }, [selectedId, selectedConnectorId, removeItem, removeConnector, duplicateItem, openImagePicker])
+  }, [selectedId, selectedConnectorId, removeItem, removeConnector, duplicateItem, openImagePicker, undoErase, toggleLock, focusTerminal, alignAllToGrid, tidyBoard])
 
   // Close the context menu on any outside click.
   useEffect(() => {
@@ -1116,18 +1285,37 @@ export function CanvasMode() {
   const bgStyle = backgroundLayerStyle(background, camera)
   const maximized = maximizedId ? items.find(i => i.id === maximizedId) : null
 
+  // Focus mode geometry, recomputed from the live viewport so it re-flows on a
+  // window resize. `focus.hidden` is the dock overflow — those cards stay
+  // mounted (their ptys keep streaming) but are display:none'd, and the dock
+  // says how many are stashed rather than drawing them off-screen.
+  const focus = focusedId && viewport.w > 0
+    ? focusLayout(items.filter(i => i.kind === 'terminal').map(i => i.id), focusedId, viewport)
+    : null
+  const focusHidden = focus ? new Set(focus.hidden) : null
+  // Placement for one card while focus mode is on: the stage, a dock slot, or
+  // out of the way entirely (non-terminals and dock overflow).
+  const focusRectFor = (item: CanvasItem): ScreenRect | 'hidden' | null => {
+    if (!focus) return null
+    if (item.kind !== 'terminal') return 'hidden'
+    if (item.id === focusedId) return focus.stage
+    if (focusHidden!.has(item.id)) return 'hidden'
+    return focus.dock.get(item.id) ?? 'hidden'
+  }
+
   return (
     <div style={styles.wrap}>
       {/* ── Board surface ── */}
       <div
         ref={rootRef}
+        data-canvas-board
         style={{
           ...styles.board, cursor,
           background: background.type === 'solid' ? background.color : 'var(--bg-base)',
           // The maximized card lives inside this (transformed) subtree, so the
           // board itself has to out-stack the floating chrome — tool rail and
           // minimap sit at z 20 as siblings. The restore button is above both.
-          ...(maximizedId ? { zIndex: 50 } : null),
+          ...(maximizedId || focusedId ? { zIndex: 50 } : null),
         }}
         onPointerDown={onCanvasPointerDown}
         onDoubleClick={(e) => {
@@ -1163,7 +1351,7 @@ export function CanvasMode() {
         >
           {/* Connectors (arrows) — drawn under the cards so they emanate from
               card borders; the exposed segment stays clickable for selection. */}
-          <svg style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 0 }} width={1} height={1}>
+          <svg style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', pointerEvents: 'none', zIndex: 0, display: focus ? 'none' : undefined }} width={1} height={1}>
             <defs>
               <marker id="cn-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                 <path d="M0 0 L10 5 L0 10 z" fill="context-stroke" />
@@ -1210,7 +1398,11 @@ export function CanvasMode() {
               disposed and rebuilt (and a browser card's webview reloaded) just
               to make it bigger. */}
           {items.map(item => (
-            item.kind === 'draw' ? (
+            // Freehand ink lives in world coordinates, so in focus mode — where
+            // the cards are placed in screen space — it would float over the
+            // stage pointing at nothing. Unmounting it is free (it's stateless
+            // SVG, unlike the cards).
+            item.kind === 'draw' ? (focus ? null : (
               <CanvasDrawing
                 key={item.id}
                 item={item}
@@ -1218,7 +1410,7 @@ export function CanvasMode() {
                 onDragStart={startDrag}
                 onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); setSelectedId(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
               />
-            ) : (
+            )) : (
               <CanvasCard
                 key={item.id}
                 item={item}
@@ -1227,6 +1419,9 @@ export function CanvasMode() {
                 maximized={item.id === maximizedId}
                 camera={camera}
                 viewport={viewport}
+                focusRect={focusRectFor(item)}
+                isFocusStage={focus ? item.id === focusedId : false}
+                onFocus={item.kind === 'terminal' ? () => focusTerminal(item.id) : undefined}
                 onDragStart={startDrag}
                 onResizeStart={startResize}
                 onSelect={(id) => { setSelectedId(id); bringToFront(id) }}
@@ -1264,6 +1459,18 @@ export function CanvasMode() {
           <div style={{ position: 'absolute', inset: 0, zIndex: 15, cursor: 'crosshair' }} onPointerDown={startDraw} />
         )}
 
+        {/* Eraser capture layer — like the pen's, so a swipe can start over a
+            card as well as over empty board. Also tracks the cursor so the
+            radius ring follows it before you press. */}
+        {tool === 'erase' && (
+          <div
+            style={{ position: 'absolute', inset: 0, zIndex: 15, cursor: 'none' }}
+            onPointerDown={startErase}
+            onPointerMove={(e) => setEraserAt({ x: e.clientX, y: e.clientY })}
+            onPointerLeave={() => setEraserAt(null)}
+          />
+        )}
+
         {/* Connect capture layer — clicking two cards links them with an arrow. */}
         {tool === 'connect' && (
           <div
@@ -1287,8 +1494,10 @@ export function CanvasMode() {
         )}
       </div>
 
-      {/* ── Tool rail (Miro-style) — draggable, collapsible ── */}
-      {railCollapsed ? (
+      {/* ── Tool rail (Miro-style) — draggable, collapsible ──
+          Hidden in focus mode: placing a new card somewhere you can't see it is
+          the only thing most of these tools could do there. */}
+      {focus ? null : railCollapsed ? (
         <div ref={railRef} style={{ ...railStyle, padding: 4 }}>
           <div
             onPointerDown={startRailDrag}
@@ -1320,6 +1529,7 @@ export function CanvasMode() {
         <ToolButton active={tool === 'select'} label={t('canvas.tool.select')} onClick={() => setTool('select')}><IconCursor /></ToolButton>
         <ToolButton active={tool === 'hand'} label={t('canvas.tool.hand')} onClick={() => setTool('hand')}><IconHand /></ToolButton>
         <ToolButton active={tool === 'draw'} label={t('canvas.tool.pen')} onClick={() => setTool('draw')}><IconPen /></ToolButton>
+        <ToolButton active={tool === 'erase'} label={t('canvas.tool.erase')} onClick={() => setTool('erase')}><IconEraser /></ToolButton>
         <ToolButton active={tool === 'connect'} label={t('canvas.tool.connect')} onClick={() => setTool('connect')}><IconConnect /></ToolButton>
         <div style={styles.railDivider} />
         <ToolButton active={tool === 'terminal'} label={t('canvas.tool.terminal')} onClick={() => setTool('terminal')}><IconTerminal /></ToolButton>
@@ -1373,11 +1583,14 @@ export function CanvasMode() {
         <button style={styles.zoomLabel} onClick={resetView} title={t('canvas.resetView')}>{Math.round(camera.zoom * 100)}%</button>
         <button style={styles.iconCtrl} onClick={() => zoomBy(1.2)} title={t('canvas.zoomIn')}>+</button>
         <button style={styles.iconCtrl} onClick={zoomToFit} title={t('canvas.fit')}><IconFit /></button>
+        <button style={styles.iconCtrl} onClick={tidyBoard} title={t('canvas.arrange.tidyTitle')}><IconTidy /></button>
         <button
           style={{ ...styles.iconCtrl, color: snap ? 'var(--accent)' : 'var(--text-secondary)', borderColor: snap ? 'var(--accent)' : 'var(--border)' }}
           onClick={() => setSnap(s => !s)}
-          title={snap ? t('canvas.snapOn') : t('canvas.snapOff')}
+          onContextMenu={(e) => { e.preventDefault(); alignAllToGrid() }}
+          title={`${snap ? t('canvas.snapOn') : t('canvas.snapOff')} — ${t('canvas.arrange.alignHint')}`}
         ><IconSnap /></button>
+        <button style={styles.iconCtrl} onClick={() => setShortcutsOpen(o => !o)} title={t('canvas.shortcuts.title')}>?</button>
         <button style={styles.exitBtn} onClick={showTerminals} title={t('canvas.exit')}>
           <IconExit /> <span style={{ fontSize: 12 }}>{t('canvas.exit')}</span>
         </button>
@@ -1397,7 +1610,17 @@ export function CanvasMode() {
             const browserCount = items.filter(i => i.kind === 'browser').length
             return (
             <>
+              {target?.kind === 'terminal' && (
+                <button className="ctx-menu-item" onClick={() => { focusTerminal(target.id); setMenu(null) }}>
+                  <span style={{ flex: 1 }}>{focusedId === target.id ? t('canvas.focus.exit') : t('canvas.focus.enter')}</span>
+                  <span style={styles.ctxKey}>F</span>
+                </button>
+              )}
               <button className="ctx-menu-item" onClick={() => { duplicateItem(menu.itemId!); setMenu(null) }}><span style={{ flex: 1 }}>{t('canvas.ctx.duplicate')}</span><span style={styles.ctxKey}>Ctrl+D</span></button>
+              <button className="ctx-menu-item" onClick={() => { toggleLock(menu.itemId!); setMenu(null) }}>
+                <span style={{ flex: 1 }}>{target?.locked ? t('canvas.ctx.unlock') : t('canvas.ctx.lock')}</span>
+                <span style={styles.ctxKey}>L</span>
+              </button>
               <button className="ctx-menu-item" onClick={() => { bringToFront(menu.itemId!); setMenu(null) }}>{t('canvas.ctx.front')}</button>
               <button className="ctx-menu-item" onClick={() => { sendToBack(menu.itemId!); setMenu(null) }}>{t('canvas.ctx.back')}</button>
 
@@ -1557,6 +1780,15 @@ export function CanvasMode() {
               <button className="ctx-menu-item" onClick={() => addFromMenu('rect', menu.wx, menu.wy)}>{t('canvas.tool.rect')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('ellipse', menu.wx, menu.wy)}>{t('canvas.tool.ellipse')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('triangle', menu.wx, menu.wy)}>{t('canvas.tool.triangle')}</button>
+              <div style={styles.ctxDivider} />
+              <div style={styles.ctxLabel}>{t('canvas.arrange.label')}</div>
+              <button className="ctx-menu-item" onClick={() => { tidyBoard(); setMenu(null) }}>
+                <span style={{ flex: 1 }}>{t('canvas.arrange.tidy')}</span><span style={styles.ctxKey}>U</span>
+              </button>
+              <button className="ctx-menu-item" onClick={() => { alignAllToGrid(); setMenu(null) }}>
+                <span style={{ flex: 1 }}>{t('canvas.arrange.align')}</span><span style={styles.ctxKey}>Shift+G</span>
+              </button>
+              <button className="ctx-menu-item" onClick={() => { zoomToFit(); setMenu(null) }}>{t('canvas.fit')}</button>
             </>
           )}
         </div>
@@ -1564,14 +1796,45 @@ export function CanvasMode() {
 
       {/* A maximized card is rendered in place by CanvasCard (see
           maximizedGeometry) — there is deliberately no overlay copy of it. */}
-      {maximized && (
+      {maximized && !focus && (
         <button style={styles.maxRestoreFloating} onClick={() => setMaximizedId(null)}>
           {t('canvas.restore')}
         </button>
       )}
 
+      {/* Focus mode bar — the way out, plus the count of terminals the dock
+          couldn't fit (they stay live, just off the strip). */}
+      {focus && (
+        <div style={styles.focusBar}>
+          <IconFocus />
+          <span>{t('canvas.focus.active')}</span>
+          {focus.hidden.length > 0 && (
+            <span style={styles.focusMore} title={t('canvas.focus.hiddenTitle')}>
+              +{focus.hidden.length}
+            </span>
+          )}
+          <button style={styles.focusExitBtn} onClick={() => setFocusedId(null)}>{t('canvas.focus.exit')}</button>
+        </div>
+      )}
+
+      {/* Eraser cursor ring — shows the radius a swipe would catch. */}
+      {tool === 'erase' && eraserAt && (
+        <div
+          aria-hidden
+          style={{
+            position: 'fixed', pointerEvents: 'none', zIndex: 99999,
+            left: eraserAt.x - ERASER_RADIUS, top: eraserAt.y - ERASER_RADIUS,
+            width: ERASER_RADIUS * 2, height: ERASER_RADIUS * 2,
+            borderRadius: '50%', border: '1.5px solid var(--accent)',
+            background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+          }}
+        />
+      )}
+
+      {shortcutsOpen && <ShortcutSheet t={t} onClose={() => setShortcutsOpen(false)} />}
+
       {/* ── Minimap navigator (bottom-right) ── */}
-      {items.length > 0 && (
+      {items.length > 0 && !focus && (
         <Minimap items={items} camera={camera} rootRef={rootRef} pos={minimapPos} onMove={setMinimapPos} onInteract={setInteracting} t={t} onJump={(wx, wy) => {
           const rect = rootRef.current?.getBoundingClientRect()
           if (!rect) return
@@ -1736,6 +1999,10 @@ interface CanvasCardProps {
   maximized?: boolean
   camera?: Camera
   viewport?: { w: number; h: number }
+  /** Focus mode placement: a screen rect, 'hidden', or null when focus is off. */
+  focusRect?: ScreenRect | 'hidden' | null
+  isFocusStage?: boolean
+  onFocus?: () => void
   t: (k: any, p?: any) => string
 }
 
@@ -1749,27 +2016,48 @@ interface CanvasCardProps {
 // counter-scaling by 1/zoom leaves its content rendering at exactly 1:1 no
 // matter how far the board is zoomed — a maximized terminal must never be a
 // scaled-up bitmap of a small one.
-function maximizedGeometry(camera: Camera, viewport: { w: number; h: number }): React.CSSProperties {
+function screenAnchored(rect: ScreenRect, camera: Camera, zIndex: number): React.CSSProperties {
   return {
-    left: -camera.x / camera.zoom,
-    top: -camera.y / camera.zoom,
-    width: viewport.w,
-    height: viewport.h,
+    left: (rect.x - camera.x) / camera.zoom,
+    top: (rect.y - camera.y) / camera.zoom,
+    width: rect.w,
+    height: rect.h,
     transform: `scale(${1 / camera.zoom})`,
     transformOrigin: '0 0',
-    zIndex: 999999,
+    zIndex,
   }
 }
 
-function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, onCapture, task, onTaskRename, noteColors, t }: CanvasCardProps) {
+function maximizedGeometry(camera: Camera, viewport: { w: number; h: number }): React.CSSProperties {
+  return screenAnchored({ x: 0, y: 0, w: viewport.w, h: viewport.h }, camera, 999999)
+}
+
+function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, focusRect, isFocusStage, onFocus, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, onCapture, task, onTaskRename, noteColors, t }: CanvasCardProps) {
   const isShape = item.kind === 'shape'
-  const frameless = (isShape || item.kind === 'text') && !maximized
+  const frameless = (isShape || item.kind === 'text') && !maximized && !focusRect
   // Task cards wear their status as a coloured ring so the board reads as a
   // pipeline at a glance, even zoomed out.
   const statusRing = item.kind === 'task' && task && !selected ? taskStatusColor(task.status) : null
-  const maxStyle = maximized && camera && viewport && viewport.w > 0
+
+  // Focus mode wins over maximize: both are "place this card in screen space",
+  // and entering focus clears any maximize anyway.
+  //
+  // A card that focus mode takes out of view is display:none'd, NOT unmounted —
+  // that keeps a terminal's xterm, its pty subscription and a browser's page
+  // state alive, so leaving focus mode restores the board instantly instead of
+  // rebuilding every card on it.
+  const focusStyle = focusRect && camera
+    ? (focusRect === 'hidden'
+        ? { display: 'none' as const }
+        : screenAnchored(focusRect, camera, isFocusStage ? 900000 : 899000))
+    : null
+  const maxStyle = !focusRect && maximized && camera && viewport && viewport.w > 0
     ? maximizedGeometry(camera, viewport)
     : null
+  // Both modes place the card by computed geometry, so the drag/resize
+  // affordances have to stand down.
+  const placed = !!maxStyle || (!!focusStyle && focusRect !== 'hidden')
+  const immovable = placed || !!item.locked
   // A maximized card fills the screen, so transparency there would just show the
   // rest of the app behind it — always opaque.
   const effAlpha = maxStyle ? 1 : alpha
@@ -1782,7 +2070,9 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
         left: item.x, top: item.y, width: item.w, height: item.h,
         zIndex: item.z,
         borderRadius: frameless ? 0 : 12,
-        outline: selected ? '2px solid var(--accent)' : statusRing ? `2px solid ${statusRing}` : 'none',
+        outline: isFocusStage ? '2px solid var(--accent)'
+          : selected ? '2px solid var(--accent)'
+          : statusRing ? `2px solid ${statusRing}` : 'none',
         outlineOffset: 2,
         display: 'flex', flexDirection: 'column',
         boxShadow: frameless ? 'none' : '0 8px 30px rgba(0,0,0,0.5)',
@@ -1793,6 +2083,7 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
         background: 'transparent',
         overflow: 'visible',
         ...maxStyle,
+        ...focusStyle,
       }}
       onPointerDown={() => onSelect(item.id)}
       onContextMenu={(e) => onContextMenu(e, item.id)}
@@ -1822,17 +2113,30 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
             // Let the faded backdrop show through the title bar too, so the
             // whole card reads as translucent — its text stays fully opaque.
             ...(effAlpha < 1 ? { background: 'transparent' } : null),
-            ...(maxStyle ? { cursor: 'default' } : null),
+            ...(immovable ? { cursor: 'default' } : null),
           }}
-          // Dragging/resizing a viewport-filling card is meaningless (and would
-          // fight the geometry above), so both are inert while maximized.
-          onPointerDown={(e) => { if (e.button === 0 && !maxStyle) onDragStart(e, item.id) }}
-          onDoubleClick={() => onMaximize(item.id)}
+          // Dragging/resizing a card that's placed by computed geometry
+          // (maximized or in focus mode) is meaningless and would fight that
+          // geometry, so both are inert — as they are for a locked card.
+          onPointerDown={(e) => { if (e.button === 0 && !immovable) onDragStart(e, item.id) }}
+          onDoubleClick={() => { if (!focusRect) onMaximize(item.id) }}
         >
-          {!maxStyle && <span style={styles.grip}><GripDots /></span>}
+          {!immovable && <span style={styles.grip}><GripDots /></span>}
+          {item.locked && <span style={styles.lockMark} title={t('canvas.ctx.unlock')}><IconLock /></span>}
           <span style={styles.cardLabel}>{cardLabel(item, t)}</span>
           <div style={{ flex: 1 }} />
-          {(item.kind === 'terminal' || maxStyle) && (
+          {/* Focus: this terminal takes the stage, the others queue up on the
+              right. Offered on every terminal card, including the docked ones —
+              clicking one there is how you swap which is on stage. */}
+          {onFocus && (
+            <button
+              style={{ ...styles.cardHdrBtn, ...(isFocusStage ? { color: 'var(--accent)' } : null) }}
+              title={isFocusStage ? t('canvas.focus.exit') : t('canvas.focus.enter')}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={onFocus}
+            ><IconFocus /></button>
+          )}
+          {(item.kind === 'terminal' || maxStyle) && !focusRect && (
             <button
               style={styles.cardHdrBtn}
               title={maxStyle ? t('canvas.restore') : t('canvas.maximize')}
@@ -1840,7 +2144,9 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
               onClick={() => onMaximize(item.id)}
             >{maxStyle ? '⤡' : '⤢'}</button>
           )}
-          <button style={styles.cardHdrBtn} title={t('canvas.removeCard')} onPointerDown={e => e.stopPropagation()} onClick={() => onRemove(item.id)}>✕</button>
+          {!focusRect && (
+            <button style={styles.cardHdrBtn} title={t('canvas.removeCard')} onPointerDown={e => e.stopPropagation()} onClick={() => onRemove(item.id)}>✕</button>
+          )}
         </div>
       )}
 
@@ -1848,9 +2154,9 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
       <div
         style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', overflow: frameless ? 'visible' : 'hidden', position: 'relative', zIndex: 1 }}
         // Shapes/text are dragged by their body since they have no header.
-        onPointerDown={frameless ? (e) => { if (e.button === 0 && item.kind !== 'text') onDragStart(e, item.id) } : undefined}
+        onPointerDown={frameless ? (e) => { if (e.button === 0 && item.kind !== 'text' && !immovable) onDragStart(e, item.id) } : undefined}
       >
-        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} onCapture={onCapture} task={task} onTaskRename={onTaskRename} noteColors={noteColors} alpha={effAlpha} t={t} maximized={!!maxStyle} />
+        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} onCapture={onCapture} task={task} onTaskRename={onTaskRename} noteColors={noteColors} alpha={effAlpha} t={t} maximized={!!maxStyle || isFocusStage} />
         {/* frameless move/delete affordances when selected (text can't drag from
             its body — the textarea captures the pointer for editing). */}
         {frameless && selected && (
@@ -1873,7 +2179,7 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
       {/* Resize handles — all 8 edges/corners. Sized in *screen* px (divided by
           zoom) so they stay grabbable when zoomed far out, and only painted
           while the card is selected so the board stays clean. */}
-      {!maxStyle && RESIZE_DIRS.map(dir => (
+      {!immovable && RESIZE_DIRS.map(dir => (
         <div
           key={dir}
           onPointerDown={(e) => onResizeStart(e, item.id, dir)}
@@ -2488,6 +2794,7 @@ function CanvasDrawing({ item, selected, onDragStart, onContextMenu }: {
   const vbW = Math.max(1, item.w), vbH = Math.max(1, item.h)
   return (
     <svg
+      data-canvas-draw
       style={{ position: 'absolute', left: item.x, top: item.y, overflow: 'visible', zIndex: item.z, pointerEvents: 'none' }}
       width={vbW} height={vbH} viewBox={`0 0 ${vbW} ${vbH}`} preserveAspectRatio="none"
     >
@@ -2669,6 +2976,69 @@ function ToolButton({ active, label, onClick, children }: { active: boolean; lab
   )
 }
 
+// ── Shortcut sheet ──────────────────────────────────────────────────────────
+// The board is driven by bare single keys, which is fast once you know them and
+// undiscoverable until you do. `?` (or the ? button) lists them.
+const SHORTCUT_GROUPS: { title: string; items: [string, string][] }[] = [
+  {
+    title: 'canvas.shortcuts.tools',
+    items: [
+      ['V', 'canvas.tool.select'], ['H', 'canvas.tool.hand'], ['P', 'canvas.tool.pen'],
+      ['E', 'canvas.tool.erase'], ['C', 'canvas.tool.connect'], ['T', 'canvas.tool.terminal'],
+      ['B', 'canvas.tool.browser'], ['M', 'canvas.tool.device'], ['N', 'canvas.tool.note'],
+      ['K', 'canvas.tool.task'], ['I', 'canvas.tool.image'], ['R', 'canvas.tool.rect'],
+      ['O', 'canvas.tool.ellipse'],
+    ],
+  },
+  {
+    title: 'canvas.shortcuts.layout',
+    items: [
+      ['F', 'canvas.focus.enter'], ['U', 'canvas.arrange.tidy'], ['Shift+G', 'canvas.arrange.align'],
+      ['G', 'canvas.shortcuts.snapToggle'], ['L', 'canvas.ctx.lock'],
+    ],
+  },
+  {
+    title: 'canvas.shortcuts.editing',
+    items: [
+      ['Ctrl+D', 'canvas.ctx.duplicate'], ['Ctrl+Z', 'canvas.shortcuts.undoErase'],
+      ['Del', 'canvas.ctx.delete'], ['↑↓←→', 'canvas.shortcuts.nudge'], ['Esc', 'canvas.shortcuts.escape'],
+    ],
+  },
+  {
+    title: 'canvas.shortcuts.view',
+    items: [
+      ['Space', 'canvas.shortcuts.pan'], ['Ctrl+wheel', 'canvas.shortcuts.zoom'],
+      ['Double-click', 'canvas.shortcuts.dblclick'],
+    ],
+  },
+]
+
+function ShortcutSheet({ t, onClose }: { t: (k: any, p?: any) => string; onClose: () => void }) {
+  return (
+    <div style={styles.sendOverlay} onPointerDown={e => { if (e.target === e.currentTarget) onClose() }}>
+      <div style={styles.shortcutCard} onPointerDown={e => e.stopPropagation()}>
+        <div style={styles.sendTitle}>{t('canvas.shortcuts.title')}</div>
+        <div style={styles.shortcutGrid}>
+          {SHORTCUT_GROUPS.map(g => (
+            <div key={g.title}>
+              <div style={styles.ctxLabel}>{t(g.title as any)}</div>
+              {g.items.map(([key, label]) => (
+                <div key={key + label} style={styles.shortcutRow}>
+                  <kbd style={styles.kbd}>{key}</kbd>
+                  <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t(label as any)}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <button style={styles.focusExitBtn} onClick={onClose}>{t('common.close')}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Send-to-agent composer ──────────────────────────────────────────────────
 // A small modal for handing a captured (and possibly annotated) screenshot to a
 // running agent: the note becomes the prompt, and the image is saved and
@@ -2746,6 +3116,17 @@ const IconCapture = () => (
   </svg>
 )
 const IconSnap = () => svg(<><path d="M3 3h4v4H3zM10 3h4v4h-4zM17 3h4v4h-4zM3 10h4v4H3zM17 10h4v4h-4zM3 17h4v4H3zM10 17h4v4h-4zM17 17h4v4h-4z" /></>)
+// A tilted eraser block with the swept surface it rides on — reads at 16px,
+// where the usual "rubber with a shaded half" does not.
+const IconEraser = () => svg(<><path d="M8.5 20.5H20" /><path d="m14.6 3.9 5.5 5.5a1.5 1.5 0 0 1 0 2.1l-7.2 7.2a1.5 1.5 0 0 1-2.1 0l-5.5-5.5a1.5 1.5 0 0 1 0-2.1l7.2-7.2a1.5 1.5 0 0 1 2.1 0z" /><path d="m9 8.5 6.5 6.5" /></>)
+// Focus: one full frame with the queue of smaller ones beside it — the layout
+// the button produces, which is more legible than a target/eye glyph.
+// Two dock boxes, not three: at the 13-14px this renders at, three of them and
+// their gaps antialias into a single grey bar.
+const IconFocus = () => svg(<><rect x="2.5" y="5" width="11" height="14" rx="1.6" /><rect x="16.5" y="5" width="5" height="6" rx="1.2" /><rect x="16.5" y="13" width="5" height="6" rx="1.2" /></>)
+const IconLock = () => svg(<><rect x="4.5" y="10.5" width="15" height="10" rx="2" /><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" /></>)
+// Tidy: scattered boxes resolving into aligned ones.
+const IconTidy = () => svg(<><rect x="3" y="3" width="7" height="7" rx="1.4" /><rect x="14" y="3" width="7" height="7" rx="1.4" /><rect x="3" y="14" width="7" height="7" rx="1.4" /><rect x="14" y="14" width="7" height="7" rx="1.4" /></>)
 const IconBackground = () => svg(<><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></>)
 const IconExit = () => svg(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5M21 12H9" /></>)
 const IconFit = () => (
@@ -2897,6 +3278,38 @@ const styles: Record<string, React.CSSProperties> = {
   // Escape hatch for a maximized card. It floats above the card (which itself
   // sits at a very high z within the world layer) so there's always a visible
   // way back, whatever the card is rendering.
+  // Focus mode chrome. Sits above the board (which is raised while a card is
+  // placed in screen space) so the way out is always reachable.
+  focusBar: {
+    position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 60,
+    display: 'flex', alignItems: 'center', gap: 8, height: 30, padding: '0 8px 0 12px',
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 999,
+    boxShadow: '0 8px 26px rgba(0,0,0,0.5)', color: 'var(--text-secondary)', fontSize: 11.5, fontWeight: 600,
+  },
+  focusMore: {
+    padding: '1px 7px', borderRadius: 999, background: 'var(--bg-panel)',
+    border: '1px solid var(--border-strong)', color: 'var(--text-dim)', fontSize: 10.5,
+  },
+  focusExitBtn: {
+    height: 22, padding: '0 10px', background: 'var(--accent)', border: 'none', borderRadius: 999,
+    color: 'var(--accent-fg)', cursor: 'pointer', fontSize: 11, fontWeight: 600,
+  },
+  lockMark: { display: 'flex', flex: '0 0 auto', color: 'var(--text-dim)', width: 12, height: 12 },
+  shortcutCard: {
+    width: 'min(760px, 92vw)', maxHeight: '84vh', overflowY: 'auto', padding: 18,
+    display: 'flex', flexDirection: 'column', gap: 12,
+    background: 'var(--bg-panel)', border: '1px solid var(--border)', borderRadius: 14,
+    boxShadow: '0 24px 70px rgba(0,0,0,0.6)',
+  },
+  shortcutGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '4px 22px',
+  },
+  shortcutRow: { display: 'flex', alignItems: 'center', gap: 9, padding: '2px 10px' },
+  kbd: {
+    flex: '0 0 auto', minWidth: 26, textAlign: 'center', padding: '2px 6px', borderRadius: 5,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)',
+    color: 'var(--text-primary)', fontSize: 10.5, fontFamily: 'var(--font-mono, monospace)',
+  },
   maxRestoreFloating: {
     position: 'absolute', top: 10, right: 12, zIndex: 60,
     height: 26, padding: '0 12px', background: 'var(--accent)', border: 'none', borderRadius: 7,

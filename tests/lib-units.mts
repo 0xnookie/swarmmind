@@ -22,6 +22,10 @@ import { extractFileBlocks } from '../src/lib/codeBlocks.ts'
 import { tokenize, rankDocs, cosineSim, rankByEmbedding, fuseRankings, dedupeByPath } from '../src/lib/retrieval.ts'
 import { chunkText } from '../src/lib/chunk.ts'
 import { resizeRect, RESIZE_DIRS, RESIZE_CURSOR, GRID, snapToGrid, gridBackgroundOffset } from '../src/lib/canvasResize.ts'
+import {
+  focusLayout, snapAll, tidyGrid, eraserHits, isErasableKind, pointSegmentDistance,
+  DOCK_W, DOCK_MIN_H, FOCUS_PAD,
+} from '../src/lib/canvasLayout.ts'
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
 import { stripCodeFences, extractJsonObject } from '../electron/lib/aiParse.ts'
 import { selectClaimable, isClaimable, doneIdSet, type ClaimableTask } from '../electron/lib/taskBoard.ts'
@@ -2212,6 +2216,118 @@ t('vad: dictation does not make the user wait around after they stop talking', (
   assert.ok(DEFAULT_VAD.hangoverMs <= 1300, `dictation hangover regressed to ${DEFAULT_VAD.hangoverMs}ms`)
   // But never so short that a mid-sentence breath ends the clip.
   assert.ok(DEFAULT_VAD.hangoverMs >= 900)
+})
+
+// ---------- canvas layout: focus mode, tidy/align, eraser ----------
+const VP = { w: 1600, h: 900 }
+t('focusLayout: the focused terminal takes the stage, the rest dock right', () => {
+  const l = focusLayout(['a', 'b', 'c'], 'a', VP)
+  assert.equal(l.dock.has('a'), false)
+  assert.equal(l.dock.size, 2)
+  // Stage on the left, dock strictly to the right of it.
+  const dockX = l.dock.get('b')!.x
+  assert.ok(l.stage.x + l.stage.w <= dockX, 'stage overlaps the dock')
+  assert.equal(dockX + DOCK_W + FOCUS_PAD, VP.w)
+})
+t('focusLayout: docked terminals stack downward without overlapping', () => {
+  const l = focusLayout(['a', 'b', 'c', 'd'], 'a', VP)
+  const rects = ['b', 'c', 'd'].map(id => l.dock.get(id)!)
+  for (let i = 1; i < rects.length; i++) {
+    assert.ok(rects[i].y >= rects[i - 1].y + rects[i - 1].h, 'dock slots overlap')
+  }
+  // Top-aligned: it reads as a queue, not a centred gallery.
+  assert.equal(rects[0].y, FOCUS_PAD)
+})
+t('focusLayout: the dock never runs off the bottom of the viewport', () => {
+  // 40 terminals cannot fit; the surplus is reported rather than drawn where it
+  // can't be clicked.
+  const ids = Array.from({ length: 40 }, (_, i) => `t${i}`)
+  const l = focusLayout(ids, 't0', VP)
+  assert.ok(l.hidden.length > 0)
+  for (const r of l.dock.values()) {
+    assert.ok(r.y + r.h <= VP.h, 'a dock slot is off-screen')
+    assert.ok(r.h >= DOCK_MIN_H, 'a dock slot shrank below usability')
+  }
+  assert.equal(l.dock.size + l.hidden.length, ids.length - 1)
+})
+t('focusLayout: a single terminal gets the full width, no empty dock gutter', () => {
+  const l = focusLayout(['only'], 'only', VP)
+  assert.equal(l.dock.size, 0)
+  assert.equal(l.stage.w, VP.w - FOCUS_PAD * 2)
+})
+t('snapAll: positions and sizes land on the grid, sizes never collapse', () => {
+  const out = snapAll([{ id: 'a', x: 503, y: 97, w: 3, h: 411 }], GRID)
+  const r = out.get('a')!
+  for (const v of [r.x, r.y, r.w, r.h]) assert.equal(v % GRID, 0)
+  assert.ok(r.w >= GRID, 'a card was snapped down to nothing')
+})
+t('tidyGrid: reflowed cards never overlap, whatever their sizes', () => {
+  const items = [
+    { id: 'a', x: 10, y: 10, w: 500, h: 340 },
+    { id: 'b', x: 900, y: 20, w: 220, h: 200 },
+    { id: 'c', x: 30, y: 700, w: 640, h: 460 },
+    { id: 'd', x: 800, y: 690, w: 240, h: 132 },
+  ]
+  const pos = tidyGrid(items, GRID)
+  const placed = items.map(i => ({ ...i, ...pos.get(i.id)! }))
+  for (let i = 0; i < placed.length; i++) {
+    for (let j = i + 1; j < placed.length; j++) {
+      const a = placed[i], b = placed[j]
+      const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+      assert.ok(!overlap, `${a.id} overlaps ${b.id} after tidy`)
+    }
+  }
+})
+t('tidyGrid: reading order survives the reflow', () => {
+  // Top row (a, b) must stay ahead of the bottom row (c) — "tidy" rearranges
+  // spacing, not your mental map of the board.
+  const items = [
+    { id: 'b', x: 600, y: 10, w: 200, h: 150 },
+    { id: 'c', x: 10, y: 400, w: 200, h: 150 },
+    { id: 'a', x: 10, y: 10, w: 200, h: 150 },
+  ]
+  const pos = tidyGrid(items, GRID)
+  const a = pos.get('a')!, b = pos.get('b')!, c = pos.get('c')!
+  assert.ok(a.y === b.y && a.x < b.x, 'a should precede b on the same row')
+  assert.ok(c.y > a.y, 'c should stay below the first row')
+})
+t('tidyGrid: an empty board is a no-op, not a crash', () => {
+  assert.equal(tidyGrid([], GRID).size, 0)
+})
+t('eraser: never removes a terminal, browser, device or task card', () => {
+  // A stray swipe must not kill a running pty or delete a row in the tasks
+  // table — those are not "oops, redraw it".
+  for (const kind of ['terminal', 'browser', 'device', 'task']) {
+    assert.equal(isErasableKind(kind), false, `${kind} should be protected`)
+    assert.equal(eraserHits({ id: 'x', kind, x: 0, y: 0, w: 100, h: 100 }, 50, 50, 16), false)
+  }
+})
+t('eraser: catches ink, notes, text, shapes and images', () => {
+  for (const kind of ['note', 'text', 'shape', 'image']) {
+    assert.equal(isErasableKind(kind), true)
+    assert.equal(eraserHits({ id: 'x', kind, x: 0, y: 0, w: 100, h: 100 }, 50, 50, 16), true)
+  }
+})
+t('eraser: a stroke is hit on its path, not its bounding box', () => {
+  // A hand-drawn ring: erasing in the hole must not delete it.
+  const ring = {
+    id: 's', kind: 'draw', x: 0, y: 0, w: 100, h: 100, strokeWidth: 2,
+    points: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }, { x: 0, y: 0 }],
+  }
+  assert.equal(eraserHits(ring, 50, 50, 16), false, 'erased through the middle of an open shape')
+  assert.equal(eraserHits(ring, 50, 3, 16), true, 'missed the stroke itself')
+})
+t('eraser: a locked item is immune', () => {
+  const note = { id: 'n', kind: 'note', x: 0, y: 0, w: 100, h: 100, locked: true }
+  assert.equal(eraserHits(note, 50, 50, 16), false)
+})
+t('pointSegmentDistance: clamps to the segment ends, not the infinite line', () => {
+  // Straight down from the middle.
+  assert.equal(pointSegmentDistance(5, 3, 0, 0, 10, 0), 3)
+  // Past the end: distance to the endpoint, not the projection.
+  assert.equal(pointSegmentDistance(20, 0, 0, 0, 10, 0), 10)
+  // Degenerate segment (a single captured point).
+  assert.equal(pointSegmentDistance(3, 4, 0, 0, 0, 0), 5)
 })
 
 // ---------- agent accounts (which login a pane runs on) ----------
