@@ -6,6 +6,42 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.26.0]
+
+**The canvas gets the tools it was missing: focus one terminal, erase what you
+drew, and tidy the whole board in one keystroke.** Working on an infinite board
+meant a lot of manual dragging — lining cards up by eye, and no way to clear a
+scribble short of deleting items one at a time. This release adds the layout and
+annotation tools, all reachable from the tool rail, the right-click menu or a
+single key.
+
+### Added
+- **Focus mode (`F`).** Put one terminal on the stage and the rest dock down the
+  right edge, so you can concentrate on the agent you're reading while the
+  others stay visible and keep running. Nothing is stopped or reloaded — the
+  terminals you're not looking at carry on working, and leaving focus mode is
+  instant. If more terminals are open than fit the strip, the bar says how many
+  are waiting rather than hiding slots off the bottom of the screen.
+- **Eraser (`E`).** Swipe to remove drawings, notes, text, shapes and images —
+  whole items at a time, no fiddling. Strokes are hit along the line you drew,
+  so erasing through the middle of a hand-drawn circle doesn't take the circle
+  with it. **Terminals, browsers, device mockups and task cards are never
+  erased** — a stray swipe can't kill a running agent or delete a task; the
+  board tells you to use ✕ or Delete instead. `Ctrl+Z` brings back the last
+  thing you erased.
+- **Tidy (`U`) and Align to grid (`Shift+G`).** Tidy reflows every card into an
+  even grid while keeping each card's size, so nothing ends up overlapping, and
+  it keeps your reading order — cards stay roughly where you expect them, just
+  straightened out. Align snaps positions and sizes onto the grid without moving
+  anything else. Both leave your drawings where they are, so annotations keep
+  pointing at what they annotate.
+- **Lock in place (`L`).** Right-click a card to pin it: it can't be dragged,
+  resized, erased or deleted until you unlock it, with a small lock mark on the
+  card. For screenshots and reference material you want to draw on top of.
+- **Keyboard shortcut sheet (`?`).** The board is driven by single keys, which
+  is quick once you know them and invisible until then. Press `?` (or the `?`
+  button on the rail) for the full list — tools, layout, editing and view.
+
 ## [0.25.0]
 
 **Your terminals stay connected wherever you are in the app, and every pane can
