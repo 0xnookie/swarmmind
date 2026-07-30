@@ -1,5 +1,5 @@
 // Verification for the canvas board's layout tools: eraser, focus mode, tidy /
-// align, and lock.
+// align, lock, and marquee (box) selection.
 //
 // The geometry itself is unit-tested (src/lib/canvasLayout.ts); what needs a
 // real app is the wiring, and specifically the two things that would be quietly
@@ -197,6 +197,112 @@ try {
   await win.waitForTimeout(700)
   check('tidy leaves no overlapping cards', overlapCount(await rects()) === 0)
   check('tidy keeps every card', await cards(win).count() === before, `${await cards(win).count()} cards`)
+
+  // ── Marquee select + group move ───────────────────────────────────────────
+  // The point of box-select is the *move* that follows it: the cards must
+  // travel together, by the same offset, from one drag on any one of them.
+  const cardBoxes = async () => {
+    const bs = []
+    const n = await cards(win).count()
+    for (let i = 0; i < n; i++) bs.push(await cards(win).nth(i).boundingBox())
+    return bs
+  }
+  const outlined = () => win.evaluate(() => [...document.querySelectorAll('[data-canvas-card]')]
+    .filter(el => getComputedStyle(el).outlineColor !== 'rgba(0, 0, 0, 0)' &&
+                  getComputedStyle(el).outlineStyle === 'solid').length)
+
+  // Zoom-to-fit first: it leaves bare board on every side of the cards, so a
+  // sweep from below-right of them up to above-left of them is guaranteed to
+  // cover the lot. Without it the cards can sit against an edge and the box
+  // catches an arbitrary subset — a test that passes or fails on where tidy
+  // happened to put things.
+  await win.click('[title^="Zoom to fit"]')
+  await win.waitForTimeout(500)
+  const boxes = await cardBoxes()
+  const to = {
+    x: Math.min(...boxes.map(r => r.x)) - 10,
+    y: Math.min(...boxes.map(r => r.y)) - 10,
+  }
+  // The drag has to *start* on bare board — that's what tells the app it's a
+  // marquee and not a card drag — so the start point is probed the way every
+  // other coordinate in this file is; a hardcoded margin off a card lands on
+  // its resize handles.
+  // Note elementFromPoint wants *viewport* coordinates and the board doesn't
+  // start at the origin (sidebar + title bar), so this walks r.right/r.bottom
+  // rather than r.width/r.height. Below every card and right of the leftmost
+  // edge of the rightmost one is enough for the box to touch all of them —
+  // touching selects, so it needn't clear the far corner (which is where the
+  // minimap lives anyway).
+  const from = await win.evaluate(({ needX, needY }) => {
+    const board = document.querySelector('[data-canvas-board]')
+    const r = board.getBoundingClientRect()
+    for (let y = r.bottom - 12; y > needY; y -= 12) {
+      for (let x = r.right - 20; x > needX; x -= 20) {
+        const el = document.elementFromPoint(x, y)
+        if (el && el.hasAttribute('data-canvas-board')) return { x, y }
+      }
+    }
+    return null
+  }, {
+    needX: Math.max(...boxes.map(r => r.x)) + 4,
+    needY: Math.max(...boxes.map(r => r.y + r.height)) + 4,
+  })
+  check('found bare board to start a marquee from', !!from, JSON.stringify(from))
+  await win.mouse.move(from.x, from.y)
+  await win.mouse.down()
+  await win.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 6 })
+  const bandVisible = await win.locator('[data-canvas-marquee]').count()
+  await win.mouse.move(to.x, to.y, { steps: 6 })
+  await win.mouse.up()
+  await win.waitForTimeout(400)
+  check('a marquee box is drawn while dragging', bandVisible === 1)
+  const selCount = await outlined()
+  check('the box selects every card it covered', selCount >= 3, `${selCount} selected`)
+  check('and the selection says how many', /\d+ selected/.test(await win.evaluate(() => document.body.innerText)))
+
+  // Shift-click one card back out of the selection: it must then sit still
+  // while the others move, which is what proves the drag follows the selection
+  // rather than just moving everything on the board.
+  const oddOne = cards(win).last()
+  const oddHeader = await oddOne.locator('div').nth(1).boundingBox()
+  // Held around the click rather than passed as an option: mouse.click() has no
+  // `modifiers` (that's locator.click), and silently ignores one.
+  await win.keyboard.down('Shift')
+  await win.mouse.click(oddHeader.x + 60, oddHeader.y + 10)
+  await win.keyboard.up('Shift')
+  await win.waitForTimeout(300)
+  const afterShift = await outlined()
+  check('Shift+click takes a card back out of the selection', afterShift === selCount - 1,
+    `${selCount} → ${afterShift}`)
+
+  // Drag one of the still-selected cards: the whole selection must follow.
+  const beforeMove = await cardBoxes()
+  const oddBox = await oddOne.boundingBox()
+  const grip = await cards(win).first().locator('div').nth(1).boundingBox()
+  await win.mouse.move(grip.x + 60, grip.y + 10)
+  await win.mouse.down()
+  await win.mouse.move(grip.x + 60 + 120, grip.y + 10 + 90, { steps: 10 })
+  await win.mouse.up()
+  await win.waitForTimeout(400)
+  const afterMove = await cardBoxes()
+  const deltas = beforeMove.map((r, i) => ({
+    dx: Math.round(afterMove[i].x - r.x), dy: Math.round(afterMove[i].y - r.y),
+  }))
+  const movedTogether = deltas.filter(d => Math.abs(d.dx - 120) < 6 && Math.abs(d.dy - 90) < 6).length
+  check('dragging one selected card moves the whole selection', movedTogether >= 2,
+    JSON.stringify(deltas))
+  const oddAfter = await oddOne.boundingBox()
+  check('the card taken out of the selection stays put',
+    Math.abs(oddAfter.x - oddBox.x) < 3 && Math.abs(oddAfter.y - oddBox.y) < 3,
+    `${Math.round(oddBox.x)},${Math.round(oddBox.y)} → ${Math.round(oddAfter.x)},${Math.round(oddAfter.y)}`)
+
+  // Clicking bare board drops the selection again.
+  const bare = await emptySpot(win, 160)
+  if (bare) {
+    await win.mouse.click(bare.x, bare.y)
+    await win.waitForTimeout(300)
+    check('clicking empty board clears the selection', await outlined() === 0)
+  }
 
   // ── Lock ──────────────────────────────────────────────────────────────────
   // A locked card must not move, and must not be deletable by the Delete key.

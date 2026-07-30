@@ -1,6 +1,6 @@
 /**
  * Pure geometry for the canvas board's layout tools — focus mode, tidy/align,
- * and eraser hit-testing.
+ * marquee selection, and eraser hit-testing.
  *
  * `CanvasMode.tsx` is the impure shell (React state, pointer events, the live
  * pane tree). Everything here is arithmetic over plain rectangles, which is
@@ -147,6 +147,140 @@ export function tidyGrid(items: Sized[], grid: number, columns?: number): Map<st
     })
   })
   return out
+}
+
+// ── Marquee selection ───────────────────────────────────────────────────────
+// Drag a box over empty board to select everything it touches, then drag any
+// one of them to move the whole set. The maths that matters is the hit test
+// (what counts as "inside the box") and the group delta (what stops snapping
+// from shearing a selection apart).
+
+/**
+ * A rectangle from two dragged corners, in any direction.
+ *
+ * The pointer can end up left of and above where it started, which yields a
+ * negative width/height — useless for both hit-testing and for a CSS box.
+ */
+export function normalizeRect(ax: number, ay: number, bx: number, by: number): Rect {
+  return {
+    x: Math.min(ax, bx),
+    y: Math.min(ay, by),
+    w: Math.abs(bx - ax),
+    h: Math.abs(by - ay),
+  }
+}
+
+/** Do two axis-aligned rectangles overlap? Touching edges don't count. */
+export function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+/**
+ * Does the segment (x1,y1)→(x2,y2) touch `r`? Liang–Barsky clipping.
+ *
+ * A degenerate segment (both ends the same point) reduces to a point-in-rect
+ * test, which is the behaviour a one-dot stroke needs.
+ */
+export function segmentIntersectsRect(x1: number, y1: number, x2: number, y2: number, r: Rect): boolean {
+  const dx = x2 - x1, dy = y2 - y1
+  const p = [-dx, dx, -dy, dy]
+  const q = [x1 - r.x, r.x + r.w - x1, y1 - r.y, r.y + r.h - y1]
+  let t0 = 0, t1 = 1
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0) {
+      // Parallel to this edge: outside its slab means it can never enter.
+      if (q[i] < 0) return false
+      continue
+    }
+    const t = q[i] / p[i]
+    if (p[i] < 0) {
+      if (t > t1) return false
+      if (t > t0) t0 = t
+    } else {
+      if (t < t0) return false
+      if (t < t1) t1 = t
+    }
+  }
+  return true
+}
+
+export interface SelectTarget {
+  id: string
+  kind: string
+  x: number
+  y: number
+  w: number
+  h: number
+  locked?: boolean
+  /** Freehand strokes: points relative to {x,y}. */
+  points?: { x: number; y: number }[]
+}
+
+/**
+ * Which items a marquee catches (world coordinates).
+ *
+ * **Touching selects**, as in Figma/Miro — requiring full containment means
+ * anything larger than the screen could never be picked up.
+ *
+ * A stroke is tested against its path for the same reason the eraser is: a
+ * hand-drawn arrow across the board has a bounding box covering everything
+ * between its ends, so a box drawn near one corner of it would silently drag a
+ * scribble along with the cards. Locked items are never selected — they can't
+ * be moved, resized or deleted, so putting them in a selection only makes the
+ * next drag look broken.
+ */
+export function marqueeHits(items: SelectTarget[], rect: Rect): string[] {
+  // A click is a box with no width *and* no height, and must select nothing —
+  // note this needs saying: a zero-area box dropped inside a card still counts
+  // as overlapping it. A sweep flat along one axis is a real gesture, though,
+  // so only the fully degenerate case bails.
+  if (rect.w === 0 && rect.h === 0) return []
+  const out: string[] = []
+  for (const it of items) {
+    if (it.locked) continue
+    if (it.kind === 'draw') {
+      const pts = it.points ?? []
+      if (pts.length === 0) continue
+      const hit = pts.length === 1
+        ? segmentIntersectsRect(it.x + pts[0].x, it.y + pts[0].y, it.x + pts[0].x, it.y + pts[0].y, rect)
+        : pts.some((pt, i) => i > 0 && segmentIntersectsRect(
+            it.x + pts[i - 1].x, it.y + pts[i - 1].y, it.x + pt.x, it.y + pt.y, rect))
+      if (hit) out.push(it.id)
+      continue
+    }
+    if (rectsOverlap(it, rect)) out.push(it.id)
+  }
+  return out
+}
+
+/** The box around a set of items — the outline drawn for a multi-selection. */
+export function selectionBounds(items: Sized[]): Rect | null {
+  if (items.length === 0) return null
+  const x = Math.min(...items.map(i => i.x))
+  const y = Math.min(...items.map(i => i.y))
+  const r = Math.max(...items.map(i => i.x + i.w))
+  const b = Math.max(...items.map(i => i.y + i.h))
+  return { x, y, w: r - x, h: b - y }
+}
+
+/**
+ * The offset to apply to every item in a dragged selection.
+ *
+ * Snapping is resolved **once, against the grabbed card**, and the resulting
+ * delta moves the whole group. Snapping each item to the grid independently
+ * would quantise their gaps as well as their positions, so a selection dragged
+ * with snap on would arrive subtly rearranged — items that were 30px apart
+ * landing flush, alignment you'd set up by hand destroyed by moving it.
+ */
+export function dragDelta(
+  anchor: { x: number; y: number },
+  dx: number,
+  dy: number,
+  grid: number | null,
+): { dx: number; dy: number } {
+  if (!grid) return { dx, dy }
+  const q = (v: number) => Math.round(v / grid) * grid
+  return { dx: q(anchor.x + dx) - anchor.x, dy: q(anchor.y + dy) - anchor.y }
 }
 
 // ── Eraser ──────────────────────────────────────────────────────────────────

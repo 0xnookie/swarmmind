@@ -24,6 +24,7 @@ import { chunkText } from '../src/lib/chunk.ts'
 import { resizeRect, RESIZE_DIRS, RESIZE_CURSOR, GRID, snapToGrid, gridBackgroundOffset } from '../src/lib/canvasResize.ts'
 import {
   focusLayout, snapAll, tidyGrid, eraserHits, isErasableKind, pointSegmentDistance,
+  normalizeRect, rectsOverlap, segmentIntersectsRect, marqueeHits, selectionBounds, dragDelta,
   DOCK_W, DOCK_MIN_H, FOCUS_PAD,
 } from '../src/lib/canvasLayout.ts'
 import { parseScripts, orderVerifyScripts, pickVerifyScript, isFailure, summarizeFailure, buildFixInstruction, isSafeScriptName, verifyLoopStatus } from '../src/lib/verify.ts'
@@ -2321,6 +2322,71 @@ t('eraser: a locked item is immune', () => {
   const note = { id: 'n', kind: 'note', x: 0, y: 0, w: 100, h: 100, locked: true }
   assert.equal(eraserHits(note, 50, 50, 16), false)
 })
+// ---------- marquee (box) selection ----------
+t('normalizeRect: a box dragged up-left is the same box as down-right', () => {
+  assert.deepEqual(normalizeRect(10, 10, 60, 40), { x: 10, y: 10, w: 50, h: 30 })
+  assert.deepEqual(normalizeRect(60, 40, 10, 10), { x: 10, y: 10, w: 50, h: 30 })
+})
+t('marquee: catches every card it touches, not only those it swallows whole', () => {
+  const items = [
+    { id: 'a', kind: 'terminal', x: 0, y: 0, w: 100, h: 100 },
+    { id: 'b', kind: 'note', x: 400, y: 400, w: 50, h: 50 },
+    // Bigger than the box drawn over it — full containment would miss this.
+    { id: 'c', kind: 'image', x: -500, y: -500, w: 2000, h: 2000 },
+  ]
+  const hits = marqueeHits(items, { x: 50, y: 50, w: 60, h: 60 })
+  assert.deepEqual(hits.sort(), ['a', 'c'])
+})
+t('marquee: a click (zero-area box) selects nothing', () => {
+  const items = [{ id: 'a', kind: 'note', x: 0, y: 0, w: 100, h: 100 }]
+  assert.deepEqual(marqueeHits(items, { x: 50, y: 50, w: 0, h: 0 }), [])
+})
+t('marquee: a locked item is never selected', () => {
+  const items = [{ id: 'a', kind: 'note', x: 0, y: 0, w: 100, h: 100, locked: true }]
+  assert.deepEqual(marqueeHits(items, { x: 0, y: 0, w: 200, h: 200 }), [])
+})
+t('marquee: a stroke is caught by its path, not its bounding box', () => {
+  // A diagonal scribble across the board: its bbox covers the whole area, but
+  // a box in the far corner is nowhere near the ink itself.
+  const stroke = {
+    id: 's', kind: 'draw', x: 0, y: 0, w: 1000, h: 1000,
+    points: [{ x: 0, y: 0 }, { x: 1000, y: 1000 }],
+  }
+  assert.deepEqual(marqueeHits([stroke], { x: 900, y: 10, w: 60, h: 60 }), [])
+  assert.deepEqual(marqueeHits([stroke], { x: 480, y: 480, w: 40, h: 40 }), ['s'])
+})
+t('segmentIntersectsRect: a segment entirely inside counts, and a point does too', () => {
+  const r = { x: 0, y: 0, w: 100, h: 100 }
+  assert.equal(segmentIntersectsRect(10, 10, 90, 90, r), true)
+  assert.equal(segmentIntersectsRect(50, 50, 50, 50, r), true, 'point inside')
+  assert.equal(segmentIntersectsRect(500, 500, 500, 500, r), false, 'point outside')
+  assert.equal(segmentIntersectsRect(-50, 50, 150, 50, r), true, 'straight through')
+  assert.equal(segmentIntersectsRect(-50, 200, 150, 200, r), false, 'passes below')
+})
+t('rectsOverlap: touching edges are not an overlap', () => {
+  assert.equal(rectsOverlap({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 0, w: 10, h: 10 }), false)
+  assert.equal(rectsOverlap({ x: 0, y: 0, w: 10, h: 10 }, { x: 9, y: 0, w: 10, h: 10 }), true)
+})
+t('selectionBounds: the box around the set, null when there is no set', () => {
+  assert.equal(selectionBounds([]), null)
+  assert.deepEqual(
+    selectionBounds([{ id: 'a', x: 10, y: 20, w: 30, h: 40 }, { id: 'b', x: 100, y: 0, w: 10, h: 10 }]),
+    { x: 10, y: 0, w: 100, h: 60 },
+  )
+})
+t('dragDelta: snapping a group keeps its spacing (one delta, not per item)', () => {
+  const grid = 20
+  // Two cards 30px apart, dragged together with snap on.
+  const anchor = { x: 0, y: 0 }
+  const other = { x: 30, y: 0 }
+  const { dx } = dragDelta(anchor, 7, 0, grid)
+  assert.equal(anchor.x + dx, 0, 'the grabbed card lands on the grid')
+  assert.equal((other.x + dx) - (anchor.x + dx), 30, 'the gap between them is unchanged')
+})
+t('dragDelta: without a grid the raw offset passes straight through', () => {
+  assert.deepEqual(dragDelta({ x: 3, y: 4 }, 11.5, -2.5, null), { dx: 11.5, dy: -2.5 })
+})
+
 t('pointSegmentDistance: clamps to the segment ends, not the infinite line', () => {
   // Straight down from the middle.
   assert.equal(pointSegmentDistance(5, 3, 0, 0, 10, 0), 3)

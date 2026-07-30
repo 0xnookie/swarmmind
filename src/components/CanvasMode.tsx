@@ -7,13 +7,14 @@ import { confirmDialog } from './ConfirmDialog'
 import { ChevronDisclosure, ChevronLeft, ChevronRight } from './Icons'
 import {
   resizeRect, RESIZE_DIRS, RESIZE_CURSOR, type ResizeDir,
-  GRID, snapToGrid, gridBackgroundOffset,
+  GRID, gridBackgroundOffset,
 } from '../lib/canvasResize'
 import {
   fitBox, rectsIntersect, projectPointToImage, strokeScale, buildHandoffPrompt,
 } from '../lib/canvasHandoff'
 import {
   focusLayout, snapAll, tidyGrid, eraserHits, isErasableKind, ERASER_RADIUS,
+  normalizeRect, marqueeHits, selectionBounds, dragDelta,
   type Rect as ScreenRect,
 } from '../lib/canvasLayout'
 import type { KanbanTask } from './KanbanBoard'
@@ -105,8 +106,6 @@ interface PersistShape {
 function terminalAlpha(item: CanvasItem, global: number): number {
   return item.opacity ?? global
 }
-
-const snapVal = snapToGrid
 
 const MIN_ZOOM = 0.2
 const MAX_ZOOM = 2.5
@@ -253,7 +252,13 @@ export function CanvasMode() {
   const [items, setItems] = useState<CanvasItem[]>([])
   const [camera, setCamera] = useState<Camera>(DEFAULT_CAMERA)
   const [background, setBackground] = useState<Background>(DEFAULT_BG)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Selection is a set, not a single id: a marquee drag can pick up several
+  // items, and dragging any one of them then moves all of them together.
+  // Single-item selection is just the one-element case.
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  // The in-progress marquee, in board-relative screen px (it's drawn as plain
+  // chrome over the board, so it must not pan/zoom with the world).
+  const [marquee, setMarquee] = useState<ScreenRect | null>(null)
   const [maximizedId, setMaximizedId] = useState<string | null>(null)
   // Focus mode: one terminal on the stage, the others stacked down the right
   // edge. Session-only — it's a way of looking at the board, not part of it, so
@@ -339,6 +344,10 @@ export function CanvasMode() {
   connectorsRef.current = connectors
   const focusedRef = useRef(focusedId)
   focusedRef.current = focusedId
+  // Pointer handlers need the live selection synchronously (a drag decides
+  // "move this card" vs "move the whole selection" at pointer-down).
+  const selectedIdsRef = useRef(selectedIds)
+  selectedIdsRef.current = selectedIds
   // The last eraser pass, so it can be taken back (Ctrl+Z). Erasing is the one
   // gesture here that destroys work in bulk without a confirmation, and a
   // hand-drawn annotation can't be re-created from anything.
@@ -358,7 +367,7 @@ export function CanvasMode() {
     setConnectors([])
     setCamera(DEFAULT_CAMERA)
     setBackground(DEFAULT_BG)
-    setSelectedId(null)
+    setSelectedIds([])
     setSelectedConnectorId(null)
     setMaximizedId(null)
     setConnectFrom(null)
@@ -450,6 +459,20 @@ export function CanvasMode() {
     setItems(prev => prev.map(it => it.id === id ? { ...it, z } : it))
   }, [])
 
+  // ── Selection helpers ──
+  // Everything that used to say "the selected item" goes through these, so a
+  // one-item selection and a marquee'd set of twelve take the same code path.
+  const selectOnly = useCallback((id: string | null) => setSelectedIds(id ? [id] : []), [])
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id])
+  }, [])
+  const clearSelection = useCallback(() => { setSelectedIds([]); setSelectedConnectorId(null) }, [])
+  // Right-clicking inside a multi-selection must not collapse it to the one
+  // card under the cursor — the menu is how you act on the set you just made.
+  const selectForMenu = useCallback((id: string) => {
+    setSelectedIds(prev => prev.includes(id) ? prev : [id])
+  }, [])
+
   // ── Create an item ──
   const addItem = useCallback((partial: Omit<CanvasItem, 'id' | 'z' | 'x' | 'y'>, wx: number, wy: number) => {
     zTopRef.current += 1
@@ -459,8 +482,8 @@ export function CanvasMode() {
       ...partial,
     }
     setItems(prev => [...prev, item])
-    setSelectedId(item.id)
-  }, [])
+    selectOnly(item.id)
+  }, [selectOnly])
 
   const addTerminal = useCallback((wx: number, wy: number) => {
     const before = new Set(getLeafIds())
@@ -526,8 +549,8 @@ export function CanvasMode() {
       id: cardId, kind: 'task', taskId: created.id,
       x: Math.round(wx - w / 2), y: Math.round(wy - h / 2), w, h, z: zTopRef.current,
     }])
-    setSelectedId(cardId)
-  }, [t, refreshTasks])
+    selectOnly(cardId)
+  }, [t, refreshTasks, selectOnly])
 
   const assignTask = useCallback(async (taskId: string, agentId: string | null, agentLabel: string) => {
     await window.swarmmind.taskEdit(taskId, { assigned_agent: agentId })
@@ -572,9 +595,8 @@ export function CanvasMode() {
     setBgPickerOpen(false)
     setMenu(null)
     const panning = tool === 'hand' || spaceDown || e.button === 1
-    if (panning || tool === 'select') {
-      setSelectedId(null)
-      setSelectedConnectorId(null)
+    if (panning) {
+      clearSelection()
       // Pan the camera.
       const startX = e.clientX, startY = e.clientY
       const orig = { ...cameraRef.current }
@@ -583,6 +605,41 @@ export function CanvasMode() {
         setCamera({ ...orig, x: orig.x + (ev.clientX - startX), y: orig.y + (ev.clientY - startY) })
       }
       const up = () => {
+        setInteracting(false)
+        window.removeEventListener('pointermove', move)
+        window.removeEventListener('pointerup', up)
+      }
+      window.addEventListener('pointermove', move)
+      window.addEventListener('pointerup', up)
+      return
+    }
+    // ── Marquee (box) select ──
+    // With the select tool, dragging bare board draws a selection box rather
+    // than panning — the Figma/Miro convention, and the only gesture left that
+    // can mean "these ones". Panning keeps three ways in (H, hold Space,
+    // middle-drag) plus the wheel, so nothing is lost.
+    if (tool === 'select') {
+      // Focus mode places cards in screen space against a frozen camera, so a
+      // world-space box would select things that aren't where it was drawn.
+      if (focusedRef.current) { clearSelection(); return }
+      const board = rootRef.current?.getBoundingClientRect()
+      // Shift keeps what's already selected, so a selection can be built up out
+      // of several sweeps around the cards you don't want.
+      const additive = e.shiftKey
+      const base = additive ? selectedIdsRef.current : []
+      if (!additive) clearSelection()
+      const ax = e.clientX, ay = e.clientY
+      const aw = screenToWorld(ax, ay)
+      setInteracting('crosshair')
+      const move = (ev: PointerEvent) => {
+        const box = normalizeRect(ax, ay, ev.clientX, ev.clientY)
+        setMarquee({ x: box.x - (board?.left ?? 0), y: box.y - (board?.top ?? 0), w: box.w, h: box.h })
+        const bw = screenToWorld(ev.clientX, ev.clientY)
+        const hits = marqueeHits(itemsRef.current, normalizeRect(aw.x, aw.y, bw.x, bw.y))
+        setSelectedIds(additive ? [...new Set([...base, ...hits])] : hits)
+      }
+      const up = () => {
+        setMarquee(null)
         setInteracting(false)
         window.removeEventListener('pointermove', move)
         window.removeEventListener('pointerup', up)
@@ -604,17 +661,27 @@ export function CanvasMode() {
     else if (tool === 'triangle') addItem({ kind: 'shape', shape: 'triangle', w: 220, h: 190, color: '#7fc8a0' }, x, y)
     else if (tool === 'image') { pendingImgPos.current = { x, y }; fileInputRef.current?.click() }
     setTool('select')
-  }, [tool, spaceDown, screenToWorld, addItem, addTerminal, addDevice, addTask])
+  }, [tool, spaceDown, screenToWorld, addItem, addTerminal, addDevice, addTask, clearSelection])
 
   // ── Drag / resize an item ──
   const startDrag = useCallback((e: React.PointerEvent, id: string) => {
     e.stopPropagation()
     e.preventDefault()
     if (e.button !== 0) return
+    // Shift on a card adds it to (or takes it out of) the selection instead of
+    // starting a drag — how you pick up two cards with something between them
+    // that a single box would also catch.
+    if (e.shiftKey) { toggleSelected(id); setMenu(null); return }
     bringToFront(id)
-    setSelectedId(id)
     setSelectedConnectorId(null)
     setMenu(null)
+    // Dragging a card that's part of a multi-selection moves the whole set;
+    // grabbing anything else selects just that card first (Figma/Miro). Without
+    // the first half, the only way to move a marquee'd group would be one card
+    // at a time — which is the whole point of having selected them together.
+    const selection = selectedIdsRef.current
+    const group = selection.includes(id) && selection.length > 1 ? selection : [id]
+    if (group.length === 1) selectOnly(id)
     const zoom = cameraRef.current.zoom
     const it = itemsRef.current.find(i => i.id === id)
     if (!it || it.locked) return
@@ -623,15 +690,27 @@ export function CanvasMode() {
     // board underneath.
     if (focusedRef.current) return
     const startX = e.clientX, startY = e.clientY
-    const ox = it.x, oy = it.y
+    // Starting positions for everything that will move. A locked card inside
+    // the selection stays put rather than blocking the drag.
+    const origins = new Map(
+      itemsRef.current.filter(i => group.includes(i.id) && !i.locked).map(i => [i.id, { x: i.x, y: i.y }]),
+    )
     let moved = false
     setInteracting('grabbing')
     const move = (ev: PointerEvent) => {
       moved = true
-      const sn = snapRef.current
-      setItems(prev => prev.map(i => i.id === id
-        ? { ...i, x: snapVal(ox + (ev.clientX - startX) / zoom, sn), y: snapVal(oy + (ev.clientY - startY) / zoom, sn) }
-        : i))
+      // One delta for the whole group, snapped against the grabbed card — see
+      // dragDelta: snapping each card on its own would change their spacing.
+      const { dx, dy } = dragDelta(
+        { x: it.x, y: it.y },
+        (ev.clientX - startX) / zoom,
+        (ev.clientY - startY) / zoom,
+        snapRef.current ? GRID : null,
+      )
+      setItems(prev => prev.map(i => {
+        const o = origins.get(i.id)
+        return o ? { ...i, x: o.x + dx, y: o.y + dy } : i
+      }))
     }
     const up = (ev: PointerEvent) => {
       setInteracting(false)
@@ -652,7 +731,7 @@ export function CanvasMode() {
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
-  }, [bringToFront, screenToWorld, assignTask])
+  }, [bringToFront, screenToWorld, assignTask, selectOnly, toggleSelected])
 
   // Resize from any of the 8 handles. The dragged edge(s) follow the pointer
   // while the opposite edge stays pinned — so a west/north drag moves x/y as
@@ -663,7 +742,7 @@ export function CanvasMode() {
     e.preventDefault()
     if (e.button !== 0) return
     bringToFront(id)
-    setSelectedId(id)
+    selectOnly(id)
     setMenu(null)
     const zoom = cameraRef.current.zoom
     const it = itemsRef.current.find(i => i.id === id)
@@ -686,20 +765,24 @@ export function CanvasMode() {
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
-  }, [bringToFront])
+  }, [bringToFront, selectOnly])
 
-  // ── Remove an item (closing the pane too, for terminals) ──
-  const removeItem = useCallback((id: string) => {
-    setItems(prev => {
-      const it = prev.find(i => i.id === id)
-      if (it?.locked) return prev
-      if (it?.kind === 'terminal' && it.paneId) closePane(it.paneId)
-      return prev.filter(i => i.id !== id)
-    })
-    setSelectedId(sel => sel === id ? null : sel)
-    setMaximizedId(m => m === id ? null : m)
-    setFocusedId(f => f === id ? null : f)
+  // ── Remove items (closing the pane too, for terminals) ──
+  // Takes a list because Delete acts on the whole selection; a locked item is
+  // skipped rather than blocking the rest of the batch.
+  const removeItems = useCallback((ids: string[]) => {
+    const doomed = new Set(itemsRef.current.filter(i => ids.includes(i.id) && !i.locked).map(i => i.id))
+    if (doomed.size === 0) return
+    for (const it of itemsRef.current) {
+      if (doomed.has(it.id) && it.kind === 'terminal' && it.paneId) closePane(it.paneId)
+    }
+    setItems(prev => prev.filter(i => !doomed.has(i.id)))
+    setSelectedIds(prev => prev.filter(i => !doomed.has(i)))
+    setMaximizedId(m => (m && doomed.has(m) ? null : m))
+    setFocusedId(f => (f && doomed.has(f) ? null : f))
   }, [closePane])
+
+  const removeItem = useCallback((id: string) => removeItems([id]), [removeItems])
 
   const updateItem = useCallback((id: string, patch: Partial<CanvasItem>) => {
     setItems(prev => prev.map(it => it.id === id ? { ...it, ...patch } : it))
@@ -707,6 +790,17 @@ export function CanvasMode() {
 
   const toggleLock = useCallback((id: string) => {
     setItems(prev => prev.map(it => it.id === id ? { ...it, locked: !it.locked } : it))
+  }, [])
+
+  // Lock/unlock a whole selection. Mixed states resolve to "lock everything"
+  // (and only an all-locked selection unlocks), so pressing L twice can't leave
+  // the set in the flipped-around state a per-item toggle would produce.
+  const toggleLockMany = useCallback((ids: string[]) => {
+    if (ids.length === 0) return
+    const set = new Set(ids)
+    const picked = itemsRef.current.filter(i => set.has(i.id))
+    const locked = picked.length > 0 && picked.every(i => i.locked)
+    setItems(prev => prev.map(it => set.has(it.id) ? { ...it, locked: !locked } : it))
   }, [])
 
   // Duplicate an item, offset a little. Terminals spawn a fresh pane (you can't
@@ -721,8 +815,8 @@ export function CanvasMode() {
     zTopRef.current += 1
     const copy: CanvasItem = { ...it, id: uuidv4(), x: it.x + 24, y: it.y + 24, z: zTopRef.current }
     setItems(prev => [...prev, copy])
-    setSelectedId(copy.id)
-  }, [addTerminal, addTask])
+    selectOnly(copy.id)
+  }, [addTerminal, addTask, selectOnly])
 
   // Make one card's transparency the board default: store it globally and drop
   // every per-card override, so existing AND future terminals all match.
@@ -761,8 +855,8 @@ export function CanvasMode() {
           ? { ...i, tabs, activeTab: stillActive, url: tabs.find(tb => tb.id === stillActive)?.url ?? i.url }
           : i)
     })
-    setSelectedId(targetId)
-  }, [])
+    selectOnly(targetId)
+  }, [selectOnly])
 
   // Explode a stacked browser back into one card per tab, laid out in a row to
   // the right of the original so none of them land on top of each other.
@@ -840,10 +934,10 @@ export function CanvasMode() {
         id, kind: 'image', src,
         x: Math.round(wx - w / 2), y: Math.round(anchorTop ? wy : wy - h / 2), w, h, z: zTopRef.current,
       }])
-      setSelectedId(id)
+      selectOnly(id)
     }
     img.src = src
-  }, [])
+  }, [selectOnly])
 
   const addImageFromFile = useCallback((file: File, wx: number, wy: number) => {
     if (!file.type.startsWith('image/')) return
@@ -1132,24 +1226,36 @@ export function CanvasMode() {
       if (e.code === 'Space' && !isTyping(e.target)) { setSpaceDown(true) }
       if (isTyping(e.target)) return
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedConnectorId) { e.preventDefault(); removeConnector(selectedConnectorId); return }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) { e.preventDefault(); removeItem(selectedId); return }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length) { e.preventDefault(); removeItems(selectedIds); return }
       if (e.key === 'Escape') {
         setShortcutsOpen(false); setFocusedId(null); setMaximizedId(null); setMenu(null)
-        setTool('select'); setSelectedId(null); setSelectedConnectorId(null); setConnectFrom(null)
+        setTool('select'); clearSelection(); setConnectFrom(null)
         return
       }
       // Ctrl/⌘+Z takes back the last eraser pass — the only gesture here that
       // destroys a batch of work without asking.
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undoErase(); return }
-      // Ctrl/⌘+D duplicates the selected item.
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && selectedId) { e.preventDefault(); duplicateItem(selectedId); return }
+      // Ctrl/⌘+A selects everything the marquee would be able to reach — same
+      // exclusions (locked items stay out, since they can't be moved anyway).
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        setSelectedIds(itemsRef.current.filter(i => !i.locked).map(i => i.id))
+        return
+      }
+      // Ctrl/⌘+D duplicates the selection.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd' && selectedIds.length) {
+        e.preventDefault()
+        selectedIds.forEach(duplicateItem)
+        return
+      }
       // Arrow keys nudge the selection (Shift = coarse). No modifier needed.
-      if (selectedId && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.startsWith('Arrow')) {
+      if (selectedIds.length && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.startsWith('Arrow')) {
         e.preventDefault()
         const d = e.shiftKey ? 10 : 1
         const dx = e.key === 'ArrowLeft' ? -d : e.key === 'ArrowRight' ? d : 0
         const dy = e.key === 'ArrowUp' ? -d : e.key === 'ArrowDown' ? d : 0
-        setItems(prev => prev.map(i => i.id === selectedId ? { ...i, x: i.x + dx, y: i.y + dy } : i))
+        const set = new Set(selectedIds)
+        setItems(prev => prev.map(i => (set.has(i.id) && !i.locked ? { ...i, x: i.x + dx, y: i.y + dy } : i)))
         return
       }
       // Bare-key tool shortcuts only — never hijack Ctrl/⌘/Alt combos (e.g.
@@ -1158,14 +1264,15 @@ export function CanvasMode() {
       // `?` opens the shortcut sheet — the board is full of bare-key tools, so
       // there has to be somewhere to read them.
       if (e.key === '?') { e.preventDefault(); setShortcutsOpen(o => !o); return }
-      // F focuses the selected terminal (or leaves focus mode).
+      // F focuses the selected terminal (or leaves focus mode). Only one
+      // terminal can hold the stage, so this stays a single-selection action.
       if (e.key.toLowerCase() === 'f') {
-        const sel = itemsRef.current.find(i => i.id === selectedId)
+        const sel = selectedIds.length === 1 ? itemsRef.current.find(i => i.id === selectedIds[0]) : null
         if (focusedRef.current) { setFocusedId(null); return }
         if (sel?.kind === 'terminal') { focusTerminal(sel.id); return }
       }
       // L locks/unlocks the selection.
-      if (e.key.toLowerCase() === 'l' && selectedId) { toggleLock(selectedId); return }
+      if (e.key.toLowerCase() === 'l' && selectedIds.length) { toggleLockMany(selectedIds); return }
       switch (e.key.toLowerCase()) {
         case 'v': setTool('select'); break
         case 'h': setTool('hand'); break
@@ -1188,7 +1295,7 @@ export function CanvasMode() {
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
-  }, [selectedId, selectedConnectorId, removeItem, removeConnector, duplicateItem, openImagePicker, undoErase, toggleLock, focusTerminal, alignAllToGrid, tidyBoard])
+  }, [selectedIds, selectedConnectorId, removeItems, removeConnector, duplicateItem, openImagePicker, undoErase, toggleLockMany, clearSelection, focusTerminal, alignAllToGrid, tidyBoard])
 
   // Close the context menu on any outside click.
   useEffect(() => {
@@ -1284,6 +1391,13 @@ export function CanvasMode() {
 
   const bgStyle = backgroundLayerStyle(background, camera)
   const maximized = maximizedId ? items.find(i => i.id === maximizedId) : null
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+  // The box drawn around a multi-selection, so a set picked up by the marquee
+  // reads as one thing to drag rather than n cards that happen to be outlined.
+  const groupBox = useMemo(
+    () => (selectedIds.length > 1 ? selectionBounds(items.filter(i => selectedSet.has(i.id))) : null),
+    [items, selectedIds, selectedSet],
+  )
 
   // Focus mode geometry, recomputed from the live viewport so it re-flows on a
   // window resize. `focus.hidden` is the dock overflow — those cards stay
@@ -1369,7 +1483,7 @@ export function CanvasMode() {
                   {/* fat invisible hit line for easy selection */}
                   <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="transparent" strokeWidth={16}
                     style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
-                    onPointerDown={(e) => { e.stopPropagation(); setSelectedConnectorId(c.id); setSelectedId(null) }} />
+                    onPointerDown={(e) => { e.stopPropagation(); setSelectedConnectorId(c.id); setSelectedIds([]) }} />
                   <line x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke={col} strokeWidth={sel ? 3 : 2}
                     markerEnd="url(#cn-arrow)" style={{ pointerEvents: 'none' }} />
                   {sel && (
@@ -1406,15 +1520,15 @@ export function CanvasMode() {
               <CanvasDrawing
                 key={item.id}
                 item={item}
-                selected={selectedId === item.id}
+                selected={selectedSet.has(item.id)}
                 onDragStart={startDrag}
-                onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); setSelectedId(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
+                onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); selectForMenu(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
               />
             )) : (
               <CanvasCard
                 key={item.id}
                 item={item}
-                selected={selectedId === item.id && item.id !== maximizedId}
+                selected={selectedSet.has(item.id) && item.id !== maximizedId}
                 zoom={camera.zoom}
                 maximized={item.id === maximizedId}
                 camera={camera}
@@ -1424,11 +1538,14 @@ export function CanvasMode() {
                 onFocus={item.kind === 'terminal' ? () => focusTerminal(item.id) : undefined}
                 onDragStart={startDrag}
                 onResizeStart={startResize}
-                onSelect={(id) => { setSelectedId(id); bringToFront(id) }}
+                onSelect={(id, additive) => {
+                  if (additive) { toggleSelected(id); return }
+                  selectOnly(id); bringToFront(id)
+                }}
                 onRemove={removeItem}
                 onMaximize={(id) => setMaximizedId(m => (m === id ? null : id))}
                 onUpdate={updateItem}
-                onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); setSelectedId(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
+                onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); selectForMenu(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
                 onCapture={(dataUrl) => handleCapture(item, dataUrl)}
                 task={item.kind === 'task' && item.taskId ? tasksById.get(item.taskId) : undefined}
                 onTaskRename={renameTask}
@@ -1438,6 +1555,27 @@ export function CanvasMode() {
               />
             )
           ))}
+
+          {/* Multi-selection outline. Lives in the world layer so it tracks the
+              cards as they move, which means its border and badge have to be
+              counter-scaled by 1/zoom to keep a constant on-screen size. */}
+          {groupBox && !focus && (
+            <div
+              style={{
+                position: 'absolute',
+                left: groupBox.x - 6, top: groupBox.y - 6,
+                width: groupBox.w + 12, height: groupBox.h + 12,
+                border: `${1 / camera.zoom}px dashed var(--accent)`,
+                borderRadius: 10 / camera.zoom,
+                pointerEvents: 'none',
+                zIndex: 9,
+              }}
+            >
+              <span style={{ ...styles.groupCount, transform: `scale(${1 / camera.zoom})` }}>
+                {t('canvas.select.count', { n: selectedIds.length })}
+              </span>
+            </div>
+          )}
 
           {/* Live stroke preview while the pen is drawing (world coords) */}
           {draft && draft.length > 1 && (
@@ -1450,6 +1588,15 @@ export function CanvasMode() {
             </svg>
           )}
         </div>
+
+        {/* Marquee. Screen-space chrome, not a world item — it's a gesture, so
+            it must not pan or zoom while it's being drawn. */}
+        {marquee && (
+          <div
+            data-canvas-marquee
+            style={{ ...styles.marquee, left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h }}
+          />
+        )}
 
         {/* Pen capture layer — mounted only in draw mode so strokes can start
             anywhere (including over cards). z sits above the world's cards (their
@@ -1608,16 +1755,22 @@ export function CanvasMode() {
           {menu.itemId ? (() => {
             const target = items.find(i => i.id === menu.itemId)
             const browserCount = items.filter(i => i.kind === 'browser').length
+            // Right-clicked inside a multi-selection: the set-wide actions
+            // (duplicate / lock / delete) act on all of it, and the menu says
+            // so. The per-kind sections below stay about the clicked card —
+            // there is no sensible "set the opacity of these nine things".
+            const multi = selectedIds.length > 1 && selectedIds.includes(menu.itemId!) ? selectedIds : null
             return (
             <>
-              {target?.kind === 'terminal' && (
+              {multi && <div style={styles.ctxLabel}>{t('canvas.select.count', { n: multi.length })}</div>}
+              {target?.kind === 'terminal' && !multi && (
                 <button className="ctx-menu-item" onClick={() => { focusTerminal(target.id); setMenu(null) }}>
                   <span style={{ flex: 1 }}>{focusedId === target.id ? t('canvas.focus.exit') : t('canvas.focus.enter')}</span>
                   <span style={styles.ctxKey}>F</span>
                 </button>
               )}
-              <button className="ctx-menu-item" onClick={() => { duplicateItem(menu.itemId!); setMenu(null) }}><span style={{ flex: 1 }}>{t('canvas.ctx.duplicate')}</span><span style={styles.ctxKey}>Ctrl+D</span></button>
-              <button className="ctx-menu-item" onClick={() => { toggleLock(menu.itemId!); setMenu(null) }}>
+              <button className="ctx-menu-item" onClick={() => { (multi ?? [menu.itemId!]).forEach(duplicateItem); setMenu(null) }}><span style={{ flex: 1 }}>{t('canvas.ctx.duplicate')}</span><span style={styles.ctxKey}>Ctrl+D</span></button>
+              <button className="ctx-menu-item" onClick={() => { multi ? toggleLockMany(multi) : toggleLock(menu.itemId!); setMenu(null) }}>
                 <span style={{ flex: 1 }}>{target?.locked ? t('canvas.ctx.unlock') : t('canvas.ctx.lock')}</span>
                 <span style={styles.ctxKey}>L</span>
               </button>
@@ -1764,7 +1917,7 @@ export function CanvasMode() {
               )}
 
               <div style={styles.ctxDivider} />
-              <button className="ctx-menu-item" data-variant="danger" onClick={() => { removeItem(menu.itemId!); setMenu(null) }}><span style={{ flex: 1 }}>{t('canvas.ctx.delete')}</span><span style={styles.ctxKey}>Del</span></button>
+              <button className="ctx-menu-item" data-variant="danger" onClick={() => { removeItems(multi ?? [menu.itemId!]); setMenu(null) }}><span style={{ flex: 1 }}>{t('canvas.ctx.delete')}</span><span style={styles.ctxKey}>Del</span></button>
             </>
             )
           })() : (
@@ -1982,7 +2135,7 @@ interface CanvasCardProps {
   zoom: number
   onDragStart: (e: React.PointerEvent, id: string) => void
   onResizeStart: (e: React.PointerEvent, id: string, dir: ResizeDir) => void
-  onSelect: (id: string) => void
+  onSelect: (id: string, additive: boolean) => void
   onRemove: (id: string) => void
   onMaximize: (id: string) => void
   onUpdate: (id: string, patch: Partial<CanvasItem>) => void
@@ -2085,7 +2238,11 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
         ...maxStyle,
         ...focusStyle,
       }}
-      onPointerDown={() => onSelect(item.id)}
+      // Shift is forwarded so clicking a card's *body* adds to the selection
+      // exactly like clicking its header does — the drag handler owns the
+      // header (it stops propagation), so without this the two halves of the
+      // same card would disagree about what Shift means.
+      onPointerDown={(e) => onSelect(item.id, e.shiftKey)}
       onContextMenu={(e) => onContextMenu(e, item.id)}
     >
       {/* Backdrop — the ONLY thing transparency touches. Sits behind every
@@ -2998,6 +3155,13 @@ const SHORTCUT_GROUPS: { title: string; items: [string, string][] }[] = [
     ],
   },
   {
+    title: 'canvas.shortcuts.selection',
+    items: [
+      ['Drag', 'canvas.shortcuts.marquee'], ['Shift+drag', 'canvas.shortcuts.marqueeAdd'],
+      ['Shift+click', 'canvas.shortcuts.toggleOne'], ['Ctrl+A', 'canvas.shortcuts.selectAll'],
+    ],
+  },
+  {
     title: 'canvas.shortcuts.editing',
     items: [
       ['Ctrl+D', 'canvas.ctx.duplicate'], ['Ctrl+Z', 'canvas.shortcuts.undoErase'],
@@ -3147,6 +3311,19 @@ const GripDots = () => (
 const styles: Record<string, React.CSSProperties> = {
   wrap: { flex: 1, minWidth: 0, position: 'relative', overflow: 'hidden', background: 'var(--bg-base)' },
   board: { position: 'absolute', inset: 0, overflow: 'hidden', touchAction: 'none' },
+  // Rubber-band box. Above the cards (their transformed layer stacks at 0) but
+  // below the tool rail and minimap at 20, and never a pointer target itself.
+  marquee: {
+    position: 'absolute', zIndex: 14, pointerEvents: 'none', borderRadius: 3,
+    border: '1px solid var(--accent)',
+    background: 'color-mix(in srgb, var(--accent) 12%, transparent)',
+  },
+  groupCount: {
+    position: 'absolute', left: 0, bottom: '100%', transformOrigin: 'left bottom',
+    marginBottom: 4, padding: '2px 7px', borderRadius: 6, whiteSpace: 'nowrap',
+    background: 'var(--accent)', color: 'var(--accent-fg)',
+    fontSize: 10.5, fontWeight: 700, letterSpacing: 0.3,
+  },
   emptyHint: {
     position: 'absolute', top: '42%', left: '50%', transform: 'translate(-50%,-50%)',
     textAlign: 'center', pointerEvents: 'none', maxWidth: 360,
