@@ -6,6 +6,38 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.27.0]
+
+**Drag a box around several cards on the canvas and move them as one.** Until
+now the board could only ever have one thing selected, so rearranging a group
+meant dragging every card individually.
+
+### Added
+- **Box-select.** With the select tool, drag across empty board to draw a
+  selection box; everything it touches is selected — it doesn't have to fit
+  inside the box, so a card bigger than the screen can be picked up too. The
+  selection is outlined together and tells you how many are in it.
+- **Move, delete or lock the whole selection at once.** Drag any one of the
+  selected cards and the rest come with it, keeping their spacing exactly (with
+  snap-to-grid on, the group lands on the grid without the gaps between the
+  cards changing). Delete, the arrow keys, **L** to lock and **Ctrl+D** to
+  duplicate all act on everything selected, and right-clicking inside a
+  selection no longer throws it away.
+- **Building a selection up.** **Shift+drag** adds another box to what's already
+  selected, **Shift+click** adds or removes a single card, and **Ctrl+A**
+  selects everything. Click empty board to clear it.
+- Drawings are picked up by the line you actually drew rather than the invisible
+  rectangle around it, so boxing a card next to a long diagonal stroke doesn't
+  drag the stroke along, and **locked cards are left out of a box-select**
+  entirely — they can't move, so including them would just look broken.
+
+### Changed
+- **Dragging empty board now draws a selection box instead of panning** — the
+  same as Figma, Miro and friends, and the gesture that "select these ones" has
+  to live on. Panning is unchanged on the hand tool (**H**), holding **Space**,
+  a middle-mouse drag, and the scroll wheel / trackpad. The `?` shortcut sheet
+  has a new **Selection** section listing all of it.
+
 ## [0.26.0]
 
 **The canvas gets the tools it was missing: focus one terminal, erase what you
