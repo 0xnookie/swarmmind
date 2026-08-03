@@ -6,6 +6,17 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.1]
+
+### Fixed
+- **Right-clicking a group of selected cards on the canvas no longer throws the
+  selection away.** The menu's set-wide actions — duplicate, lock, delete, and
+  the new *Race these N on one task…* — could never actually be reached: the
+  right-click selected the single card under the cursor a moment before the menu
+  opened, so the menu always described one card no matter how many you had
+  picked. Selecting on right-click is now left to the menu itself, which was
+  already written to keep an existing selection intact.
+
 ## [0.28.0]
 
 **The canvas becomes the place you actually run a swarm from.** Until now the
