@@ -6,6 +6,82 @@ also used as the body of its GitHub Release (see `.github/workflows/release.yml`
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.28.0]
+
+**The canvas becomes the place you actually run a swarm from.** Until now the
+board was a nice picture of your panes: past three or four agents it turned into
+a wall of unreadable terminals, the arrows you drew between them meant nothing,
+and an agent asking you a question two screens away was invisible. This release
+is about all three.
+
+### Added
+- **Terminals become status tiles when you zoom out.** Below a certain zoom each
+  terminal card stops trying to render text nobody can read and shows what you
+  actually want from a distance instead: which agent, what it's doing, the task
+  it's on and what it has cost. Zoom back in and the live terminal is there
+  again — the pane is only hidden, never restarted, so crossing back and forth
+  is instant and nothing is lost. Zoomed out, a busy board reads as a dashboard
+  of your own swarm. Toggle it with the ⧉ button next to the zoom controls.
+- **An arrow between two terminals now wires them together.** Draw one with the
+  connect tool and, whenever the first agent finishes a turn, what it said is
+  handed straight to the second one. Reviewer downstream of builder, drawn once
+  instead of copied across by hand every time. It keeps working when you leave
+  the board — the wiring belongs to the workspace, not to the view. Arrows in
+  both directions are fine: an agent that has just been handed something won't
+  hand it back, and the same output is never sent twice.
+- **Frames — named areas that own what's inside them** (**A**, or the new tool
+  in the rail). Drop one around a group of cards and it becomes a thing: give it
+  a name, drag it and everything inside comes with it, and send one instruction
+  to every agent in it from the ▶ button on its label. Right-click offers "select
+  everything inside" too. Clicking empty space inside a frame still works
+  normally — box-select, right-click to add a card — the frame only takes the
+  clicks meant for it.
+- **Race mode, on the board.** Select two or more worktree-isolated terminals,
+  right-click → *Race these on one task…*, and they all attempt it at once. Each
+  racing card gets a small badge showing how far along that attempt is and how
+  much it has changed, with a **Keep** button that merges the winner and clears
+  the rest away. A strip along the bottom shows the goal and which files more
+  than one attempt touched — where they actually disagree. It's the same race the
+  Race panel runs, so you can start it here and finish it there.
+- **The board tells you when an agent needs you.** The pane waiting on an answer
+  pulses on the minimap and wears an amber ring; if it's off screen a "needs you"
+  chip appears with a one-click jump (or press **J**). There's also an optional
+  **follow camera** (the ◎ button) that goes there by itself. It only reacts to
+  an agent that's genuinely blocked on a question, not to every agent that
+  happens to have finished a turn — so it settles instead of chasing.
+- **Turn a sticky note into a task.** Right-click any note → *Turn into a task*
+  and it becomes a real row on the task board, in place, keeping its position;
+  the first line becomes the title and the rest the description. Scribble first,
+  formalise later, without retyping it.
+
+### Also in this release
+- **Merge queue with pre-flight conflict detection** (Review → *Merge queue*):
+  simulates landing all your agents' branches as a batch, in your chosen order,
+  without touching the working tree — so you see which land clean and which
+  collide, and on which files, before committing to anything. Reordering and
+  re-running is free, and a conflicting branch can be handed back to its own
+  agent as a task.
+- **Push and open a pull request from the Review bar.** The PR body is prefilled
+  from the branch's own commits and the swarm's session digest. Uses the `gh` CLI
+  when it's installed, and falls back to opening the provider's compare page.
+- **Race mode** as a panel (TopBar fork icon) — the same best-of-N described
+  above, with side-by-side diffs.
+- **Voice orchestration.** "Hey swarm, have Codex fix the failing tests" queues a
+  task for Codex instead of typing that sentence into a terminal; you can also
+  set the goal, start and stop a run, and broadcast. Anything not recognised as a
+  command is still dictated as-is, so nothing is swallowed.
+- **Language support beyond TypeScript.** Diagnostics, hover, go-to-definition,
+  find-references and exact rename now work in any language you already have a
+  language server installed for (pyright/pylsp, rust-analyzer, gopls, clangd, or
+  one you configure). Nothing is bundled or auto-installed — an absent server
+  simply returns no results.
+
+### Notes
+- The board's shortcut sheet (**?**) lists the new keys: **A** for a frame, **J**
+  to jump to the agent that needs you.
+- Both new board toggles (status tiles, follow camera) are remembered per
+  workspace.
+
 ## [0.27.0]
 
 **Drag a box around several cards on the canvas and move them as one.** Until

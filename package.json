@@ -1,7 +1,7 @@
 {
   "name": "swarmmind",
   "productName": "SwarmMind",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "description": "Multi-agent AI coding workspace with shared MCP memory",
   "main": "out/main/index.js",
   "scripts": {
@@ -13,6 +13,7 @@
     "pty-verify": "node tests/pty-verify.mjs",
     "voice-verify": "node tests/voice-verify.mjs",
     "lsp-verify": "node tests/lsp-verify.mjs",
+    "lsp-stdio-verify": "node tests/lsp-stdio-verify.mjs",
     "editor-ux-verify": "node tests/editor-ux-verify.mjs",
     "wakeword-verify": "node tests/wakeword-verify.mjs",
     "fileops-verify": "node tests/fileops-verify.mjs",
@@ -20,6 +21,7 @@
     "canvas-tasks-verify": "node tests/canvas-tasks-verify.mjs",
     "canvas-terminal-verify": "node tests/canvas-terminal-verify.mjs",
     "canvas-tools-verify": "node tests/canvas-tools-verify.mjs",
+    "canvas-board-verify": "node tests/canvas-board-verify.mjs",
     "preview": "electron-vite preview",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder",

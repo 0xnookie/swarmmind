@@ -1,6 +1,6 @@
 # SwarmMind
 
-[![Version](https://img.shields.io/badge/Version-0.27.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
+[![Version](https://img.shields.io/badge/Version-0.28.0-e8956b)](https://github.com/0xnookie/swarmmind/releases)
 [![License](https://img.shields.io/badge/License-MIT-3fb950)](./LICENSE)
 [![Electron](https://img.shields.io/badge/Electron-32-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -45,7 +45,12 @@ Toggle **Canvas** for an infinite, pannable/zoomable board (cnvs.dev / Miro styl
 - **Browser tabs** — a browser card holds as many pages as you like behind a tab strip, and **Stack all browsers into tabs** collapses a board full of them into one card (with **Split tabs** to undo). Inactive tabs stay loaded, so switching keeps scroll position and page state.
 - **Device mockups** — drop a phone or tablet frame (iPhone, Pixel, Galaxy, iPad, Surface Duo) that loads your dev server in a true device-sized viewport with a matching mobile user-agent, so your breakpoints respond exactly as they would on the real thing. Rotate between portrait and landscape.
 - **Freehand pen** — sketch with a colour/width picker; strokes are first-class objects you can move and delete.
-- **Connectors** — link any two cards with an arrow that follows them as they move — turn your board into a flow.
+- **Connectors that actually do something** — link any two cards with an arrow that follows them as they move. Between two **task cards** it writes a real dependency; between two **terminals** it becomes a live route: when the first agent finishes a turn, what it said is handed to the second one. Reviewer downstream of builder, drawn once. It keeps delivering when you leave the board.
+- **Status tiles when you zoom out** — past a certain zoom a terminal stops rendering text nobody can read and shows the agent, what it's doing, its current task and its spend instead. Zoom in and the live terminal is right back — it was only hidden, never restarted. A busy board becomes a dashboard of your own swarm.
+- **Frames** — a named area that owns what's inside it: drag it and its contents come along, and send one instruction to every agent in it from its label. Empty space inside a frame still belongs to the board, so box-select and right-click work as normal.
+- **Race on the board** — select two or more worktree-isolated terminals and give them all the same task. Each card shows how far its attempt has got and how much it changed, with **Keep** to merge the winner and clear the rest; a strip along the bottom shows which files more than one attempt touched.
+- **It tells you when an agent needs you** — the pane waiting on an answer pulses on the minimap and wears a ring; off screen, a chip offers a one-click jump (or press **J**), and an optional follow camera goes there by itself.
+- **Notes become tasks** — right-click a sticky note to turn it into a real task in place, keeping its position.
 - **Movable tool rail** — select, hand/pan, pen, connect, and every insert tool; drag the rail anywhere or collapse it to a puck to reclaim the board. Plus **snap-to-grid**, **zoom-to-fit**, a **minimap** navigator, right-click menus, duplicate (`Ctrl/⌘-D`), and a **choosable background** (dots, grid, solid colour, or your own image).
 - **Per-workspace & persistent** — each workspace keeps its own board, saved automatically.
 
