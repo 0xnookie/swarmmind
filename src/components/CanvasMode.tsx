@@ -2687,7 +2687,7 @@ export function CanvasMode() {
 
       {/* Transient status toast (bottom-centre) */}
       {toast && (
-        <div style={styles.toast} onClick={() => setToast(null)}>{toast}</div>
+        <div data-canvas-toast style={styles.toast} onClick={() => setToast(null)}>{toast}</div>
       )}
 
       {/* Hidden file input for image insertion */}
@@ -3061,7 +3061,15 @@ const CanvasCard = React.memo(function CanvasCard({ item, selected, zoom, alpha,
       // exactly like clicking its header does — the drag handler owns the
       // header (it stops propagation), so without this the two halves of the
       // same card would disagree about what Shift means.
-      onPointerDown={(e) => onSelect(item.id, e.shiftKey)}
+      //
+      // **Primary button only.** A right-click reaches here too (the header's
+      // handler ignores non-primary buttons and doesn't stop propagation), and
+      // selecting on it collapsed a multi-selection to the one card under the
+      // cursor *before* `onContextMenu` ran — which silently disabled every
+      // set-wide action in the menu (`selectForMenu` exists precisely to
+      // preserve the selection, and never saw one bigger than 1). Right-click
+      // selection is that handler's job, not this one's.
+      onPointerDown={(e) => { if (e.button === 0) onSelect(item.id, e.shiftKey) }}
       onContextMenu={(e) => onContextMenu(e, item.id)}
     >
       {/* Backdrop — the ONLY thing transparency touches. Sits behind every

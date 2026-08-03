@@ -264,6 +264,61 @@ try {
   check('the note is replaced, not duplicated alongside the task',
     await cards(win).count() === cardsBeforeConvert)
 
+  // ── Race: the entry point and its guard ───────────────────────────────────
+  // These panes are not worktree-isolated (creating one needs a git repo), so
+  // what's checked here is the half that a user without worktrees actually hits:
+  // the action is offered on a multi-selection of terminals, and refusing it
+  // *says why*. Silently doing nothing is the failure mode that makes the
+  // worktree requirement look like a bug rather than the reason the attempts
+  // stay comparable. The merge half is covered by race.ts's unit tests.
+  // Built by Shift+clicking two terminal cards rather than Ctrl+A: the board's
+  // bare-key and Ctrl shortcuts are deliberately suppressed while focus sits
+  // inside an xterm, and by this point in the run it does. The click point is
+  // the card's rect *intersected with the board's* — by now the frame drag has
+  // pushed a card partly under the sidebar, and its raw centre is a coordinate
+  // that belongs to another component entirely.
+  const heads = await win.evaluate(() => {
+    const b = document.querySelector('[data-canvas-board]').getBoundingClientRect()
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v))
+    return [...document.querySelectorAll('[data-canvas-card]')]
+      .filter(e => e.querySelector('[id^="pane-"]'))
+      .map(e => {
+        const r = e.getBoundingClientRect()
+        const l = Math.max(r.left, b.left), rt = Math.min(r.right, b.right)
+        const t = Math.max(r.top, b.top), bt = Math.min(r.bottom, b.bottom)
+        if (rt - l < 60 || bt - t < 60) return null
+        return { x: Math.round((l + rt) / 2), y: Math.round(clamp(r.top + 14, t + 6, bt - 6)) }
+      })
+      .filter(Boolean)
+  })
+  check('two terminal cards are reachable on screen for the race gesture', heads.length >= 2, `${heads.length} reachable`)
+  await win.mouse.click(heads[0].x, heads[0].y)
+  await win.waitForTimeout(200)
+  await win.keyboard.down('Shift')
+  await win.mouse.click(heads[1].x, heads[1].y)
+  await win.keyboard.up('Shift')
+  await win.waitForTimeout(300)
+  await win.mouse.click(heads[1].x, heads[1].y, { button: 'right' })
+  await win.waitForTimeout(400)
+  // Right-clicking inside a multi-selection must keep it: the set-wide actions
+  // are the whole reason the menu opens on a selection rather than on a card.
+  check('right-clicking inside a selection keeps it',
+    await win.locator('.ctx-menu-item', { hasText: 'Duplicate' }).count() === 1 &&
+    !(await win.evaluate(() => [...document.querySelectorAll('.ctx-menu-item')]
+      .some(e => /Focus this terminal/.test(e.innerText)))))
+  const raceItem = win.locator('.ctx-menu-item', { hasText: 'Race these' })
+  check('a multi-selection of terminals is offered a race', await raceItem.count() === 1)
+  await raceItem.first().click()
+  await win.waitForTimeout(600)
+  const toast = await win.evaluate(() =>
+    document.querySelector('[data-canvas-toast]')?.textContent ?? '')
+  // Which reason it gives depends on how these panes were started; what must
+  // never happen is the click doing nothing, which would make the eligibility
+  // rule look like a bug instead of the reason the attempts stay comparable.
+  check('and refusing one says why rather than doing nothing',
+    /worktree|running/i.test(toast), toast || '(no toast)')
+  await win.keyboard.press('Escape')
+
   // ── Routes: the relay ─────────────────────────────────────────────────────
   // Leave the board. This is the assertion that matters: the wiring is
   // published to the store, so it has to keep working with CanvasMode unmounted.
