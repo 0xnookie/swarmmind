@@ -40,13 +40,69 @@ function readTermTheme(transparentBg = false): Record<string, string> {
 
 // Raw PTY output cache — keyed by paneId, survives component unmount/remount
 // so terminal content is preserved when switching workspaces.
-const rawOutputCache = new Map<string, string>()
+//
+// Held as a *list of chunks*, not one string, because appending is the hot path
+// and reading is not. The obvious `cache = (cache + data).slice(-MAX)` costs a
+// full MAX-byte copy on every append — the `+` builds a cheap rope, but the
+// slice flattens it. The pty bus flushes every OUTPUT_FLUSH_MS (12 ms) per pane,
+// so a busy multi-pane workspace was memcpy'ing tens of MB/s on the same thread
+// that draws xterm. Pushing a chunk is O(1); the cap is enforced by dropping
+// whole chunks off the head and trimming only the one that straddles the limit.
+// The joined form is memoised, so the rare readers (scrollback save, the dev-URL
+// scan, SwarmAgent's readPaneOutput, replay on mount) pay the join at most once
+// per flush, and only if they actually ask.
 const MAX_CACHE_BYTES = 102_400 // 100 KB per pane
 
+type PaneBuffer = {
+  chunks: string[]
+  bytes: number
+  /** Memoised `chunks.join('')`; invalidated on every append. */
+  joined: string | null
+}
+
+const rawOutputCache = new Map<string, PaneBuffer>()
+
 function appendToCache(paneId: string, data: string): void {
-  const current = rawOutputCache.get(paneId) ?? ''
-  const next = current + data
-  rawOutputCache.set(paneId, next.length > MAX_CACHE_BYTES ? next.slice(-MAX_CACHE_BYTES) : next)
+  if (!data) return
+  let buf = rawOutputCache.get(paneId)
+  if (!buf) { buf = { chunks: [], bytes: 0, joined: null }; rawOutputCache.set(paneId, buf) }
+  buf.chunks.push(data)
+  buf.bytes += data.length
+  buf.joined = null
+  // Drop head chunks that the cap no longer needs. `shift()` is O(chunks), but
+  // chunks are whole flush windows (KBs), so the list stays short — and it moves
+  // pointers rather than copying string bytes.
+  while (buf.chunks.length > 1 && buf.bytes - buf.chunks[0].length >= MAX_CACHE_BYTES) {
+    buf.bytes -= buf.chunks[0].length
+    buf.chunks.shift()
+  }
+  // The head chunk now straddles the cap: trim that chunk alone, not the buffer.
+  if (buf.bytes > MAX_CACHE_BYTES) {
+    buf.chunks[0] = buf.chunks[0].slice(buf.bytes - MAX_CACHE_BYTES)
+    buf.bytes = MAX_CACHE_BYTES
+  }
+}
+
+/** The pane's cached output as one string, or '' if nothing is cached. */
+function readCache(paneId: string): string {
+  const buf = rawOutputCache.get(paneId)
+  if (!buf) return ''
+  // Deliberately *not* collapsed back into a single chunk: that would make the
+  // next append's cap-trim slice a 100 KB string again, which is the cost this
+  // whole structure exists to avoid. Appends stay O(1); readers pay the join.
+  if (buf.joined == null) buf.joined = buf.chunks.join('')
+  return buf.joined
+}
+
+/** Seed a pane's cache with text restored from disk. */
+function seedCache(paneId: string, text: string): void {
+  rawOutputCache.set(paneId, { chunks: text ? [text] : [], bytes: text.length, joined: text })
+}
+
+/** True when the pane has cached output (as opposed to no entry / an empty one). */
+function hasCache(paneId: string): boolean {
+  const buf = rawOutputCache.get(paneId)
+  return !!buf && buf.bytes > 0
 }
 
 // ── The pty bus: one app-wide subscription, not one per mounted pane ─────────
@@ -115,8 +171,7 @@ function scheduleScrollbackSave(paneId: string): void {
   if (existing) clearTimeout(existing)
   saveTimers.set(paneId, setTimeout(() => {
     saveTimers.delete(paneId)
-    const data = rawOutputCache.get(paneId)
-    if (data != null) window.swarmmind.scrollbackSave(paneId, data).catch(() => {})
+    if (rawOutputCache.has(paneId)) window.swarmmind.scrollbackSave(paneId, readCache(paneId)).catch(() => {})
   }, 2500))
 }
 
@@ -136,8 +191,7 @@ function stripAnsi(s: string): string {
 // doing without holding a usePty() instance. Returns '' for an unknown pane.
 export function readPaneOutput(paneId: string, maxChars = 4000): string {
   ensurePtyBus()
-  const raw = rawOutputCache.get(paneId) ?? ''
-  const text = stripAnsi(raw).replace(/\n{3,}/g, '\n\n').trimEnd()
+  const text = stripAnsi(readCache(paneId)).replace(/\n{3,}/g, '\n\n').trimEnd()
   return text.length > maxChars ? text.slice(-maxChars) : text
 }
 
@@ -345,15 +399,15 @@ export function usePty(paneId: string, containerRef: React.RefObject<HTMLDivElem
     // If there's no in-memory cache, restore persisted scrollback from a prior
     // app session (a fresh agent spawn clears it again, so this only surfaces for
     // panes that aren't immediately re-spawned).
-    const cached = rawOutputCache.get(paneId)
+    const cached = readCache(paneId)
     if (cached) {
       term.write(cached)
       optsRef.current?.onOutput?.()
     } else {
       window.swarmmind.scrollbackLoad(paneId).then(saved => {
-        if (saved && !rawOutputCache.get(paneId) && termRef.current === term) {
+        if (saved && !hasCache(paneId) && termRef.current === term) {
           term.write(saved)
-          rawOutputCache.set(paneId, saved)
+          seedCache(paneId, saved)
           optsRef.current?.onOutput?.()
         }
       }).catch(() => {})

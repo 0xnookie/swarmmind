@@ -5,6 +5,7 @@ import type { VoiceModel } from '../hooks/useVoice'
 import { addSnippet as addSnippetTo, removeSnippet as removeSnippetFrom, type Snippet } from '../lib/snippets'
 import { nextRunAfter } from '../lib/loopSchedule'
 import { DEFAULT_WAKE_PHRASE, isValidWakePhrase } from '../lib/wakeWord'
+import type { RouteEdge } from '../lib/canvasRoutes'
 import {
   applyAppearance,
   clampEditorFontSize,
@@ -234,6 +235,12 @@ interface WorkspaceState {
   // `voiceWakeEnabled` / `voiceWakePhrase`.
   voiceWakeEnabled: boolean
   voiceWakePhrase: string
+  // Route spoken wake-word commands through the orchestrator (set a goal, queue
+  // a task, start/stop the run, broadcast) instead of always typing them into
+  // the active pane. On by default; unrecognised phrases still dictate, so this
+  // only ever adds behaviour. Turn it off to force pure dictation. Persisted as
+  // `voiceCommands`.
+  voiceCommands: boolean
   // The floating dictation widget: whether it's shown, and where the user
   // dragged it (null = not yet placed → default corner). Persisted as
   // `voiceWidgetOpen` / `voiceWidgetPos`.
@@ -326,6 +333,24 @@ interface WorkspaceState {
   // reported cost reaches it the conductor stops dispatching new work; running
   // agents are left to finish. null = no budget (the default).
   orchestratorBudgetUsd: number | null
+  // ── Race mode ──────────────────────────────────────────────────────────────
+  // Best-of-N: the same task attempted by several agents at once, each on its
+  // own worktree branch, then compared and one kept. The goal and the racing
+  // panes live here rather than inside RacePanel because the overlay unmounts
+  // whenever another view is opened while the attempts keep running. Session
+  // state by design — the attempts themselves are branches on disk, so a
+  // restart loses the framing, never the work.
+  raceOpen: boolean
+  raceGoal: string
+  racePaneIds: string[]
+  // ── Canvas routes ──────────────────────────────────────────────────────────
+  // Arrows drawn between two terminal cards on the canvas are live message
+  // routes: when the source pane finishes a turn, the tail of its output is
+  // handed to the target pane. They're published here (rather than kept inside
+  // CanvasMode) because the board is a center overlay that unmounts the moment
+  // you switch views — wiring that only worked while you were looking at it
+  // would be a trap. `useRoutes` in App.tsx is the always-mounted deliverer.
+  paneRoutes: RouteEdge[]
   // ── Loops ──────────────────────────────────────────────────────────────────
   // Recurring prompt schedules for the current workspace, and the Loops overlay.
   loops: SwarmLoop[]
@@ -389,6 +414,7 @@ interface WorkspaceState {
   setVoiceModel: (m: VoiceModel) => void
   setVoicePreload: (b: boolean) => void
   setVoiceAutoStop: (b: boolean) => void
+  setVoiceCommands: (b: boolean) => void
   setVoiceWakeEnabled: (b: boolean) => void
   setVoiceWakePhrase: (s: string) => void
   toggleVoiceWidget: () => void
@@ -456,6 +482,11 @@ interface WorkspaceState {
   setOrchestratorBudgetUsd: (usd: number | null) => void
   startOrchestration: () => void
   stopOrchestration: () => void
+  // ── Race actions ───────────────────────────────────────────────────────────
+  toggleRace: () => void
+  setRaceGoal: (goal: string) => void
+  setRacePaneIds: (ids: string[]) => void
+  setPaneRoutes: (routes: RouteEdge[]) => void
   // ── Loop actions ───────────────────────────────────────────────────────────
   toggleLoops: () => void
   addLoop: (input: LoopInput) => SwarmLoop
@@ -602,6 +633,7 @@ const ALL_OVERLAYS_CLOSED = {
   swarmAgentOpen: false,
   canvasOpen: false,
   loopsOpen: false,
+  raceOpen: false,
 } as const
 
 // The terminal pane grid (CenterArea) is shown only when a workspace is open and
@@ -650,6 +682,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   voiceModel: 'base',
   voicePreload: true,
   voiceAutoStop: true,
+  voiceCommands: true,
   voiceWakeEnabled: false,
   voiceWakePhrase: DEFAULT_WAKE_PHRASE,
   voiceWidgetOpen: false,
@@ -694,6 +727,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   orchestratorLog: [],
   orchestratorReportToLead: false,
   orchestratorBudgetUsd: null,
+  raceOpen: false,
+  raceGoal: '',
+  racePaneIds: [],
+  paneRoutes: [],
   loops: [],
   loopsOpen: false,
   cliLoops: [],
@@ -709,7 +746,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     // active workspace (setWorkspace with the same id) doesn't wipe live totals.
     if (ws?.id === s.workspace?.id) return { workspace: ws }
     // Editor tabs hold paths from the previous workspace — drop them on a switch.
-    return { workspace: ws, paneCost: {}, contendedPaths: [], cliLoops: [], editorTabs: [], activeEditorPath: null }
+    // Canvas routes are pane pairs from the previous workspace's board; the new
+    // one republishes its own the first time its canvas loads.
+    return { workspace: ws, paneCost: {}, contendedPaths: [], cliLoops: [], editorTabs: [], activeEditorPath: null, paneRoutes: [] }
   }),
 
   setEditorTabs: (tabs) => set({ editorTabs: tabs }),
@@ -1070,6 +1109,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   // and the per-pane task assignments.
   stopOrchestration: () => set({ orchestratorPhase: 'idle', orchestratorProposal: null, paneTask: {} }),
 
+  // ── Race mode ──────────────────────────────────────────────────────────────
+  toggleRace: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, raceOpen: !s.raceOpen })),
+  setRaceGoal: (goal) => set({ raceGoal: goal }),
+  setRacePaneIds: (ids) => set({ racePaneIds: ids }),
+
+  // Replace the published route set. Compared before writing: CanvasMode
+  // recomputes this on every items/connectors change (which a drag produces ~60
+  // times a second) and an unconditional `set` would wake every subscriber —
+  // including the relay hook — on each one.
+  setPaneRoutes: (routes) =>
+    set(s => {
+      const same = s.paneRoutes.length === routes.length &&
+        s.paneRoutes.every((r, i) => r.from === routes[i].from && r.to === routes[i].to)
+      return same ? s : { paneRoutes: routes }
+    }),
+
   // ── Loops ──────────────────────────────────────────────────────────────────
   toggleLoops: () => set(s => ({ ...ALL_OVERLAYS_CLOSED, loopsOpen: !s.loopsOpen })),
 
@@ -1197,6 +1252,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setVoiceAutoStop: (b) => {
     set({ voiceAutoStop: b })
     window.swarmmind.setAppSetting('voiceAutoStop', b ? '1' : '0').catch(() => {})
+  },
+
+  setVoiceCommands: (b) => {
+    set({ voiceCommands: b })
+    window.swarmmind.setAppSetting('voiceCommands', b ? '1' : '0').catch(() => {})
   },
 
   setVoiceWakeEnabled: (b) => {

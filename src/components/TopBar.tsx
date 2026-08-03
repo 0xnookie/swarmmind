@@ -176,6 +176,22 @@ function IconSwarmAgent() {
   )
 }
 
+function IconRace() {
+  // One trunk splitting into parallel branches: N agents attempting the same
+  // task at once. Drawn as a fork rather than a chequered flag — the flag would
+  // read as "finish/stop", and the point is the divergence, not the finish.
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 21V13a3 3 0 0 1 3-3h9" />
+      <path d="M6 11V3" />
+      <path d="M6 14a3 3 0 0 0 3 3h9" />
+      <circle cx="6" cy="21" r="1.6" />
+      <circle cx="19" cy="10" r="1.6" />
+      <circle cx="19" cy="17" r="1.6" />
+    </svg>
+  )
+}
+
 function IconLoop() {
   // A repeat/refresh glyph — recurring prompt schedules.
   return (
@@ -327,6 +343,8 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
   const canvasOpen = useWorkspaceStore(s => s.canvasOpen)
   const toggleLoops = useWorkspaceStore(s => s.toggleLoops)
   const loopsOpen = useWorkspaceStore(s => s.loopsOpen)
+  const toggleRace = useWorkspaceStore(s => s.toggleRace)
+  const raceOpen = useWorkspaceStore(s => s.raceOpen)
   const runningLoops = useWorkspaceStore(s => s.loops.filter(l => l.enabled).length + s.cliLoops.length)
   const paneCost = useWorkspaceStore(s => s.paneCost)
   const toggleOrchestratorBar = useWorkspaceStore(s => s.toggleOrchestratorBar)
@@ -525,6 +543,10 @@ export function TopBar({ onTogglePanel, panelOpen, onTogglePreview, previewOpen 
             </div>
           )}
         </div>
+
+        <IconBtn label={t('topbar.race')} onClick={toggleRace} active={raceOpen}>
+          <IconRace />
+        </IconBtn>
 
         <IconBtn label={runningLoops ? t('topbar.loopsRunning', { n: runningLoops }) : t('topbar.loops')} onClick={toggleLoops} active={loopsOpen}>
           <IconLoop />

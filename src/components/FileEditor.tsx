@@ -548,7 +548,7 @@ export function FileEditor({
           if (plan) {
             setRename(null)
             openComposerWith({
-              instruction: `Rename "${rename.oldName}" to "${newName}" (exact, via the TypeScript language service)`,
+              instruction: `Rename "${rename.oldName}" to "${newName}" (exact, via the language server)`,
               contextPaths: [],
               plan,
             })

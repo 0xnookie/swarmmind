@@ -21,10 +21,18 @@ const CheckpointPanel = lazy(() => import('./components/CheckpointPanel').then((
 const BenchmarksPanel = lazy(() => import('./components/BenchmarksPanel').then((m) => ({ default: m.BenchmarksPanel })))
 const SwarmAgentChat = lazy(() => import('./components/SwarmAgentChat').then((m) => ({ default: m.SwarmAgentChat })))
 const LoopsPanel = lazy(() => import('./components/LoopsPanel').then((m) => ({ default: m.LoopsPanel })))
+const RacePanel = lazy(() => import('./components/RacePanel').then((m) => ({ default: m.RacePanel })))
 const CanvasMode = lazy(() => import('./components/CanvasMode').then((m) => ({ default: m.CanvasMode })))
-import { SettingsModal } from './components/SettingsModal'
-import { WorkspaceSetupModal } from './components/WorkspaceSetupModal'
-import { CommandPalette } from './components/CommandPalette'
+
+// The modals are lazy for the same reason, and gated on their store flag *here*
+// rather than returning null from inside — a component that renders itself away
+// still has to be downloaded and mounted to do it, which is the whole cost. All
+// three initialise their drafts when they open, so mounting on demand is what
+// they already assume. SettingsModal alone is the second-largest component in
+// the app after the canvas.
+const SettingsModal = lazy(() => import('./components/SettingsModal').then((m) => ({ default: m.SettingsModal })))
+const WorkspaceSetupModal = lazy(() => import('./components/WorkspaceSetupModal').then((m) => ({ default: m.WorkspaceSetupModal })))
+const CommandPalette = lazy(() => import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })))
 import { LoadingOverlay } from './components/LoadingOverlay'
 import { UpdateBanner } from './components/UpdateBanner'
 import { ConfirmDialogHost } from './components/ConfirmDialog'
@@ -32,6 +40,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { useConductor } from './hooks/useConductor'
 import { useLoops } from './hooks/useLoops'
 import { useWidgetBridge } from './hooks/useWidgetBridge'
+import { useRoutes } from './hooks/useRoutes'
 import { useWorkspaceStore, buildLayoutForCount, selectTerminalsVisible, type AgentId, type ShellStyle } from './store/workspace'
 import { parseSnippets } from './lib/snippets'
 import { parsePosition } from './lib/dragWidget'
@@ -58,8 +67,11 @@ export default function App() {
   const swarmAgentOpen = useWorkspaceStore(s => s.swarmAgentOpen)
   const canvasOpen = useWorkspaceStore(s => s.canvasOpen)
   const loopsOpen = useWorkspaceStore(s => s.loopsOpen)
+  const raceOpen = useWorkspaceStore(s => s.raceOpen)
   const toggleMemoryPanel = useWorkspaceStore(s => s.toggleMemoryPanel)
   const setupModalOpen = useWorkspaceStore(s => s.setupModalOpen)
+  const settingsOpen = useWorkspaceStore(s => s.settingsOpen)
+  const commandPaletteOpen = useWorkspaceStore(s => s.commandPaletteOpen)
   const openSetupModal = useWorkspaceStore(s => s.openSetupModal)
   const closeSetupModal = useWorkspaceStore(s => s.closeSetupModal)
   const setWorkspace = useWorkspaceStore(s => s.setWorkspace)
@@ -74,6 +86,11 @@ export default function App() {
   useLoops()
   // Execute tool calls forwarded from the SwarmAgent desktop widget.
   useWidgetBridge()
+  // Canvas routes — arrows drawn between terminal cards deliver a finished
+  // turn's output downstream. Mounted here, not in CanvasMode: the board is an
+  // overlay that unmounts on every view switch, and wiring that only ran while
+  // you were looking at the diagram of it would be a trap.
+  useRoutes()
 
   useEffect(() => {
     window.swarmmind.workspaceOpenLast().then((ws) => {
@@ -128,6 +145,9 @@ export default function App() {
     }).catch(() => {})
     window.swarmmind.getAppSetting('voiceAutoStop').then(val => {
       if (val != null && val !== '') useWorkspaceStore.setState({ voiceAutoStop: val !== '0' })
+    }).catch(() => {})
+    window.swarmmind.getAppSetting('voiceCommands').then(val => {
+      if (val != null && val !== '') useWorkspaceStore.setState({ voiceCommands: val !== '0' })
     }).catch(() => {})
     window.swarmmind.getAppSetting('voiceWidgetOpen').then(val => {
       if (val === '1') useWorkspaceStore.setState({ voiceWidgetOpen: true })
@@ -368,6 +388,10 @@ export default function App() {
           <ErrorBoundary label="LoopsPanel">
             <LoopsPanel />
           </ErrorBoundary>
+        ) : raceOpen ? (
+          <ErrorBoundary label="RacePanel">
+            <RacePanel />
+          </ErrorBoundary>
         ) : filePanelOpen ? (
           <ErrorBoundary label="FilePanel">
             <FilePanel />
@@ -395,11 +419,15 @@ export default function App() {
           </ErrorBoundary>
         )}
       </div>
-      <SettingsModal />
-      {setupModalOpen && (
-        <WorkspaceSetupModal onComplete={handleSetupComplete} onClose={closeSetupModal} />
-      )}
-      <CommandPalette />
+      {/* No fallback: a modal that paints one frame after its chunk lands reads
+          as normal open latency, whereas a spinner behind it would flash. */}
+      <Suspense fallback={null}>
+        {settingsOpen && <SettingsModal />}
+        {setupModalOpen && (
+          <WorkspaceSetupModal onComplete={handleSetupComplete} onClose={closeSetupModal} />
+        )}
+        {commandPaletteOpen && <CommandPalette />}
+      </Suspense>
       <UpdateBanner />
       <LoadingOverlay />
       <ConfirmDialogHost />

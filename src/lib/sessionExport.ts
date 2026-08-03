@@ -268,6 +268,35 @@ export function renderSessionMarkdown(events: ExportEvent[], meta: SessionMeta):
   return lines.join('\n')
 }
 
+/**
+ * A few-line summary of a run, for embedding somewhere that isn't a report —
+ * currently a pull-request description (src/lib/pullRequest.ts).
+ *
+ * Deliberately a summary and not the timeline `renderSessionMarkdown` produces:
+ * a PR description that opens with three hundred event lines buries the diff it
+ * is meant to introduce. It lives here rather than beside its caller because it
+ * reads `buildSessionStats`, and one definition of "what the run cost" is the
+ * whole point — the PR body and the exported report can't disagree.
+ *
+ * Returns '' when there's nothing worth saying, so the caller can omit the
+ * section entirely instead of emitting an empty heading.
+ */
+export function renderSwarmDigest(events: ExportEvent[]): string {
+  const stats = buildSessionStats(events)
+  if (stats.total === 0) return ''
+
+  const bits: string[] = []
+  if (stats.agents.length) bits.push(`**Agents:** ${stats.agents.join(', ')}`)
+  if (stats.tasksCreated > 0) bits.push(`**Tasks completed:** ${stats.tasksCompleted}/${stats.tasksCreated}`)
+  if (stats.durationMs > 0) bits.push(`**Duration:** ${formatDuration(stats.durationMs)}`)
+  if (stats.totalCostUsd > 0) bits.push(`**Reported cost:** $${stats.totalCostUsd.toFixed(2)}`)
+  if (stats.messages > 0) bits.push(`**Agent messages:** ${stats.messages}`)
+  if (stats.filesChanged.length) bits.push(`**Files touched:** ${stats.filesChanged.length}`)
+  if (!bits.length) return ''
+
+  return ['## Swarm session', '', ...bits.map(b => `- ${b}`)].join('\n')
+}
+
 export function renderSessionHtml(events: ExportEvent[], meta: SessionMeta): string {
   const sorted = [...events].sort((a, b) => a.ts - b.ts)
   const stats = buildSessionStats(sorted)

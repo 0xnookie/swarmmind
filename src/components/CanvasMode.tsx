@@ -17,6 +17,21 @@ import {
   normalizeRect, marqueeHits, selectionBounds, dragDelta,
   type Rect as ScreenRect,
 } from '../lib/canvasLayout'
+import {
+  isTileZoom, tileState, tileMetrics, tileCost, TILE_STATE_COLOR, type TileState,
+} from '../lib/canvasLod'
+import { deriveRoutes } from '../lib/canvasRoutes'
+import {
+  frameChildren, framePanes, nextFrameName, nextFrameColor, isFrameKind,
+  FRAME_Z, FRAME_LABEL_Z, FRAME_HEADER_H, MIN_FRAME_W, MIN_FRAME_H,
+} from '../lib/canvasFrames'
+import {
+  viewportWorldRect, isOffscreen, cameraToCenter, pickAttentionTarget, shouldFollow,
+} from '../lib/canvasAttention'
+import {
+  raceEligibility, canStartRace, buildRacePrompt, attemptState, churn, contestedFiles,
+  planWinner, type AttemptStat, type RacePane,
+} from '../lib/race'
 import type { KanbanTask } from './KanbanBoard'
 import { addDep, removeDep, wouldCycle, parseDeps, taskStatusColor } from '../lib/canvasTasks'
 
@@ -29,14 +44,14 @@ import { addDep, removeDep, wouldCycle, parseDeps, taskStatusColor } from '../li
 
 type CanvasTool =
   | 'select' | 'hand' | 'draw' | 'erase' | 'connect'
-  | 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'image' | 'task'
+  | 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'image' | 'task' | 'frame'
   | 'rect' | 'ellipse' | 'triangle'
 
 type BgType = 'dots' | 'grid' | 'solid' | 'image'
 
 interface CanvasItem {
   id: string
-  kind: 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'shape' | 'draw' | 'image' | 'task'
+  kind: 'terminal' | 'browser' | 'device' | 'note' | 'text' | 'shape' | 'draw' | 'image' | 'task' | 'frame'
   x: number
   y: number
   w: number
@@ -48,8 +63,8 @@ interface CanvasItem {
   activeTab?: string       // browser — id of the visible tab
   device?: string          // device — preset id (see DEVICE_PRESETS)
   orientation?: 'portrait' | 'landscape'  // device
-  text?: string            // note / text
-  color?: string           // note / text / shape fill / stroke colour
+  text?: string            // note / text / frame name
+  color?: string           // note / text / shape fill / stroke / frame accent
   shape?: 'rect' | 'ellipse' | 'triangle'
   points?: { x: number; y: number }[]  // draw — polyline relative to {x,y}
   strokeWidth?: number     // draw
@@ -99,6 +114,10 @@ interface PersistShape {
   minimap?: { x: number; y: number } | null
   /** Board-wide terminal transparency; a card may override it per-item. */
   terminalOpacity?: number
+  /** Semantic zoom: terminals become status tiles when zoomed out. Default on. */
+  lod?: boolean
+  /** Follow camera: pan to whichever pane just asked a question. Default off. */
+  follow?: boolean
 }
 
 // Effective transparency for a terminal card: its own override if set,
@@ -115,6 +134,14 @@ const MIN_ITEM_W = 140
 const MIN_ITEM_H = 80
 
 const NOTE_COLORS = ['#f4c95d', '#e8956b', '#7fc8a0', '#7fb0e8', '#c89be0', '#e88ba5']
+// Race attempt states, coloured the same as RacePanel's — the two surfaces show
+// the same race, so an attempt must not be green in one and grey in the other.
+const RACE_STATE_COLOR: Record<string, string> = {
+  ready: '#7ee787',
+  working: 'var(--accent)',
+  waiting: 'var(--text-muted)',
+  gone: '#ff7b72',
+}
 const PEN_COLORS = ['#e8956b', '#f4c95d', '#7fc8a0', '#7fb0e8', '#c89be0', '#e88ba5', '#ece7e0', '#1a1512']
 const PEN_WIDTHS = [2, 4, 8]
 const DEFAULT_BG: Background = { type: 'dots', color: '#161412', image: null }
@@ -237,6 +264,60 @@ function compositeCapture(image: CanvasItem, draws: CanvasItem[]): Promise<strin
   })
 }
 
+// ── rAF-coalesced pointer drags ───────────────────────────────────────────────
+// Every drag gesture on this board — card move, resize, marquee, pan, pen,
+// eraser, the tool rail and the minimap — commits React state, and CanvasMode's
+// state drives the whole item list. So one state write per pointer event means
+// re-rendering every card on the board, live terminals included, at whatever
+// rate the pointer reports. Chromium already aligns pointermove dispatch to
+// vsync, but bursts still arrive coalesced and the handler work itself
+// (hit-testing, mapping the item array, rebuilding a polyline) is pure waste
+// more than once per frame.
+//
+// `startPointerDrag` installs the listeners and runs `move` at most once per
+// animation frame with the most recent event. Handlers that need every
+// intermediate position (the eraser, the pen) read `ev.getCoalescedEvents()`
+// rather than being called more often.
+//
+// The pending frame is flushed on pointerup, so a gesture always lands on the
+// exact release position instead of wherever the last painted frame was.
+function startPointerDrag(
+  move: (ev: PointerEvent) => void,
+  end?: (ev: PointerEvent) => void,
+): void {
+  let pending: PointerEvent | null = null
+  let frame = 0
+
+  const flush = () => {
+    frame = 0
+    const ev = pending
+    pending = null
+    if (ev) move(ev)
+  }
+  const onMove = (ev: PointerEvent) => {
+    pending = ev
+    if (!frame) frame = requestAnimationFrame(flush)
+  }
+  const onUp = (ev: PointerEvent) => {
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+    if (frame) cancelAnimationFrame(frame)
+    flush()
+    end?.(ev)
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+}
+
+// Every pointer position since the last delivered event, oldest first. Used by
+// the gestures that sweep across the board (pen, eraser), where skipping
+// intermediate points would drop a stroke's shape or miss a small item between
+// two frames. Falls back to the event itself where unsupported.
+function coalescedPoints(ev: PointerEvent): { clientX: number; clientY: number }[] {
+  const all = ev.getCoalescedEvents?.()
+  return all && all.length ? all : [ev]
+}
+
 export function CanvasMode() {
   const t = useT()
   const workspace = useWorkspaceStore(s => s.workspace)
@@ -245,6 +326,18 @@ export function CanvasMode() {
   const closePane = useWorkspaceStore(s => s.closePane)
   const getLeafIds = useWorkspaceStore(s => s.getLeafIds)
   const showTerminals = useWorkspaceStore(s => s.showTerminals)
+  // Live swarm state the board reads: which pane is on which task (the tile's
+  // subtitle), who has an unanswered question (the attention camera), and the
+  // race framing — shared with RacePanel through the store so the two surfaces
+  // can never disagree about who is racing on what.
+  const paneTask = useWorkspaceStore(s => s.paneTask)
+  const paneAttention = useWorkspaceStore(s => s.paneAttention)
+  const notifications = useWorkspaceStore(s => s.notifications)
+  const setPaneRoutes = useWorkspaceStore(s => s.setPaneRoutes)
+  const raceGoal = useWorkspaceStore(s => s.raceGoal)
+  const setRaceGoal = useWorkspaceStore(s => s.setRaceGoal)
+  const racePaneIds = useWorkspaceStore(s => s.racePaneIds)
+  const setRacePaneIds = useWorkspaceStore(s => s.setRacePaneIds)
 
   const rootRef = useRef<HTMLDivElement>(null)
   const railRef = useRef<HTMLDivElement>(null)
@@ -279,6 +372,19 @@ export function CanvasMode() {
   // Board-wide terminal transparency (1 = opaque). Individual cards can
   // override it; "apply to all" writes here and clears the overrides.
   const [terminalOpacity, setTerminalOpacity] = useState(1)
+  // ── Semantic zoom ──
+  // `lodEnabled` is the user's switch; `tileMode` is the current answer, kept in
+  // state rather than derived because the decision is hysteretic — it reads its
+  // own previous value (see canvasLod.ts) so a wheel nudge parked on the
+  // threshold can't flip every terminal on the board back and forth.
+  const [lodEnabled, setLodEnabled] = useState(true)
+  const [tileMode, setTileMode] = useState(false)
+  // ── Attention camera ──
+  // Follow is opt-in: an automatic pan is exactly the right thing when you're
+  // watching a swarm work and exactly the wrong thing while you're arranging
+  // cards, and only the user knows which they're doing.
+  const [follow, setFollow] = useState(false)
+  const lastFollowedRef = useRef<string | null>(null)
   const [spaceDown, setSpaceDown] = useState(false)
   const [snap, setSnap] = useState(false)
   const snapRef = useRef(snap)
@@ -328,6 +434,15 @@ export function CanvasMode() {
   const [toast, setToast] = useState<string | null>(null)
   // The "send screenshot to agent" composer: which image, which pane, its label.
   const [sendTarget, setSendTarget] = useState<{ imageId: string; paneId: string; agent: string } | null>(null)
+  // The frame broadcast composer: one instruction to every agent inside a frame.
+  const [frameSend, setFrameSend] = useState<{ frameId: string; label: string; panes: string[] } | null>(null)
+  // The race composer: the goal N selected terminals will attempt in parallel.
+  const [raceSetup, setRaceSetup] = useState<{ panes: RacePane[] } | null>(null)
+  // Live diff stats per racing pane, polled while a race is on (see the race
+  // effect below). Readiness is measured in *changed files*, not idleness.
+  const [raceStats, setRaceStats] = useState<Record<string, AttemptStat>>({})
+  const [raceBase, setRaceBase] = useState('')
+  const [raceBusy, setRaceBusy] = useState(false)
   // Live tasks (the visual-orchestrator layer): task cards are backed by real
   // rows in the tasks table, polled here so status/assignment stay fresh.
   const [tasks, setTasks] = useState<KanbanTask[]>([])
@@ -376,6 +491,12 @@ export function CanvasMode() {
     setRailCollapsed(false)
     setMinimapPos(null)
     setTerminalOpacity(1)
+    setLodEnabled(true)
+    setFollow(false)
+    setRaceStats({})
+    setFrameSend(null)
+    setRaceSetup(null)
+    lastFollowedRef.current = null
     zTopRef.current = 1
     if (!workspace) return
     let cancelled = false
@@ -392,6 +513,8 @@ export function CanvasMode() {
           if (parsed.railCollapsed) setRailCollapsed(true)
           if (parsed.minimap) setMinimapPos(parsed.minimap)
           if (typeof parsed.terminalOpacity === 'number') setTerminalOpacity(parsed.terminalOpacity)
+          if (typeof parsed.lod === 'boolean') setLodEnabled(parsed.lod)
+          if (typeof parsed.follow === 'boolean') setFollow(parsed.follow)
           zTopRef.current = Math.max(1, ...(parsed.items ?? []).map(i => i.z || 1))
         } catch { /* ignore malformed */ }
       }
@@ -428,11 +551,11 @@ export function CanvasMode() {
   useEffect(() => {
     if (!workspace || !loaded) return
     const id = setTimeout(() => {
-      const payload: PersistShape = { items, connectors, camera, background, rail: railPos, railCollapsed, minimap: minimapPos, terminalOpacity }
+      const payload: PersistShape = { items, connectors, camera, background, rail: railPos, railCollapsed, minimap: minimapPos, terminalOpacity, lod: lodEnabled, follow }
       window.swarmmind.setAppSetting(`canvas:${workspace.id}`, JSON.stringify(payload)).catch(() => {})
     }, 600)
     return () => clearTimeout(id)
-  }, [items, connectors, camera, background, railPos, railCollapsed, minimapPos, terminalOpacity, workspace?.id, loaded])
+  }, [items, connectors, camera, background, railPos, railCollapsed, minimapPos, terminalOpacity, lodEnabled, follow, workspace?.id, loaded])
 
   // Prune connectors whose endpoints no longer exist.
   useEffect(() => {
@@ -444,6 +567,30 @@ export function CanvasMode() {
     })
   }, [items, loaded])
 
+  // ── Publish the terminal↔terminal arrows as live message routes ──
+  // The board owns the drawing; `useRoutes` (mounted in App.tsx) owns the
+  // delivery, because this component unmounts on every view switch and wiring
+  // that only worked while you were looking at it would be a trap. `deriveRoutes`
+  // ignores everything that isn't a terminal→terminal arrow, so an image handoff
+  // or a task dependency drawn with the same tool stays what it was.
+  useEffect(() => {
+    if (!loaded) return
+    setPaneRoutes(deriveRoutes(items, connectors))
+  }, [items, connectors, loaded, setPaneRoutes])
+
+  // Note there is deliberately no unmount cleanup here. This component unmounts
+  // on every view switch, and clearing the published routes there would undo the
+  // entire reason delivery lives in App.tsx — the wiring would only work while
+  // you happened to be looking at the picture of it. A workspace switch clears
+  // them instead (`setWorkspace` in the store), which is the only moment the
+  // pane pairs actually stop meaning anything.
+
+  // ── Semantic zoom: cross the hysteresis band, not a single threshold ──
+  useEffect(() => {
+    if (!lodEnabled) { setTileMode(false); return }
+    setTileMode(prev => isTileZoom(camera.zoom, prev))
+  }, [camera.zoom, lodEnabled])
+
   // ── Coordinate helpers ──
   const screenToWorld = useCallback((sx: number, sy: number) => {
     const rect = rootRef.current?.getBoundingClientRect()
@@ -453,10 +600,14 @@ export function CanvasMode() {
     return { x: (sx - left - cam.x) / cam.zoom, y: (sy - top - cam.y) / cam.zoom }
   }, [])
 
+  // Frames are excluded here (and from send-to-back): a frame is the backdrop
+  // its contents sit on, so raising one above them — which selecting, dragging
+  // or resizing it would otherwise do on every gesture — would hide the cards it
+  // was drawn around behind their own container.
   const bringToFront = useCallback((id: string) => {
     zTopRef.current += 1
     const z = zTopRef.current
-    setItems(prev => prev.map(it => it.id === id ? { ...it, z } : it))
+    setItems(prev => prev.map(it => (it.id === id && !isFrameKind(it.kind)) ? { ...it, z } : it))
   }, [])
 
   // ── Selection helpers ──
@@ -472,6 +623,20 @@ export function CanvasMode() {
   const selectForMenu = useCallback((id: string) => {
     setSelectedIds(prev => prev.includes(id) ? prev : [id])
   }, [])
+
+  // ── Jumping the camera to a card ──
+  // Declared up here rather than beside the attention logic that computes its
+  // argument, because the keyboard effect (J) needs it in a dependency array and
+  // a `const` referenced before its declaration is a TDZ crash, not a warning.
+  // The target id rides in a ref for the same reason.
+  const attentionRef = useRef<string | null>(null)
+  const jumpToCard = useCallback((cardId: string) => {
+    const card = itemsRef.current.find(i => i.id === cardId)
+    const rect = rootRef.current?.getBoundingClientRect()
+    if (!card || !rect) return
+    setCamera(cameraToCenter(card, { w: rect.width, h: rect.height }, cameraRef.current.zoom))
+    selectOnly(cardId)
+  }, [selectOnly])
 
   // ── Create an item ──
   const addItem = useCallback((partial: Omit<CanvasItem, 'id' | 'z' | 'x' | 'y'>, wx: number, wy: number) => {
@@ -505,6 +670,71 @@ export function CanvasMode() {
     const size = deviceCardSize(preset, 'portrait')
     addItem({ kind: 'device', device: DEFAULT_DEVICE, orientation: 'portrait', url: 'http://localhost:3000', w: size.w, h: size.h }, wx, wy)
   }, [addItem])
+
+  // ── Frames ────────────────────────────────────────────────────────────────
+  // A named region that owns what's inside it. Two things make it more than a
+  // rectangle: dragging it takes its contents along (so "the auth work" moves as
+  // one), and it knows which *panes* are inside, so one instruction can go to
+  // all of them without hand-picking panes in the broadcast bar every time.
+  //
+  // Frames don't go through `addItem`: they must sit *behind* every other card
+  // (FRAME_Z) rather than on top of the z-stack like everything else, or a new
+  // frame would cover the cards it was drawn around.
+  const addFrame = useCallback((wx: number, wy: number) => {
+    const existing = itemsRef.current.filter(i => isFrameKind(i.kind))
+    const w = 720, h = 520
+    const id = uuidv4()
+    setItems(prev => [...prev, {
+      id, kind: 'frame',
+      x: Math.round(wx - w / 2), y: Math.round(wy - h / 2), w, h, z: FRAME_Z,
+      text: nextFrameName(existing.map(f => f.text ?? ''), t('canvas.frame.defaultName')),
+      color: nextFrameColor(existing.length),
+    }])
+    selectOnly(id)
+  }, [t, selectOnly])
+
+  // Every id a frame drag has to carry: the frame plus whatever sits inside it.
+  // Resolved at pointer-down from the live mirror, because a card that leaves
+  // the frame *during* the drag must not be dropped mid-gesture.
+  const expandFrameGroup = useCallback((ids: string[]): string[] => {
+    const its = itemsRef.current
+    const out = new Set(ids)
+    for (const id of ids) {
+      const f = its.find(i => i.id === id)
+      if (!f || !isFrameKind(f.kind)) continue
+      for (const childId of frameChildren(f, its)) out.add(childId)
+    }
+    return [...out]
+  }, [])
+
+  const openFrameBroadcast = useCallback((frameId: string) => {
+    setMenu(null)
+    const frame = itemsRef.current.find(i => i.id === frameId)
+    if (!frame) return
+    const panes = framePanes(frame, itemsRef.current)
+      .filter(paneId => findLeaf(rootPane, paneId)?.ptyStatus === 'running')
+    if (panes.length === 0) { setToast(t('canvas.frame.noAgents')); return }
+    setFrameSend({ frameId, label: frame.text?.trim() || t('canvas.frame.defaultName'), panes })
+  }, [rootPane, t])
+
+  const sendToFrame = useCallback((panes: string[], text: string) => {
+    const body = text.trim()
+    if (!body) return
+    for (const paneId of panes) {
+      window.swarmmind.ptyInput(paneId, body)
+      window.swarmmind.ptyInput(paneId, '\r')
+    }
+    setToast(t('canvas.frame.sent', { n: panes.length }))
+  }, [t])
+
+  const selectFrameContents = useCallback((frameId: string) => {
+    setMenu(null)
+    const frame = itemsRef.current.find(i => i.id === frameId)
+    if (!frame) return
+    const kids = frameChildren(frame, itemsRef.current)
+    if (kids.length === 0) { setToast(t('canvas.frame.empty')); return }
+    setSelectedIds(kids)
+  }, [t])
 
   // ── Task cards (visual orchestrator) ──
   // Task cards are the board's live window onto the tasks table: creating one
@@ -588,6 +818,167 @@ export function CanvasMode() {
     setItems(prev => prev.filter(i => i.id !== item.id))
   }, [t, refreshTasks])
 
+  // Turn a sticky note (or a text label) into a real task, in place.
+  //
+  // This is how people actually use a board — scribble first, formalise later —
+  // and until now the second half meant retyping the note into a task card. The
+  // note is *replaced* rather than left behind: two objects saying the same
+  // thing, one of them backed by the tasks table and one not, is precisely the
+  // ambiguity the board is supposed to remove. The card takes the note's own
+  // position so nothing you arranged moves.
+  const noteToTask = useCallback(async (item: CanvasItem) => {
+    setMenu(null)
+    const title = (item.text ?? '').trim()
+    if (!title) { setToast(t('canvas.note.empty')); return }
+    // A note can hold a paragraph; a task title is one line. The first line
+    // becomes the title and the rest is kept as the task's description.
+    const [first, ...rest] = title.split('\n')
+    const created = await window.swarmmind.taskCreate(first.trim() || title) as KanbanTask | null
+    if (!created?.id) { setToast(t('canvas.task.createFailed')); return }
+    const body = rest.join('\n').trim()
+    if (body) await window.swarmmind.taskEdit(created.id, { description: body })
+    await refreshTasks()
+    zTopRef.current += 1
+    const cardId = uuidv4()
+    const z = zTopRef.current
+    setItems(prev => [
+      ...prev.filter(i => i.id !== item.id),
+      { id: cardId, kind: 'task', taskId: created.id, x: item.x, y: item.y, w: Math.max(220, Math.min(item.w, 320)), h: Math.max(132, Math.min(item.h, 220)), z },
+    ])
+    selectOnly(cardId)
+    setToast(t('canvas.note.converted'))
+  }, [t, refreshTasks, selectOnly])
+
+  // ── Race mode, on the board ──────────────────────────────────────────────
+  // Best-of-N is a spatial idea: three attempts at the same task, side by side,
+  // pick one. It shipped as a panel; here it runs where the agents already are.
+  // The framing (goal + who is racing) lives in the *store*, shared with
+  // RacePanel, so starting a race here and resolving it there is one race and
+  // not two views disagreeing about who was in it.
+  //
+  // Everything this needs is reused: `race.ts` decides eligibility, what each
+  // racer is told and what happens to the losing branches; the git calls are the
+  // same ones the panel makes.
+  const paneOfItem = useCallback((item: CanvasItem): RacePane | null => {
+    if (item.kind !== 'terminal' || !item.paneId) return null
+    const leaf = findLeaf(rootPane, item.paneId)
+    if (!leaf) return null
+    return {
+      paneId: leaf.id,
+      agentId: leaf.agentId,
+      title: leaf.title?.trim() || leaf.agentId || leaf.id.slice(0, 6),
+      branch: leaf.worktreeBranch ?? null,
+      worktreePath: leaf.worktreePath ?? null,
+      running: leaf.ptyStatus === 'running',
+    }
+  }, [rootPane])
+
+  const racers = useMemo(
+    () => items.map(paneOfItem).filter((p): p is RacePane => !!p && racePaneIds.includes(p.paneId)),
+    [items, paneOfItem, racePaneIds],
+  )
+  const racersRef = useRef(racers)
+  racersRef.current = racers
+
+  useEffect(() => {
+    const root = workspace?.rootPath
+    if (root) void window.swarmmind.gitBaseBranch(root).then(setRaceBase).catch(() => {})
+  }, [workspace?.rootPath])
+
+  // Poll each attempt's diff stat while a race is on. Attempts land over
+  // minutes, so the comparison has to keep itself current; the interval only
+  // exists while there is something to compare.
+  useEffect(() => {
+    const root = workspace?.rootPath
+    if (!root || racers.length === 0) { setRaceStats({}); return }
+    let cancelled = false
+    const refresh = async () => {
+      const live = racersRef.current.filter(r => r.worktreePath)
+      const entries = await Promise.all(live.map(async r => {
+        try {
+          const st = await window.swarmmind.gitWorktreeDiffStat(root, r.worktreePath!, raceBase || undefined)
+          return [r.paneId, {
+            files: st.files.map(f => f.path),
+            additions: st.files.reduce((s, f) => s + f.additions, 0),
+            deletions: st.files.reduce((s, f) => s + f.deletions, 0),
+          }] as const
+        } catch { return null }
+      }))
+      if (cancelled) return
+      setRaceStats(Object.fromEntries(entries.filter((e): e is NonNullable<typeof e> => !!e)))
+    }
+    void refresh()
+    const id = setInterval(() => { void refresh() }, 4000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [workspace?.rootPath, raceBase, racers.length])
+
+  // Open the race composer for the current selection. Ineligible panes are named
+  // with their reason rather than silently dropped — "my terminal isn't in the
+  // race" is otherwise unexplainable, and the worktree rule is the whole reason
+  // the attempts stay comparable in the first place.
+  const openRaceSetup = useCallback((ids: string[]) => {
+    setMenu(null)
+    const picked = itemsRef.current.filter(i => ids.includes(i.id)).map(paneOfItem).filter((p): p is RacePane => !!p)
+    const { eligible, ineligible } = raceEligibility(picked)
+    if (eligible.length < 2) {
+      setToast(ineligible.length
+        ? t('canvas.race.ineligible', {
+            list: ineligible.map(x => `${x.pane.title} (${x.reason === 'no-worktree' ? t('race.needsWorktree') : t('race.needsRunning')})`).join(', '),
+          })
+        : t('canvas.race.needTwo'))
+      return
+    }
+    setRaceSetup({ panes: eligible })
+  }, [paneOfItem, t])
+
+  const startRace = useCallback((panes: RacePane[], goal: string) => {
+    setRaceSetup(null)
+    if (!canStartRace(panes.map(p => p.paneId), goal)) return
+    setRaceGoal(goal)
+    setRacePaneIds(panes.map(p => p.paneId))
+    panes.forEach((p, i) => {
+      window.swarmmind.ptyInput(p.paneId, buildRacePrompt(goal, i + 1, panes.length))
+      window.swarmmind.ptyInput(p.paneId, '\r')
+    })
+    setToast(t('race.started', { n: String(panes.length) }))
+  }, [setRaceGoal, setRacePaneIds, t])
+
+  // Keep one attempt: merge its branch into base, then tear the others down.
+  // Nothing is discarded when the merge fails — losing every attempt *and* not
+  // having the winner is the worst outcome available here.
+  const keepRaceWinner = useCallback(async (paneId: string) => {
+    const root = workspace?.rootPath
+    if (!root) return
+    const plan = planWinner(racersRef.current, paneId)
+    if (!plan) { setToast(t('race.winnerGone')); return }
+    const ok = await confirmDialog({
+      body: t('race.keepConfirm', { branch: plan.keep.branch, base: raceBase, n: String(plan.discard.length) }),
+      confirmLabel: t('race.keepConfirmAction'),
+      danger: true,
+    })
+    if (!ok) return
+    setRaceBusy(true)
+    const merged = await window.swarmmind.gitMergeBranch(root, plan.keep.branch)
+    if (!merged.ok) {
+      setRaceBusy(false)
+      setToast(t('race.mergeFailed', { error: merged.error }))
+      return
+    }
+    let dropped = 0
+    for (const loser of plan.discard) {
+      const res = await window.swarmmind.gitRemoveWorktree(root, loser.worktreePath, loser.branch, true)
+      if (!('error' in res)) dropped++
+    }
+    setRaceBusy(false)
+    setRacePaneIds([])
+    setToast(t('race.kept', { branch: plan.keep.branch, n: String(dropped) }))
+  }, [workspace?.rootPath, raceBase, setRacePaneIds, t])
+
+  const endRace = useCallback(() => {
+    setRacePaneIds([])
+    setToast(t('canvas.race.ended'))
+  }, [setRacePaneIds, t])
+
   // ── Canvas background pointer: pan or place ──
   const onCanvasPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.target !== e.currentTarget) return  // only when hitting empty canvas
@@ -601,16 +992,12 @@ export function CanvasMode() {
       const startX = e.clientX, startY = e.clientY
       const orig = { ...cameraRef.current }
       setInteracting('grabbing')
-      const move = (ev: PointerEvent) => {
-        setCamera({ ...orig, x: orig.x + (ev.clientX - startX), y: orig.y + (ev.clientY - startY) })
-      }
-      const up = () => {
-        setInteracting(false)
-        window.removeEventListener('pointermove', move)
-        window.removeEventListener('pointerup', up)
-      }
-      window.addEventListener('pointermove', move)
-      window.addEventListener('pointerup', up)
+      startPointerDrag(
+        (ev) => {
+          setCamera({ ...orig, x: orig.x + (ev.clientX - startX), y: orig.y + (ev.clientY - startY) })
+        },
+        () => setInteracting(false),
+      )
       return
     }
     // ── Marquee (box) select ──
@@ -631,21 +1018,19 @@ export function CanvasMode() {
       const ax = e.clientX, ay = e.clientY
       const aw = screenToWorld(ax, ay)
       setInteracting('crosshair')
-      const move = (ev: PointerEvent) => {
-        const box = normalizeRect(ax, ay, ev.clientX, ev.clientY)
-        setMarquee({ x: box.x - (board?.left ?? 0), y: box.y - (board?.top ?? 0), w: box.w, h: box.h })
-        const bw = screenToWorld(ev.clientX, ev.clientY)
-        const hits = marqueeHits(itemsRef.current, normalizeRect(aw.x, aw.y, bw.x, bw.y))
-        setSelectedIds(additive ? [...new Set([...base, ...hits])] : hits)
-      }
-      const up = () => {
-        setMarquee(null)
-        setInteracting(false)
-        window.removeEventListener('pointermove', move)
-        window.removeEventListener('pointerup', up)
-      }
-      window.addEventListener('pointermove', move)
-      window.addEventListener('pointerup', up)
+      startPointerDrag(
+        (ev) => {
+          const box = normalizeRect(ax, ay, ev.clientX, ev.clientY)
+          setMarquee({ x: box.x - (board?.left ?? 0), y: box.y - (board?.top ?? 0), w: box.w, h: box.h })
+          const bw = screenToWorld(ev.clientX, ev.clientY)
+          const hits = marqueeHits(itemsRef.current, normalizeRect(aw.x, aw.y, bw.x, bw.y))
+          setSelectedIds(additive ? [...new Set([...base, ...hits])] : hits)
+        },
+        () => {
+          setMarquee(null)
+          setInteracting(false)
+        },
+      )
       return
     }
     // A creation tool is active → place at the click position, then revert.
@@ -656,12 +1041,13 @@ export function CanvasMode() {
     else if (tool === 'note') addItem({ kind: 'note', w: 220, h: 200, text: '', color: NOTE_COLORS[0] }, x, y)
     else if (tool === 'text') addItem({ kind: 'text', w: 260, h: 60, text: '', color: 'var(--text-primary)' }, x, y)
     else if (tool === 'task') void addTask(x, y)
+    else if (tool === 'frame') addFrame(x, y)
     else if (tool === 'rect') addItem({ kind: 'shape', shape: 'rect', w: 220, h: 150, color: 'var(--accent)' }, x, y)
     else if (tool === 'ellipse') addItem({ kind: 'shape', shape: 'ellipse', w: 200, h: 200, color: '#7fb0e8' }, x, y)
     else if (tool === 'triangle') addItem({ kind: 'shape', shape: 'triangle', w: 220, h: 190, color: '#7fc8a0' }, x, y)
     else if (tool === 'image') { pendingImgPos.current = { x, y }; fileInputRef.current?.click() }
     setTool('select')
-  }, [tool, spaceDown, screenToWorld, addItem, addTerminal, addDevice, addTask, clearSelection])
+  }, [tool, spaceDown, screenToWorld, addItem, addTerminal, addDevice, addTask, addFrame, clearSelection])
 
   // ── Drag / resize an item ──
   const startDrag = useCallback((e: React.PointerEvent, id: string) => {
@@ -680,8 +1066,13 @@ export function CanvasMode() {
     // the first half, the only way to move a marquee'd group would be one card
     // at a time — which is the whole point of having selected them together.
     const selection = selectedIdsRef.current
-    const group = selection.includes(id) && selection.length > 1 ? selection : [id]
-    if (group.length === 1) selectOnly(id)
+    const picked = selection.includes(id) && selection.length > 1 ? selection : [id]
+    if (picked.length === 1) selectOnly(id)
+    // A frame carries its contents. Resolved here, at pointer-down, from the
+    // live mirror: the membership test is "is the card's centre inside the
+    // frame", and re-running it per frame would drop a card the moment the drag
+    // pushed it over the edge — the group would shed cards as it moved.
+    const group = expandFrameGroup(picked)
     const zoom = cameraRef.current.zoom
     const it = itemsRef.current.find(i => i.id === id)
     if (!it || it.locked) return
@@ -697,41 +1088,53 @@ export function CanvasMode() {
     )
     let moved = false
     setInteracting('grabbing')
-    const move = (ev: PointerEvent) => {
-      moved = true
-      // One delta for the whole group, snapped against the grabbed card — see
-      // dragDelta: snapping each card on its own would change their spacing.
-      const { dx, dy } = dragDelta(
-        { x: it.x, y: it.y },
-        (ev.clientX - startX) / zoom,
-        (ev.clientY - startY) / zoom,
-        snapRef.current ? GRID : null,
-      )
-      setItems(prev => prev.map(i => {
-        const o = origins.get(i.id)
-        return o ? { ...i, x: o.x + dx, y: o.y + dy } : i
-      }))
-    }
-    const up = (ev: PointerEvent) => {
-      setInteracting(false)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      // Drop a task card onto a terminal → assign it to that pane's agent.
-      // The delightful path; the context menu is the discoverable one.
-      if (moved && it.kind === 'task' && it.taskId) {
-        const wp = screenToWorld(ev.clientX, ev.clientY)
-        const under = itemsRef.current.find(i =>
-          i.id !== id && i.kind === 'terminal' && i.paneId &&
-          wp.x >= i.x && wp.x <= i.x + i.w && wp.y >= i.y && wp.y <= i.y + i.h)
-        if (under?.paneId) {
-          const leaf = findLeaf(useWorkspaceStore.getState().rootPane, under.paneId)
-          if (leaf?.agentId) void assignTask(it.taskId, leaf.agentId, leaf.title?.trim() || leaf.agentId)
+    startPointerDrag(
+      (ev) => {
+        moved = true
+        // One delta for the whole group, snapped against the grabbed card — see
+        // dragDelta: snapping each card on its own would change their spacing.
+        const { dx, dy } = dragDelta(
+          { x: it.x, y: it.y },
+          (ev.clientX - startX) / zoom,
+          (ev.clientY - startY) / zoom,
+          snapRef.current ? GRID : null,
+        )
+        setItems(prev => {
+          // Two levels of bail-out, both load-bearing for a smooth drag. Per
+          // item: an unchanged card keeps its object identity so the memoised
+          // CanvasCard skips re-rendering its live terminal. For the array:
+          // returning `prev` unchanged makes React skip the render entirely —
+          // which is most frames when snap is on, since a 20px grid means the
+          // pointer usually moves without the cards moving at all.
+          let changed = false
+          const next = prev.map(i => {
+            const o = origins.get(i.id)
+            if (!o) return i
+            const nx = o.x + dx, ny = o.y + dy
+            if (i.x === nx && i.y === ny) return i
+            changed = true
+            return { ...i, x: nx, y: ny }
+          })
+          return changed ? next : prev
+        })
+      },
+      (ev) => {
+        setInteracting(false)
+        // Drop a task card onto a terminal → assign it to that pane's agent.
+        // The delightful path; the context menu is the discoverable one.
+        if (moved && it.kind === 'task' && it.taskId) {
+          const wp = screenToWorld(ev.clientX, ev.clientY)
+          const under = itemsRef.current.find(i =>
+            i.id !== id && i.kind === 'terminal' && i.paneId &&
+            wp.x >= i.x && wp.x <= i.x + i.w && wp.y >= i.y && wp.y <= i.y + i.h)
+          if (under?.paneId) {
+            const leaf = findLeaf(useWorkspaceStore.getState().rootPane, under.paneId)
+            if (leaf?.agentId) void assignTask(it.taskId, leaf.agentId, leaf.title?.trim() || leaf.agentId)
+          }
         }
-      }
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
-  }, [bringToFront, screenToWorld, assignTask, selectOnly, toggleSelected])
+      },
+    )
+  }, [bringToFront, screenToWorld, assignTask, selectOnly, toggleSelected, expandFrameGroup])
 
   // Resize from any of the 8 handles. The dragged edge(s) follow the pointer
   // while the opposite edge stays pinned — so a west/north drag moves x/y as
@@ -750,21 +1153,26 @@ export function CanvasMode() {
     const startX = e.clientX, startY = e.clientY
     const orig = { x: it.x, y: it.y, w: it.w, h: it.h }
     setInteracting(RESIZE_CURSOR[dir])
-    const move = (ev: PointerEvent) => {
-      const next = resizeRect(orig, dir, (ev.clientX - startX) / zoom, (ev.clientY - startY) / zoom, {
-        minW: MIN_ITEM_W,
-        minH: MIN_ITEM_H,
-        grid: snapRef.current ? GRID : null,
-      })
-      setItems(prev => prev.map(i => i.id === id ? { ...i, ...next } : i))
-    }
-    const up = () => {
-      setInteracting(false)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    startPointerDrag(
+      (ev) => {
+        const next = resizeRect(orig, dir, (ev.clientX - startX) / zoom, (ev.clientY - startY) / zoom, {
+          // A frame shrunk to card size stops reading as a container and starts
+          // stealing membership from whatever it lands on.
+          minW: isFrameKind(it.kind) ? MIN_FRAME_W : MIN_ITEM_W,
+          minH: isFrameKind(it.kind) ? MIN_FRAME_H : MIN_ITEM_H,
+          grid: snapRef.current ? GRID : null,
+        })
+        setItems(prev => {
+          const cur = prev.find(i => i.id === id)
+          if (!cur) return prev
+          // Same bail-out as the drag: with snap on, most frames resolve to the
+          // geometry the card already has.
+          if (cur.x === next.x && cur.y === next.y && cur.w === next.w && cur.h === next.h) return prev
+          return prev.map(i => i.id === id ? { ...i, ...next } : i)
+        })
+      },
+      () => setInteracting(false),
+    )
   }, [bringToFront, selectOnly])
 
   // ── Remove items (closing the pane too, for terminals) ──
@@ -812,11 +1220,25 @@ export function CanvasMode() {
     // A task card is a window onto one DB row — "duplicating" means a *new*
     // task, not a second card pointing at the same row.
     if (it.kind === 'task') { void addTask(it.x + it.w / 2 + 24, it.y + it.h / 2 + 24); return }
+    // A duplicated frame is an empty region, not a copy of its contents — and it
+    // stays at FRAME_Z with a fresh name, so two frames are never both called
+    // "Frame 1" and neither ends up in front of the cards.
+    if (isFrameKind(it.kind)) {
+      const frames = itemsRef.current.filter(i => isFrameKind(i.kind))
+      const dup: CanvasItem = {
+        ...it, id: uuidv4(), x: it.x + 32, y: it.y + 32, z: FRAME_Z,
+        text: nextFrameName(frames.map(f => f.text ?? ''), t('canvas.frame.defaultName')),
+        color: nextFrameColor(frames.length),
+      }
+      setItems(prev => [...prev, dup])
+      selectOnly(dup.id)
+      return
+    }
     zTopRef.current += 1
     const copy: CanvasItem = { ...it, id: uuidv4(), x: it.x + 24, y: it.y + 24, z: zTopRef.current }
     setItems(prev => [...prev, copy])
     selectOnly(copy.id)
-  }, [addTerminal, addTask, selectOnly])
+  }, [addTerminal, addTask, selectOnly, t])
 
   // Make one card's transparency the board default: store it globally and drop
   // every per-card override, so existing AND future terminals all match.
@@ -888,8 +1310,10 @@ export function CanvasMode() {
 
   const sendToBack = useCallback((id: string) => {
     setItems(prev => {
-      const minZ = Math.min(...prev.map(i => i.z))
-      return prev.map(i => i.id === id ? { ...i, z: minZ - 1 } : i)
+      // Frames already live at FRAME_Z, below everything; pushing a card under
+      // one would make it invisible inside its own container.
+      const minZ = Math.min(...prev.filter(i => !isFrameKind(i.kind)).map(i => i.z), 1)
+      return prev.map(i => (i.id === id && !isFrameKind(i.kind)) ? { ...i, z: minZ - 1 } : i)
     })
   }, [])
 
@@ -914,11 +1338,12 @@ export function CanvasMode() {
     else if (kind === 'note') addItem({ kind: 'note', w: 220, h: 200, text: '', color: NOTE_COLORS[0] }, wx, wy)
     else if (kind === 'text') addItem({ kind: 'text', w: 260, h: 60, text: '', color: 'var(--text-primary)' }, wx, wy)
     else if (kind === 'task') void addTask(wx, wy)
+    else if (kind === 'frame') addFrame(wx, wy)
     else if (kind === 'rect') addItem({ kind: 'shape', shape: 'rect', w: 220, h: 150, color: 'var(--accent)' }, wx, wy)
     else if (kind === 'ellipse') addItem({ kind: 'shape', shape: 'ellipse', w: 200, h: 200, color: '#7fb0e8' }, wx, wy)
     else if (kind === 'triangle') addItem({ kind: 'shape', shape: 'triangle', w: 220, h: 190, color: '#7fc8a0' }, wx, wy)
     setMenu(null)
-  }, [addTerminal, addItem, addDevice, addTask])
+  }, [addTerminal, addItem, addDevice, addTask, addFrame])
 
   // ── Images (paste / drop / file picker / screenshot capture) ──
   // Insert an image data URL as a canvas item, fitted to a sensible box. When
@@ -1048,19 +1473,29 @@ export function CanvasMode() {
     const pts: { x: number; y: number }[] = [screenToWorld(e.clientX, e.clientY)]
     setDraft(pts)
     setInteracting('grabbing')
-    const move = (ev: PointerEvent) => {
-      pts.push(screenToWorld(ev.clientX, ev.clientY))
-      setDraft(pts.slice())
-    }
-    const up = () => {
+    startPointerDrag(
+      (ev) => {
+        // Every coalesced position, not just the one the frame delivered — the
+        // dropped ones are the difference between a smooth curve and a polygon.
+        for (const p of coalescedPoints(ev)) pts.push(screenToWorld(p.clientX, p.clientY))
+        setDraft(pts.slice())
+      },
+      () => finish(),
+    )
+    function finish() {
       setInteracting(false)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
       setDraft(null)
       if (pts.length < 2) return
-      const xs = pts.map(p => p.x), ys = pts.map(p => p.y)
-      const minX = Math.min(...xs), minY = Math.min(...ys)
-      const maxX = Math.max(...xs), maxY = Math.max(...ys)
+      // Folded rather than spread into Math.min/max: collecting every coalesced
+      // position makes long strokes several times denser, and `Math.min(...pts)`
+      // throws once the array outgrows the argument limit.
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      for (const p of pts) {
+        if (p.x < minX) minX = p.x
+        if (p.x > maxX) maxX = p.x
+        if (p.y < minY) minY = p.y
+        if (p.y > maxY) maxY = p.y
+      }
       const rel = pts.map(p => ({ x: Math.round((p.x - minX) * 100) / 100, y: Math.round((p.y - minY) * 100) / 100 }))
       const { color, width } = penRef.current
       zTopRef.current += 1
@@ -1071,8 +1506,6 @@ export function CanvasMode() {
         z: zTopRef.current, points: rel, color, strokeWidth: width,
       }])
     }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
   }, [screenToWorld])
 
   // ── Eraser ──
@@ -1087,12 +1520,17 @@ export function CanvasMode() {
     e.preventDefault()
     setMenu(null)
     const erased: CanvasItem[] = []
+    // What this swipe has already taken, tracked locally because `itemsRef` only
+    // catches up after React re-renders. Several hit-tests now run before a
+    // single commit, so without this an item swiped across would be collected
+    // (and reported, and restored by Ctrl+Z) more than once.
+    const gone = new Set<string>()
     let blockedByProtected = false
 
     const eraseAt = (sx: number, sy: number) => {
       const p = screenToWorld(sx, sy)
       const r = ERASER_RADIUS / cameraRef.current.zoom
-      const hits = itemsRef.current.filter(i => eraserHits(i, p.x, p.y, r))
+      const hits = itemsRef.current.filter(i => !gone.has(i.id) && eraserHits(i, p.x, p.y, r))
       if (!hits.length) {
         // Nothing erasable under the cursor, but something protected is: worth
         // saying once, so "the eraser is broken" never becomes the conclusion.
@@ -1100,30 +1538,36 @@ export function CanvasMode() {
           !isErasableKind(i.kind) && p.x >= i.x && p.x <= i.x + i.w && p.y >= i.y && p.y <= i.y + i.h)
         return
       }
-      erased.push(...hits)
-      const gone = new Set(hits.map(i => i.id))
-      setItems(prev => prev.filter(i => !gone.has(i.id)))
+      for (const h of hits) { gone.add(h.id); erased.push(h) }
+    }
+
+    const commit = () => {
+      if (!gone.size) return
+      setItems(prev => prev.some(i => gone.has(i.id)) ? prev.filter(i => !gone.has(i.id)) : prev)
     }
 
     setInteracting('none')
     eraseAt(e.clientX, e.clientY)
-    const move = (ev: PointerEvent) => {
-      setEraserAt({ x: ev.clientX, y: ev.clientY })
-      eraseAt(ev.clientX, ev.clientY)
-    }
-    const up = () => {
-      setInteracting(false)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      if (erased.length) {
-        lastErasedRef.current = erased
-        setToast(t('canvas.erase.done', { n: erased.length }))
-      } else if (blockedByProtected) {
-        setToast(t('canvas.erase.protected'))
-      }
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    commit()
+    startPointerDrag(
+      (ev) => {
+        setEraserAt({ x: ev.clientX, y: ev.clientY })
+        // Hit-test every intermediate position — a fast swipe would otherwise
+        // jump clean over a small stroke between two frames — but remove them
+        // in one state commit.
+        for (const p of coalescedPoints(ev)) eraseAt(p.clientX, p.clientY)
+        commit()
+      },
+      () => {
+        setInteracting(false)
+        if (erased.length) {
+          lastErasedRef.current = erased
+          setToast(t('canvas.erase.done', { n: erased.length }))
+        } else if (blockedByProtected) {
+          setToast(t('canvas.erase.protected'))
+        }
+      },
+    )
   }, [screenToWorld, t])
 
   // Put back everything the last eraser pass removed (Ctrl+Z).
@@ -1143,8 +1587,24 @@ export function CanvasMode() {
   // there onto the grid (positions AND sizes — a 503px-wide card never looks
   // aligned however well its corner sits), while "tidy" reflows everything into
   // an even grid, keeping each card's size and its reading order.
+  // Both arrange commands leave frames and everything inside them alone. A frame
+  // *is* an arrangement the user made deliberately, and reflowing its contents
+  // into a global grid would march them straight out of the region that gives
+  // them their meaning. Tidy arranges the loose cards; frames arrange their own.
+  const inAnyFrame = useCallback((): Set<string> => {
+    const its = itemsRef.current
+    const out = new Set<string>()
+    for (const f of its) {
+      if (!isFrameKind(f.kind)) continue
+      out.add(f.id)
+      for (const child of frameChildren(f, its)) out.add(child)
+    }
+    return out
+  }, [])
+
   const alignAllToGrid = useCallback(() => {
-    const rects = snapAll(itemsRef.current.filter(i => i.kind !== 'draw' && !i.locked), GRID)
+    const framed = inAnyFrame()
+    const rects = snapAll(itemsRef.current.filter(i => i.kind !== 'draw' && !i.locked && !framed.has(i.id)), GRID)
     if (rects.size === 0) { setToast(t('canvas.arrange.nothing')); return }
     setItems(prev => prev.map(i => {
       const r = rects.get(i.id)
@@ -1152,12 +1612,13 @@ export function CanvasMode() {
     }))
     setSnap(true)
     setToast(t('canvas.arrange.aligned', { n: rects.size }))
-  }, [t])
+  }, [t, inAnyFrame])
 
   const tidyBoard = useCallback(() => {
     // Freehand strokes are annotation *of* the cards; reflowing them into the
     // grid would scatter every scribble away from what it points at.
-    const movable = itemsRef.current.filter(i => i.kind !== 'draw' && !i.locked)
+    const framed = inAnyFrame()
+    const movable = itemsRef.current.filter(i => i.kind !== 'draw' && !i.locked && !framed.has(i.id))
     if (movable.length === 0) { setToast(t('canvas.arrange.nothing')); return }
     const pos = tidyGrid(movable, GRID)
     setItems(prev => prev.map(i => {
@@ -1165,7 +1626,7 @@ export function CanvasMode() {
       return p ? { ...i, ...p } : i
     }))
     setToast(t('canvas.arrange.tidied', { n: pos.size }))
-  }, [t])
+  }, [t, inAnyFrame])
 
   // ── Focus mode ──
   // Enter on a terminal card: it takes the stage, the other terminals queue up
@@ -1178,6 +1639,28 @@ export function CanvasMode() {
       if (next) { setMaximizedId(null); setTool('select') }
       return next
     })
+  }, [])
+
+  // ── Stable per-card handlers ──
+  // These used to be written inline in the items.map below, which handed every
+  // card a fresh function on every render and made memoising the cards pointless
+  // — the props never compared equal, so a drag re-rendered every board card and
+  // with them every live terminal. They all take the item id (or the item), so
+  // hoisting them costs nothing but makes CanvasCard's memo actually bail out.
+  const handleCardSelect = useCallback((id: string, additive: boolean) => {
+    if (additive) { toggleSelected(id); return }
+    selectOnly(id); bringToFront(id)
+  }, [toggleSelected, selectOnly, bringToFront])
+
+  const handleCardMenu = useCallback((e: React.MouseEvent, id: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    selectForMenu(id)
+    setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id })
+  }, [selectForMenu])
+
+  const handleCardMaximize = useCallback((id: string) => {
+    setMaximizedId(m => (m === id ? null : id))
   }, [])
 
   // A focused card whose pane was closed elsewhere leaves focus mode showing an
@@ -1273,6 +1756,9 @@ export function CanvasMode() {
       }
       // L locks/unlocks the selection.
       if (e.key.toLowerCase() === 'l' && selectedIds.length) { toggleLockMany(selectedIds); return }
+      // J jumps the camera to whichever pane is waiting on an answer. The chip
+      // is the discoverable path; this is the one you use twice and keep.
+      if (e.key.toLowerCase() === 'j' && attentionRef.current) { jumpToCard(attentionRef.current); return }
       switch (e.key.toLowerCase()) {
         case 'v': setTool('select'); break
         case 'h': setTool('hand'); break
@@ -1284,6 +1770,7 @@ export function CanvasMode() {
         case 'm': setTool('device'); break
         case 'n': setTool('note'); break
         case 'k': setTool('task'); break
+        case 'a': setTool('frame'); break
         case 'i': openImagePicker(); break
         case 'r': setTool('rect'); break
         case 'o': setTool('ellipse'); break
@@ -1295,7 +1782,7 @@ export function CanvasMode() {
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
-  }, [selectedIds, selectedConnectorId, removeItems, removeConnector, duplicateItem, openImagePicker, undoErase, toggleLockMany, clearSelection, focusTerminal, alignAllToGrid, tidyBoard])
+  }, [selectedIds, selectedConnectorId, removeItems, removeConnector, duplicateItem, openImagePicker, undoErase, toggleLockMany, clearSelection, focusTerminal, alignAllToGrid, tidyBoard, jumpToCard])
 
   // Close the context menu on any outside click.
   useEffect(() => {
@@ -1362,18 +1849,14 @@ export function CanvasMode() {
     const grabX = e.clientX - rect.left
     const grabY = e.clientY - rect.top
     setInteracting('grabbing')
-    const move = (ev: PointerEvent) => {
-      const x = clamp(ev.clientX - boardRect.left - grabX, 4, Math.max(4, boardRect.width - rect.width - 4))
-      const y = clamp(ev.clientY - boardRect.top - grabY, 4, Math.max(4, boardRect.height - rect.height - 4))
-      setRailPos({ x, y })
-    }
-    const up = () => {
-      setInteracting(false)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    startPointerDrag(
+      (ev) => {
+        const x = clamp(ev.clientX - boardRect.left - grabX, 4, Math.max(4, boardRect.width - rect.width - 4))
+        const y = clamp(ev.clientY - boardRect.top - grabY, 4, Math.max(4, boardRect.height - rect.height - 4))
+        setRailPos({ x, y })
+      },
+      () => setInteracting(false),
+    )
   }, [])
 
   // Rail + pen bar placement: default (left, vertically centred) until dragged,
@@ -1416,6 +1899,64 @@ export function CanvasMode() {
     if (focusHidden!.has(item.id)) return 'hidden'
     return focus.dock.get(item.id) ?? 'hidden'
   }
+
+  // ── Attention camera ──
+  // An infinite board's own premise breaks the one signal that matters: a pane
+  // three screens away asking "may I edit this file?" is invisible. The TopBar
+  // bell knows; the board didn't. Note the source is the *notification* list,
+  // not `paneAttention === 'waiting'` — waiting means "finished a turn", which is
+  // most panes most of the time, and a camera that chased it would never settle.
+  // Notifications are already question-gated in pty-manager.
+  const notifiedPaneIds = useMemo(
+    () => notifications.filter(n => !n.read).map(n => n.paneId),
+    [notifications],
+  )
+  const notifiedPaneSet = useMemo(() => new Set(notifiedPaneIds), [notifiedPaneIds])
+  const attentionCardId = useMemo(
+    () => pickAttentionTarget(items, notifiedPaneIds),
+    [items, notifiedPaneIds],
+  )
+  const attentionCard = attentionCardId ? items.find(i => i.id === attentionCardId) ?? null : null
+  attentionRef.current = attentionCardId
+  const attentionOffscreen = !!attentionCard && viewport.w > 0 && !focus &&
+    isOffscreen(attentionCard, viewportWorldRect(camera, viewport), 24)
+
+  // Follow mode: pan to the card that just asked, once. `shouldFollow` refuses
+  // to re-chase a target already followed, so dismissing the chip and panning
+  // away doesn't snap you straight back on the next render.
+  useEffect(() => {
+    if (!follow || focus) return
+    if (!shouldFollow(attentionCardId, lastFollowedRef.current, attentionOffscreen)) return
+    lastFollowedRef.current = attentionCardId
+    if (attentionCardId) jumpToCard(attentionCardId)
+  }, [follow, focus, attentionCardId, attentionOffscreen, jumpToCard])
+
+  // Once the question is answered the target is fair game to chase again.
+  useEffect(() => {
+    if (!attentionCardId) lastFollowedRef.current = null
+  }, [attentionCardId])
+
+  // Attempt cards, keyed by pane, for the race chips drawn on the terminals.
+  const raceIndex = useMemo(() => {
+    const out = new Map<string, { index: number; total: number; state: string; stat: AttemptStat | undefined }>()
+    racers.forEach((r, i) => {
+      out.set(r.paneId, {
+        index: i + 1,
+        total: racers.length,
+        state: attemptState({
+          running: r.running,
+          working: paneAttention[r.paneId] === 'working',
+          stat: raceStats[r.paneId],
+        }),
+        stat: raceStats[r.paneId],
+      })
+    })
+    return out
+  }, [racers, raceStats, paneAttention])
+  const raceContested = useMemo(
+    () => contestedFiles(racers.map(r => ({ paneId: r.paneId, stat: raceStats[r.paneId] }))),
+    [racers, raceStats],
+  )
 
   return (
     <div style={styles.wrap}>
@@ -1522,7 +2063,7 @@ export function CanvasMode() {
                 item={item}
                 selected={selectedSet.has(item.id)}
                 onDragStart={startDrag}
-                onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); selectForMenu(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
+                onContextMenu={handleCardMenu}
               />
             )) : (
               <CanvasCard
@@ -1535,22 +2076,30 @@ export function CanvasMode() {
                 viewport={viewport}
                 focusRect={focusRectFor(item)}
                 isFocusStage={focus ? item.id === focusedId : false}
-                onFocus={item.kind === 'terminal' ? () => focusTerminal(item.id) : undefined}
+                onFocus={item.kind === 'terminal' ? focusTerminal : undefined}
                 onDragStart={startDrag}
                 onResizeStart={startResize}
-                onSelect={(id, additive) => {
-                  if (additive) { toggleSelected(id); return }
-                  selectOnly(id); bringToFront(id)
-                }}
+                onSelect={handleCardSelect}
                 onRemove={removeItem}
-                onMaximize={(id) => setMaximizedId(m => (m === id ? null : id))}
+                onMaximize={handleCardMaximize}
                 onUpdate={updateItem}
-                onContextMenu={(e, id) => { e.preventDefault(); e.stopPropagation(); selectForMenu(id); setMenu({ x: e.clientX, y: e.clientY, wx: 0, wy: 0, itemId: id }) }}
-                onCapture={(dataUrl) => handleCapture(item, dataUrl)}
+                onContextMenu={handleCardMenu}
+                onCapture={handleCapture}
                 task={item.kind === 'task' && item.taskId ? tasksById.get(item.taskId) : undefined}
                 onTaskRename={renameTask}
                 noteColors={NOTE_COLORS}
                 alpha={item.kind === 'terminal' ? terminalAlpha(item, terminalOpacity) : 1}
+                // Semantic zoom. Never while maximized or on the focus stage:
+                // both of those exist precisely to make one terminal readable.
+                tile={item.kind === 'terminal' && tileMode && item.id !== maximizedId && !focus}
+                tileTask={item.paneId ? tasksById.get(paneTask[item.paneId] ?? '')?.title : undefined}
+                needsAttention={!!item.paneId && notifiedPaneSet.has(item.paneId)}
+                race={item.paneId ? raceIndex.get(item.paneId) : undefined}
+                raceBusy={raceBusy}
+                onRaceKeep={keepRaceWinner}
+                frameChildCount={isFrameKind(item.kind) ? frameChildren(item, items).length : 0}
+                framePaneCount={isFrameKind(item.kind) ? framePanes(item, items).length : 0}
+                onFrameSend={openFrameBroadcast}
                 t={t}
               />
             )
@@ -1685,6 +2234,7 @@ export function CanvasMode() {
         <ToolButton active={tool === 'note'} label={t('canvas.tool.note')} onClick={() => setTool('note')}><IconNote /></ToolButton>
         <ToolButton active={tool === 'text'} label={t('canvas.tool.text')} onClick={() => setTool('text')}><IconText /></ToolButton>
         <ToolButton active={tool === 'task'} label={t('canvas.tool.task')} onClick={() => setTool('task')}><IconTask /></ToolButton>
+        <ToolButton active={tool === 'frame'} label={t('canvas.tool.frame')} onClick={() => setTool('frame')}><IconFrame /></ToolButton>
         <ToolButton active={tool === 'image'} label={t('canvas.tool.image')} onClick={openImagePicker}><IconImage /></ToolButton>
         <div style={styles.railDivider} />
         <ToolButton active={tool === 'rect'} label={t('canvas.tool.rect')} onClick={() => setTool('rect')}><IconRect /></ToolButton>
@@ -1737,6 +2287,19 @@ export function CanvasMode() {
           onContextMenu={(e) => { e.preventDefault(); alignAllToGrid() }}
           title={`${snap ? t('canvas.snapOn') : t('canvas.snapOff')} — ${t('canvas.arrange.alignHint')}`}
         ><IconSnap /></button>
+        {/* Semantic zoom + follow camera. Both are ways of *looking* at the
+            board rather than things on it, so they live with zoom and fit
+            rather than in the tool rail. */}
+        <button
+          style={{ ...styles.iconCtrl, color: lodEnabled ? 'var(--accent)' : 'var(--text-secondary)', borderColor: lodEnabled ? 'var(--accent)' : 'var(--border)' }}
+          onClick={() => setLodEnabled(v => !v)}
+          title={lodEnabled ? t('canvas.lod.on') : t('canvas.lod.off')}
+        ><IconLod /></button>
+        <button
+          style={{ ...styles.iconCtrl, color: follow ? 'var(--accent)' : 'var(--text-secondary)', borderColor: follow ? 'var(--accent)' : 'var(--border)' }}
+          onClick={() => setFollow(v => !v)}
+          title={follow ? t('canvas.follow.on') : t('canvas.follow.off')}
+        ><IconFollow /></button>
         <button style={styles.iconCtrl} onClick={() => setShortcutsOpen(o => !o)} title={t('canvas.shortcuts.title')}>?</button>
         <button style={styles.exitBtn} onClick={showTerminals} title={t('canvas.exit')}>
           <IconExit /> <span style={{ fontSize: 12 }}>{t('canvas.exit')}</span>
@@ -1767,6 +2330,14 @@ export function CanvasMode() {
                 <button className="ctx-menu-item" onClick={() => { focusTerminal(target.id); setMenu(null) }}>
                   <span style={{ flex: 1 }}>{focusedId === target.id ? t('canvas.focus.exit') : t('canvas.focus.enter')}</span>
                   <span style={styles.ctxKey}>F</span>
+                </button>
+              )}
+              {/* Race — best-of-N where the agents already are. Offered on a
+                  selection of terminals, which is the gesture that means "these
+                  ones" on this board. */}
+              {multi && multi.filter(id => items.find(i => i.id === id)?.kind === 'terminal').length > 1 && (
+                <button className="ctx-menu-item" onClick={() => openRaceSetup(multi)}>
+                  {t('canvas.race.start', { n: multi.filter(id => items.find(i => i.id === id)?.kind === 'terminal').length })}
                 </button>
               )}
               <button className="ctx-menu-item" onClick={() => { (multi ?? [menu.itemId!]).forEach(duplicateItem); setMenu(null) }}><span style={{ flex: 1 }}>{t('canvas.ctx.duplicate')}</span><span style={styles.ctxKey}>Ctrl+D</span></button>
@@ -1899,6 +2470,37 @@ export function CanvasMode() {
                 )
               })()}
 
+              {/* Frame — a named region that owns what's inside it. The two
+                  actions that make it more than a rectangle: talk to every
+                  agent in it, and grab everything in it as a selection. */}
+              {target && isFrameKind(target.kind) && (() => {
+                const kids = frameChildren(target, items).length
+                const panes = framePanes(target, items).length
+                return (
+                  <>
+                    <div style={styles.ctxDivider} />
+                    <div style={styles.ctxLabel}>{t('canvas.frame.contains', { n: kids, agents: panes })}</div>
+                    <button className="ctx-menu-item" disabled={panes === 0} onClick={() => openFrameBroadcast(target.id)}>
+                      {t('canvas.frame.broadcast', { n: panes })}
+                    </button>
+                    <button className="ctx-menu-item" disabled={kids === 0} onClick={() => selectFrameContents(target.id)}>
+                      {t('canvas.frame.selectContents', { n: kids })}
+                    </button>
+                  </>
+                )
+              })()}
+
+              {/* Sticky note → real task, in place. Scribble first, formalise
+                  later is how a board actually gets used. */}
+              {(target?.kind === 'note' || target?.kind === 'text') && !multi && (
+                <>
+                  <div style={styles.ctxDivider} />
+                  <button className="ctx-menu-item" onClick={() => { void noteToTask(target) }}>
+                    {t('canvas.note.toTask')}
+                  </button>
+                </>
+              )}
+
               {/* Browser tab stacking */}
               {target?.kind === 'browser' && (
                 <>
@@ -1929,6 +2531,7 @@ export function CanvasMode() {
               <button className="ctx-menu-item" onClick={() => addFromMenu('note', menu.wx, menu.wy)}>{t('canvas.tool.note')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('text', menu.wx, menu.wy)}>{t('canvas.tool.text')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('task', menu.wx, menu.wy)}>{t('canvas.tool.task')}</button>
+              <button className="ctx-menu-item" onClick={() => addFromMenu('frame', menu.wx, menu.wy)}>{t('canvas.tool.frame')}</button>
               <div style={styles.ctxDivider} />
               <button className="ctx-menu-item" onClick={() => addFromMenu('rect', menu.wx, menu.wy)}>{t('canvas.tool.rect')}</button>
               <button className="ctx-menu-item" onClick={() => addFromMenu('ellipse', menu.wx, menu.wy)}>{t('canvas.tool.ellipse')}</button>
@@ -1986,9 +2589,50 @@ export function CanvasMode() {
 
       {shortcutsOpen && <ShortcutSheet t={t} onClose={() => setShortcutsOpen(false)} />}
 
+      {/* ── Race strip ──
+          A race is on: what each attempt has changed, where they disagree, and
+          the way out. The per-card chips say which card is which attempt; this
+          says what the comparison as a whole looks like. */}
+      {racers.length > 0 && !focus && (
+        <div style={styles.raceBar}>
+          <span style={styles.raceBarLabel}>{t('canvas.race.active', { n: racers.length })}</span>
+          <span style={styles.raceBarGoal} title={raceGoal}>{raceGoal}</span>
+          {raceContested.length > 0 && (
+            <>
+              <span style={styles.raceBarSep} />
+              <span style={styles.raceBarLabel}>{t('race.contested')}</span>
+              {raceContested.slice(0, 6).map(c => (
+                <span key={c.path} style={styles.raceBarFile} title={c.path}>
+                  {c.path.split(/[\\/]/).pop()}<span style={{ color: 'var(--accent)' }}> ×{c.count}</span>
+                </span>
+              ))}
+            </>
+          )}
+          <div style={{ flex: 1 }} />
+          <button style={styles.raceBarBtn} onClick={endRace}>{t('canvas.race.end')}</button>
+        </div>
+      )}
+
+      {/* ── "Needs you" jump chip ──
+          The board can be bigger than the screen, which is exactly what makes an
+          agent's question easy to miss. Only shown when the card really is off
+          screen — a chip pointing at something you can already see is noise. */}
+      {attentionCard && attentionOffscreen && (
+        <button
+          className="canvas-attention-chip"
+          style={styles.attentionChip}
+          onClick={() => jumpToCard(attentionCard.id)}
+          title={t('canvas.attention.hint')}
+        >
+          <span className="canvas-attention-dot" style={styles.attentionDot} />
+          {t('canvas.attention.chip', { name: paneLabel(rootPane, attentionCard.paneId, t) })}
+          <span style={styles.ctxKey}>J</span>
+        </button>
+      )}
+
       {/* ── Minimap navigator (bottom-right) ── */}
       {items.length > 0 && !focus && (
-        <Minimap items={items} camera={camera} rootRef={rootRef} pos={minimapPos} onMove={setMinimapPos} onInteract={setInteracting} t={t} onJump={(wx, wy) => {
+        <Minimap items={items} camera={camera} rootRef={rootRef} pos={minimapPos} onMove={setMinimapPos} onInteract={setInteracting} alerts={notifiedPaneSet} t={t} onJump={(wx, wy) => {
           const rect = rootRef.current?.getBoundingClientRect()
           if (!rect) return
           const z = cameraRef.current.zoom
@@ -2007,6 +2651,37 @@ export function CanvasMode() {
             setSendTarget(null)
             void sendCaptureToAgent(tgt.imageId, tgt.paneId, tgt.agent, note)
           }}
+        />
+      )}
+
+      {/* Frame broadcast composer — one instruction to every agent inside. */}
+      {frameSend && (
+        <PromptPanel
+          title={t('canvas.frame.sendTitle', { name: frameSend.label, n: frameSend.panes.length })}
+          placeholder={t('canvas.frame.sendPlaceholder')}
+          hint={t('canvas.frame.sendHint', { n: frameSend.panes.length })}
+          confirmLabel={t('canvas.send.send')}
+          t={t}
+          onCancel={() => setFrameSend(null)}
+          onSubmit={(text) => {
+            const target = frameSend
+            setFrameSend(null)
+            sendToFrame(target.panes, text)
+          }}
+        />
+      )}
+
+      {/* Race composer — the goal every selected terminal will attempt. */}
+      {raceSetup && (
+        <PromptPanel
+          title={t('canvas.race.title', { n: raceSetup.panes.length })}
+          placeholder={t('race.goalPlaceholder')}
+          hint={raceSetup.panes.map(p => p.title).join(' · ')}
+          confirmLabel={t('race.start', { n: String(raceSetup.panes.length) })}
+          initial={raceGoal}
+          t={t}
+          onCancel={() => setRaceSetup(null)}
+          onSubmit={(goal) => startRace(raceSetup.panes, goal)}
         />
       )}
 
@@ -2035,7 +2710,7 @@ export function CanvasMode() {
 
 // ── Minimap ─────────────────────────────────────────────────────────────────
 
-function Minimap({ items, camera, rootRef, pos, onMove, onInteract, onJump, t }: {
+function Minimap({ items, camera, rootRef, pos, onMove, onInteract, onJump, alerts, t }: {
   items: CanvasItem[]
   camera: Camera
   rootRef: React.RefObject<HTMLDivElement>
@@ -2044,6 +2719,8 @@ function Minimap({ items, camera, rootRef, pos, onMove, onInteract, onJump, t }:
   onMove: (pos: { x: number; y: number }) => void
   onInteract: (state: false | string) => void
   onJump: (wx: number, wy: number) => void
+  /** Panes with an unanswered question — drawn pulsing, whatever their kind. */
+  alerts?: Set<string>
   t: (k: any, p?: any) => string
 }) {
   const MM_W = 190, MM_H = 130, PAD = 10
@@ -2062,18 +2739,14 @@ function Minimap({ items, camera, rootRef, pos, onMove, onInteract, onJump, t }:
     const grabX = e.clientX - rect.left
     const grabY = e.clientY - rect.top
     onInteract('grabbing')
-    const move = (ev: PointerEvent) => {
-      const x = clamp(ev.clientX - boardRect.left - grabX, 4, Math.max(4, boardRect.width - rect.width - 4))
-      const y = clamp(ev.clientY - boardRect.top - grabY, 4, Math.max(4, boardRect.height - rect.height - 4))
-      onMove({ x, y })
-    }
-    const up = () => {
-      onInteract(false)
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-    }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
+    startPointerDrag(
+      (ev) => {
+        const x = clamp(ev.clientX - boardRect.left - grabX, 4, Math.max(4, boardRect.width - rect.width - 4))
+        const y = clamp(ev.clientY - boardRect.top - grabY, 4, Math.max(4, boardRect.height - rect.height - 4))
+        onMove({ x, y })
+      },
+      () => onInteract(false),
+    )
   }
 
   // Default corner until dragged, then an explicit position (right/bottom cleared
@@ -2099,7 +2772,7 @@ function Minimap({ items, camera, rootRef, pos, onMove, onInteract, onJump, t }:
 
   const kindColor = (k: CanvasItem['kind']) =>
     k === 'terminal' ? '#7fc8a0' : k === 'browser' ? '#7fb0e8' : k === 'device' ? '#9db0e8' : k === 'note' ? '#f4c95d'
-    : k === 'image' ? '#c89be0' : k === 'draw' ? '#e88ba5' : '#e8956b'
+    : k === 'image' ? '#c89be0' : k === 'draw' ? '#e88ba5' : k === 'frame' ? '#5c534c' : '#e8956b'
 
   const jump = (e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
@@ -2117,7 +2790,25 @@ function Minimap({ items, camera, rootRef, pos, onMove, onInteract, onJump, t }:
       <svg width={MM_W} height={MM_H} style={{ display: 'block', cursor: 'pointer' }} onPointerDown={jump}>
         {items.map(i => {
           const p = toMini(i.x, i.y)
-          return <rect key={i.id} x={p.x} y={p.y} width={Math.max(2, i.w * scale)} height={Math.max(2, i.h * scale)} rx={1.5} fill={kindColor(i.kind)} opacity={0.85} />
+          // A pane waiting on an answer can be anywhere on an infinite board;
+          // the minimap is the one place that shows all of it at once, so this
+          // is where the signal belongs. Pulsing rather than merely coloured:
+          // the map is a field of small rectangles and a static one would be
+          // just another colour among six.
+          const alert = !!i.paneId && !!alerts?.has(i.paneId)
+          return (
+            <rect
+              key={i.id}
+              className={alert ? 'canvas-attention-dot' : undefined}
+              x={p.x} y={p.y}
+              width={Math.max(2, i.w * scale)} height={Math.max(2, i.h * scale)}
+              rx={1.5}
+              fill={alert ? '#f4c95d' : kindColor(i.kind)}
+              stroke={alert ? '#f4c95d' : undefined}
+              strokeWidth={alert ? 2 : undefined}
+              opacity={0.85}
+            />
+          )
         })}
         {(() => { const p = toMini(viewX, viewY); return (
           <rect x={p.x} y={p.y} width={viewW * scale} height={viewH * scale} fill="rgba(232,149,107,0.12)" stroke="var(--accent)" strokeWidth={1.2} rx={2} />
@@ -2140,8 +2831,9 @@ interface CanvasCardProps {
   onMaximize: (id: string) => void
   onUpdate: (id: string, patch: Partial<CanvasItem>) => void
   onContextMenu: (e: React.MouseEvent, id: string) => void
-  /** A browser/device card was screenshotted (null = capture failed). */
-  onCapture: (dataUrl: string | null) => void
+  /** A browser/device card was screenshotted (null = capture failed). Takes the
+   *  source item so the board can hand one stable handler to every card. */
+  onCapture: (item: CanvasItem, dataUrl: string | null) => void
   /** The backing task row for a task card (live-polled), and its title editor. */
   task?: KanbanTask
   onTaskRename?: (taskId: string, title: string) => void
@@ -2155,7 +2847,22 @@ interface CanvasCardProps {
   /** Focus mode placement: a screen rect, 'hidden', or null when focus is off. */
   focusRect?: ScreenRect | 'hidden' | null
   isFocusStage?: boolean
-  onFocus?: () => void
+  /** Present only on terminal cards; takes the item id so it stays stable. */
+  onFocus?: (id: string) => void
+  /** Semantic zoom: render this terminal as a status tile, not a live view. */
+  tile?: boolean
+  /** Title of the task this pane is currently on — the tile's subtitle. */
+  tileTask?: string
+  /** This pane has an unanswered question (drives the card's alert ring). */
+  needsAttention?: boolean
+  /** Race participation, when this pane is one of the attempts. */
+  race?: { index: number; total: number; state: string; stat: AttemptStat | undefined }
+  raceBusy?: boolean
+  onRaceKeep?: (paneId: string) => void
+  /** Frame only: what it contains, and how many of those are live agents. */
+  frameChildCount?: number
+  framePaneCount?: number
+  onFrameSend?: (id: string) => void
   t: (k: any, p?: any) => string
 }
 
@@ -2185,8 +2892,19 @@ function maximizedGeometry(camera: Camera, viewport: { w: number; h: number }): 
   return screenAnchored({ x: 0, y: 0, w: viewport.w, h: viewport.h }, camera, 999999)
 }
 
-function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, focusRect, isFocusStage, onFocus, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, onCapture, task, onTaskRename, noteColors, t }: CanvasCardProps) {
+// Memoised, and the callers above go to some trouble to keep that meaningful:
+// every handler is hoisted to a stable useCallback and the drag reducers hand
+// back the *same* item object for cards they didn't move. A card that isn't
+// moving therefore re-renders on none of the ~60 state commits a drag produces,
+// which is what keeps the live terminals out of the drag's critical path.
+//
+// (Focus mode is the one exception: its geometry is recomputed each render, so
+// `focusRect` is a fresh object and the cards fall back to re-rendering. Focus
+// mode freezes the camera and hides all but the docked cards, so there is no
+// drag going on to make it matter.)
+const CanvasCard = React.memo(function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, focusRect, isFocusStage, onFocus, onDragStart, onResizeStart, onSelect, onRemove, onMaximize, onUpdate, onContextMenu, onCapture, task, onTaskRename, noteColors, tile, tileTask, needsAttention, race, raceBusy, onRaceKeep, frameChildCount, framePaneCount, onFrameSend, t }: CanvasCardProps) {
   const isShape = item.kind === 'shape'
+  const isFrame = isFrameKind(item.kind)
   const frameless = (isShape || item.kind === 'text') && !maximized && !focusRect
   // Task cards wear their status as a coloured ring so the board reads as a
   // pipeline at a glance, even zoomed out.
@@ -2215,6 +2933,104 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
   // rest of the app behind it — always opaque.
   const effAlpha = maxStyle ? 1 : alpha
 
+  // ── Frame ──
+  // A different shape of object, so a different render rather than six more
+  // conditionals in the card body. The critical property: the frame's *interior*
+  // is pointer-transparent. It sits behind the cards, so an opaque body would
+  // swallow every click on empty space inside it — no marquee select, no
+  // right-click "add here", inside the very region you organise work in. Only
+  // the header and the resize handles take the pointer, exactly like Figma.
+  if (isFrame) {
+    // Focus mode places terminals in screen space; a frame lives in world
+    // coordinates and would hang over the stage outlining nothing. Unmounting is
+    // free here (it's a div and an input, not a pty), same as the ink.
+    if (focusRect) return null
+    const accent = item.color || 'var(--accent)'
+    const kids = frameChildCount ?? 0
+    const panes = framePaneCount ?? 0
+    // The label is a **sibling** of the region, not a child, and sits above it —
+    // see FRAME_LABEL_Z. A frame is by definition underneath a pile of cards, so
+    // a label inside its stacking context would be buried by the first card
+    // dropped on it, leaving the frame with no way to be grabbed or renamed.
+    // It's drawn just outside the top edge, like Figma's artboard name, so it
+    // covers nothing the frame contains.
+    const labelH = FRAME_HEADER_H / Math.max(zoom, 0.25)
+    return (
+      <>
+        <div
+          data-canvas-frame-label
+          style={{
+            ...styles.frameHeader,
+            position: 'absolute',
+            left: item.x, top: item.y - labelH - 4 / Math.max(zoom, 0.25),
+            width: item.w, height: labelH,
+            zIndex: FRAME_LABEL_Z,
+            borderRadius: 10 / Math.max(zoom, 0.25),
+            fontSize: 12.5 / Math.max(zoom, 0.25),
+            color: accent,
+            border: `${(selected ? 1.6 : 1) / Math.max(zoom, 0.25)}px solid ${selected ? 'var(--accent)' : `color-mix(in srgb, ${accent} 45%, transparent)`}`,
+            ...(item.locked ? { cursor: 'default' } : null),
+          }}
+          onPointerDown={(e) => {
+            onSelect(item.id, e.shiftKey)
+            if (e.button === 0 && !item.locked && !e.shiftKey) onDragStart(e, item.id)
+          }}
+          onContextMenu={(e) => onContextMenu(e, item.id)}
+        >
+          {item.locked && <span style={{ ...styles.lockMark, position: 'static' }}><IconLock /></span>}
+          <FrameName
+            value={item.text ?? ''}
+            accent={accent}
+            placeholder={t('canvas.frame.defaultName')}
+            onChange={(text) => onUpdate(item.id, { text })}
+          />
+          <span style={{ ...styles.frameCount, fontSize: '0.85em' }} title={t('canvas.frame.contains', { n: kids, agents: panes })}>
+            {kids}{panes > 0 ? ` · ${panes}◍` : ''}
+          </span>
+          {panes > 0 && onFrameSend && (
+            <button
+              style={{ ...styles.cardHdrBtn, color: accent, width: '1.7em', height: '1.7em' }}
+              title={t('canvas.frame.broadcast', { n: panes })}
+              onPointerDown={e => e.stopPropagation()}
+              onClick={() => onFrameSend(item.id)}
+            ><IconSend /></button>
+          )}
+          <button
+            style={{ ...styles.cardHdrBtn, width: '1.7em', height: '1.7em' }}
+            title={t('canvas.removeCard')}
+            onPointerDown={e => e.stopPropagation()}
+            onClick={() => onRemove(item.id)}
+          >✕</button>
+        </div>
+        <div
+          data-canvas-card
+          data-canvas-frame
+          style={{
+            position: 'absolute',
+            left: item.x, top: item.y, width: item.w, height: item.h,
+            zIndex: FRAME_Z,
+            borderRadius: 14,
+            border: `${selected ? 2 : 1.5}px solid ${selected ? 'var(--accent)' : accent}`,
+            background: `color-mix(in srgb, ${accent} 5%, transparent)`,
+            // The interior is deliberately pointer-transparent. The frame sits
+            // *behind* the cards, so an opaque body would swallow every click on
+            // empty space inside it — no marquee select, no right-click "add
+            // here" — inside the very region you organise work in.
+            pointerEvents: 'none',
+          }}
+        >
+          {!item.locked && RESIZE_DIRS.map(dir => (
+            <div
+              key={dir}
+              onPointerDown={(e) => onResizeStart(e, item.id, dir)}
+              style={{ ...resizeHandleStyle(dir, zoom), pointerEvents: 'auto', ...(selected ? selectedHandleSkin(dir, zoom) : null) }}
+            />
+          ))}
+        </div>
+      </>
+    )
+  }
+
   return (
     <div
       data-canvas-card
@@ -2223,8 +3039,11 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
         left: item.x, top: item.y, width: item.w, height: item.h,
         zIndex: item.z,
         borderRadius: frameless ? 0 : 12,
+        // A pane with an unanswered question outranks its task-status ring: one
+        // is "where this is in the pipeline", the other is "you are the blocker".
         outline: isFocusStage ? '2px solid var(--accent)'
           : selected ? '2px solid var(--accent)'
+          : needsAttention ? `2px solid ${TILE_STATE_COLOR.waiting}`
           : statusRing ? `2px solid ${statusRing}` : 'none',
         outlineOffset: 2,
         display: 'flex', flexDirection: 'column',
@@ -2262,8 +3081,34 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
         />
       )}
 
-      {/* Header / drag handle — shapes & text drag from anywhere */}
-      {!frameless && (
+      {/* Race chip — which attempt this card is, how big it is, and the button
+          that ends the race in its favour. Anchored above the card rather than
+          squeezed into the header: at the zoom where you compare attempts the
+          header is a few pixels tall, and this has to stay hittable. */}
+      {race && !focusRect && !maxStyle && (
+        <div style={{ ...styles.raceChip, transform: `scale(${1 / Math.max(zoom, 0.2)})` }} onPointerDown={e => e.stopPropagation()}>
+          <span style={{ ...styles.raceChipDot, background: RACE_STATE_COLOR[race.state] ?? 'var(--text-muted)' }} />
+          <span style={styles.raceChipIdx}>{race.index}/{race.total}</span>
+          <span style={styles.raceChipStat}>
+            {race.stat && race.stat.files.length > 0
+              ? t('race.stat', { files: String(race.stat.files.length), churn: String(churn(race.stat)) })
+              : t('race.noChanges')}
+          </span>
+          {onRaceKeep && item.paneId && (
+            <button
+              style={{ ...styles.raceChipBtn, ...(race.state === 'ready' && !raceBusy ? null : { opacity: 0.45, cursor: 'default' }) }}
+              disabled={race.state !== 'ready' || !!raceBusy}
+              onClick={() => onRaceKeep(item.paneId!)}
+            >{t('race.keep')}</button>
+          )}
+        </div>
+      )}
+
+      {/* Header / drag handle — shapes & text drag from anywhere.
+          Hidden in tile mode: at the zoom where tiles exist the header is a
+          three-pixel strip nobody can read or click, and the tile below says
+          everything it would have. */}
+      {!frameless && !tile && (
         <div
           style={{
             ...styles.cardHeader, position: 'relative', zIndex: 1,
@@ -2290,7 +3135,7 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
               style={{ ...styles.cardHdrBtn, ...(isFocusStage ? { color: 'var(--accent)' } : null) }}
               title={isFocusStage ? t('canvas.focus.exit') : t('canvas.focus.enter')}
               onPointerDown={e => e.stopPropagation()}
-              onClick={onFocus}
+              onClick={() => onFocus(item.id)}
             ><IconFocus /></button>
           )}
           {(item.kind === 'terminal' || maxStyle) && !focusRect && (
@@ -2310,10 +3155,20 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
       {/* Body */}
       <div
         style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', overflow: frameless ? 'visible' : 'hidden', position: 'relative', zIndex: 1 }}
-        // Shapes/text are dragged by their body since they have no header.
-        onPointerDown={frameless ? (e) => { if (e.button === 0 && item.kind !== 'text' && !immovable) onDragStart(e, item.id) } : undefined}
+        // Shapes/text are dragged by their body since they have no header — and
+        // so is a tile, whose header is hidden. Without this, zooming out far
+        // enough to see the whole board would be exactly the point at which the
+        // cards stopped being movable, which is backwards.
+        onPointerDown={
+          tile ? (e) => { if (e.button === 0 && !immovable) onDragStart(e, item.id) }
+          : frameless ? (e) => { if (e.button === 0 && item.kind !== 'text' && !immovable) onDragStart(e, item.id) }
+          : undefined
+        }
+        // Same gesture the (hidden) header offers: double-click to maximize, so
+        // a tile you want to read is one action away from being readable.
+        onDoubleClick={tile ? () => onMaximize(item.id) : undefined}
       >
-        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} onCapture={onCapture} task={task} onTaskRename={onTaskRename} noteColors={noteColors} alpha={effAlpha} t={t} maximized={!!maxStyle || isFocusStage} />
+        <CardBody item={item} onUpdate={onUpdate} onDragStart={onDragStart} onCapture={(d) => onCapture(item, d)} task={task} onTaskRename={onTaskRename} noteColors={noteColors} alpha={effAlpha} t={t} maximized={!!maxStyle || isFocusStage} tile={!!tile} tileTask={tileTask} zoom={zoom} />
         {/* frameless move/delete affordances when selected (text can't drag from
             its body — the textarea captures the pointer for editing). */}
         {frameless && selected && (
@@ -2345,7 +3200,7 @@ function CanvasCard({ item, selected, zoom, alpha, maximized, camera, viewport, 
       ))}
     </div>
   )
-}
+})
 
 // Geometry for one resize handle. Corners are square grab targets pinned to the
 // corner; edges are thin strips spanning the side between them.
@@ -2390,7 +3245,7 @@ function selectedHandleSkin(dir: ResizeDir, zoom: number): React.CSSProperties |
 
 // ── CardBody — the type-specific content ────────────────────────────────────
 
-function CardBody({ item, onUpdate, onDragStart, onCapture, task, onTaskRename, noteColors, alpha = 1, t, maximized }: {
+function CardBody({ item, onUpdate, onDragStart, onCapture, task, onTaskRename, noteColors, alpha = 1, t, maximized, tile, tileTask, zoom = 1 }: {
   item: CanvasItem
   onUpdate: (id: string, patch: Partial<CanvasItem>) => void
   onDragStart?: (e: React.PointerEvent, id: string) => void
@@ -2401,11 +3256,25 @@ function CardBody({ item, onUpdate, onDragStart, onCapture, task, onTaskRename, 
   alpha?: number
   t: (k: any, p?: any) => string
   maximized?: boolean
+  tile?: boolean
+  tileTask?: string
+  zoom?: number
 }) {
   // Maximized fills the screen, so transparency there would just show the app
   // behind it — always render the maximized view opaque.
   if (item.kind === 'terminal' && item.paneId) {
-    return <CanvasTerminal paneId={item.paneId} alpha={maximized ? 1 : alpha} />
+    // Semantic zoom. The live terminal is **kept mounted** behind a
+    // `display:none` — the whole reason the tile is affordable is that swapping
+    // to it costs nothing: unmounting would dispose the xterm and rebuild it on
+    // the way back in, which is exactly the thrash the tile exists to avoid.
+    return (
+      <>
+        <div style={{ display: tile ? 'none' : 'flex', flex: 1, minWidth: 0, minHeight: 0 }}>
+          <CanvasTerminal paneId={item.paneId} alpha={maximized ? 1 : alpha} />
+        </div>
+        {tile && <CanvasTerminalTile paneId={item.paneId} card={item} zoom={zoom} taskTitle={tileTask} t={t} />}
+      </>
+    )
   }
   if (item.kind === 'browser') return <CanvasBrowser item={item} onUpdate={onUpdate} onCapture={onCapture} t={t} />
   if (item.kind === 'device') return <CanvasDevice item={item} onUpdate={onUpdate} onCapture={onCapture} t={t} />
@@ -2490,7 +3359,11 @@ function CanvasImage({ item }: { item: CanvasItem }) {
 // faded layer and xterm is told to paint no background of its own
 // (`transparentBg`), so glyphs render at full opacity over it and stay readable
 // at any alpha.
-function CanvasTerminal({ paneId, alpha = 1 }: { paneId: string; alpha?: number }) {
+// Memoised on two scalar props, which makes it the backstop for the whole
+// board: whatever else re-renders — a card whose memo missed, focus mode's fresh
+// geometry — an AgentPane and its xterm are only rebuilt when this pane's id or
+// transparency actually changes.
+const CanvasTerminal = React.memo(function CanvasTerminal({ paneId, alpha = 1 }: { paneId: string; alpha?: number }) {
   const splitPane = useWorkspaceStore(s => s.splitPane)
   const closePane = useWorkspaceStore(s => s.closePane)
   const agentId = useWorkspaceStore(s => findLeaf(s.rootPane, paneId)?.agentId ?? null) as AgentId | null
@@ -2527,7 +3400,126 @@ function CanvasTerminal({ paneId, alpha = 1 }: { paneId: string; alpha?: number 
       </div>
     </div>
   )
+})
+
+// A frame's name: a label until you double-click it, then an input.
+//
+// It cannot be a permanently-live input, even though that reads simpler: the
+// name spans nearly the whole label strip, and an input swallows the pointer for
+// text selection — so the one element you grab a frame by would be the one
+// element you can't drag it with. Double-click to edit is the same contract
+// every other title on this board uses (pane titles, task cards).
+function FrameName({ value, accent, placeholder, onChange }: {
+  value: string
+  accent: string
+  placeholder: string
+  onChange: (text: string) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(value)
+  if (!editing) {
+    return (
+      <span
+        onDoubleClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
+        title={placeholder}
+        style={{
+          ...styles.frameName, color: accent, fontSize: 'inherit',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          opacity: value ? 1 : 0.6,
+        }}
+      >{value || placeholder}</span>
+    )
+  }
+  const commit = () => { onChange(draft.trim()); setEditing(false) }
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onPointerDown={e => e.stopPropagation()}
+      onDoubleClick={e => e.stopPropagation()}
+      onKeyDown={e => {
+        e.stopPropagation()
+        if (e.key === 'Enter') commit()
+        else if (e.key === 'Escape') setEditing(false)
+      }}
+      onBlur={commit}
+      placeholder={placeholder}
+      style={{ ...styles.frameName, color: accent, fontSize: 'inherit' }}
+    />
+  )
 }
+
+// ── Terminal status tile (semantic zoom) ────────────────────────────────────
+//
+// What a terminal card becomes when the board is zoomed out past the point
+// where its text can be read: agent, state, current task, spend. The board stops
+// being eight smears of unreadable glyphs and becomes a dashboard — same cards,
+// same running ptys, different altitude.
+//
+// Every size here comes from `tileMetrics`, in *world* units derived from a
+// screen target: the tile is inside the camera-scaled world layer, so a literal
+// `fontSize: 13` would render at four pixels at the only zooms where this
+// component is ever mounted.
+const CanvasTerminalTile = React.memo(function CanvasTerminalTile({ paneId, card, zoom, taskTitle, t }: {
+  paneId: string
+  card: { w: number; h: number }
+  zoom: number
+  taskTitle?: string
+  t: (k: any, p?: any) => string
+}) {
+  const leaf = useWorkspaceStore(s => findLeaf(s.rootPane, paneId))
+  const attention = useWorkspaceStore(s => s.paneAttention[paneId] ?? null)
+  const cost = useWorkspaceStore(s => s.paneCost[paneId]?.usd)
+  const state: TileState = tileState({ ptyStatus: leaf?.ptyStatus ?? 'idle', attention })
+  const color = TILE_STATE_COLOR[state]
+  const m = tileMetrics(zoom, card)
+  const title = leaf?.title?.trim() || leaf?.agentId || t('pane.noAgent')
+  const spend = tileCost(cost)
+
+  return (
+    <div
+      data-canvas-tile={state}
+      style={{
+        flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column',
+        justifyContent: 'center', gap: m.gap, padding: m.pad, overflow: 'hidden',
+        background: 'var(--bg-panel)', borderRadius: 12,
+        // A hairline of the state colour down the left edge, so a wall of tiles
+        // can be read as a status column before any of the text is.
+        boxShadow: `inset ${Math.max(2, m.dot / 2)}px 0 0 ${color}`,
+      }}
+    >
+      {m.showTitle && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: m.gap, minWidth: 0 }}>
+          <span style={{ width: m.dot, height: m.dot, borderRadius: '50%', background: color, flexShrink: 0 }} />
+          <span style={{
+            fontSize: m.title, fontWeight: 700, color: 'var(--text-primary)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>{title}</span>
+        </div>
+      )}
+      {m.showMeta && (
+        <>
+          <div style={{
+            fontSize: m.meta, color, fontWeight: 600, textTransform: 'uppercase',
+            letterSpacing: m.meta * 0.06, whiteSpace: 'nowrap',
+          }}>
+            {t(`canvas.tile.${state}` as 'canvas.tile.idle')}
+          </div>
+          {taskTitle && (
+            <div style={{
+              fontSize: m.meta, color: 'var(--text-secondary)',
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{taskTitle}</div>
+          )}
+          {spend && (
+            <div style={{ fontSize: m.meta, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums' }}>{spend}</div>
+          )}
+        </>
+      )}
+    </div>
+  )
+})
 
 const normalizeUrl = (raw: string): string => {
   const s = raw.trim()
@@ -3060,7 +4052,17 @@ function cardLabel(item: CanvasItem, t: (k: any, p?: any) => string): string {
   if (item.kind === 'note') return t('canvas.label.note')
   if (item.kind === 'image') return t('canvas.label.image')
   if (item.kind === 'task') return t('canvas.label.task')
+  if (isFrameKind(item.kind)) return item.text?.trim() || t('canvas.frame.defaultName')
   return ''
+}
+
+// What to call a pane in prose: its custom title, else its agent, else a short
+// id — the same fallback chain the pane header and RacePanel use, so the "needs
+// you" chip never names a pane differently from the card it points at.
+function paneLabel(root: PaneNode, paneId: string | undefined, t: (k: any, p?: any) => string): string {
+  if (!paneId) return t('pane.noAgent')
+  const leaf = findLeaf(root, paneId)
+  return leaf?.title?.trim() || leaf?.agentId || paneId.slice(0, 6)
 }
 
 // Point on `item`'s border along the direction toward (tx,ty) — used to clip
@@ -3143,8 +4145,8 @@ const SHORTCUT_GROUPS: { title: string; items: [string, string][] }[] = [
       ['V', 'canvas.tool.select'], ['H', 'canvas.tool.hand'], ['P', 'canvas.tool.pen'],
       ['E', 'canvas.tool.erase'], ['C', 'canvas.tool.connect'], ['T', 'canvas.tool.terminal'],
       ['B', 'canvas.tool.browser'], ['M', 'canvas.tool.device'], ['N', 'canvas.tool.note'],
-      ['K', 'canvas.tool.task'], ['I', 'canvas.tool.image'], ['R', 'canvas.tool.rect'],
-      ['O', 'canvas.tool.ellipse'],
+      ['K', 'canvas.tool.task'], ['A', 'canvas.tool.frame'], ['I', 'canvas.tool.image'],
+      ['R', 'canvas.tool.rect'], ['O', 'canvas.tool.ellipse'],
     ],
   },
   {
@@ -3172,7 +4174,7 @@ const SHORTCUT_GROUPS: { title: string; items: [string, string][] }[] = [
     title: 'canvas.shortcuts.view',
     items: [
       ['Space', 'canvas.shortcuts.pan'], ['Ctrl+wheel', 'canvas.shortcuts.zoom'],
-      ['Double-click', 'canvas.shortcuts.dblclick'],
+      ['Double-click', 'canvas.shortcuts.dblclick'], ['J', 'canvas.shortcuts.jump'],
     ],
   },
 ]
@@ -3248,6 +4250,60 @@ function SendToAgentPanel({ agent, t, onCancel, onSend }: {
   )
 }
 
+// A one-field composer for the board's "type something and send it" moments —
+// a frame broadcast, a race goal. Deliberately the same shell as
+// SendToAgentPanel (which stays as-is because it also explains the attachment):
+// three prompts that each invented their own dialog would drift apart, and the
+// Escape/Enter handling below is the part that has to be identical everywhere.
+function PromptPanel({ title, placeholder, hint, confirmLabel, initial = '', t, onCancel, onSubmit }: {
+  title: string
+  placeholder: string
+  hint?: string
+  confirmLabel: string
+  initial?: string
+  t: (k: any, p?: any) => string
+  onCancel: () => void
+  onSubmit: (text: string) => void
+}) {
+  const [text, setText] = useState(initial)
+  const ref = useRef<HTMLTextAreaElement>(null)
+  useEffect(() => { ref.current?.focus(); ref.current?.select() }, [])
+  // Captured on the window so the board's own bare-key tool shortcuts can't see
+  // the Escape first and take the user out to the select tool instead.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); onCancel() } }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onCancel])
+
+  const submit = () => { if (text.trim()) onSubmit(text) }
+
+  return (
+    <div style={styles.sendOverlay} onPointerDown={e => { if (e.target === e.currentTarget) onCancel() }}>
+      <div style={styles.sendDialog} onPointerDown={e => e.stopPropagation()}>
+        <div style={styles.sendTitle}>{title}</div>
+        <textarea
+          ref={ref}
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => {
+            e.stopPropagation()
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
+          }}
+          placeholder={placeholder}
+          rows={3}
+          style={styles.sendTextarea}
+        />
+        {hint && <div style={styles.sendHint}>{hint}</div>}
+        <div style={styles.sendActions}>
+          <button style={styles.sendCancel} onClick={onCancel}>{t('canvas.send.cancel')}</button>
+          <button style={{ ...styles.sendSubmit, ...(text.trim() ? null : { opacity: 0.5, cursor: 'default' }) }} onClick={submit}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Icons ───────────────────────────────────────────────────────────────────
 
 const svg = (children: React.ReactNode, fill = false) => (
@@ -3289,6 +4345,16 @@ const IconEraser = () => svg(<><path d="M8.5 20.5H20" /><path d="m14.6 3.9 5.5 5
 // their gaps antialias into a single grey bar.
 const IconFocus = () => svg(<><rect x="2.5" y="5" width="11" height="14" rx="1.6" /><rect x="16.5" y="5" width="5" height="6" rx="1.2" /><rect x="16.5" y="13" width="5" height="6" rx="1.2" /></>)
 const IconLock = () => svg(<><rect x="4.5" y="10.5" width="15" height="10" rx="2" /><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" /></>)
+// A frame: the artboard cross — two rules through a rectangle, which is what
+// distinguishes it from the plain "rectangle" shape tool sitting three buttons
+// away. Same 24-box, same stroke weight, so it reads as one family with them.
+const IconFrame = () => svg(<><path d="M7 2v20M17 2v20M2 7h20M2 17h20" /></>)
+// Semantic zoom: a big pane and two condensed rows — "the same thing, less of
+// it". Not a magnifier, which would read as the zoom control it sits beside.
+const IconLod = () => svg(<><rect x="3" y="3.5" width="8" height="17" rx="1.5" /><rect x="14" y="3.5" width="7" height="7" rx="1.5" /><path d="M14 14.5h7M14 18h4.5" /></>)
+// Follow camera: a viewfinder locked onto a point.
+const IconFollow = () => svg(<><circle cx="12" cy="12" r="3.2" /><path d="M12 2v3.4M12 18.6V22M2 12h3.4M18.6 12H22" /><circle cx="12" cy="12" r="8" /></>)
+const IconSend = () => svg(<><path d="M21.5 2.5 11 13" /><path d="M21.5 2.5 15 21.5l-4-8.5-8.5-4z" /></>)
 // Tidy: scattered boxes resolving into aligned ones.
 const IconTidy = () => svg(<><rect x="3" y="3" width="7" height="7" rx="1.4" /><rect x="14" y="3" width="7" height="7" rx="1.4" /><rect x="3" y="14" width="7" height="7" rx="1.4" /><rect x="14" y="14" width="7" height="7" rx="1.4" /></>)
 const IconBackground = () => svg(<><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></>)
@@ -3386,6 +4452,65 @@ const styles: Record<string, React.CSSProperties> = {
     border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
     borderRadius: 5, fontSize: 12,
   },
+  // ── Frames ──
+  frameHeader: {
+    flexShrink: 0, display: 'flex', alignItems: 'center', gap: '0.5em', padding: '0 0.5em 0 0.8em',
+    cursor: 'grab', userSelect: 'none', background: 'var(--bg-panel)',
+    boxShadow: '0 4px 14px rgba(0,0,0,0.35)',
+  },
+  frameName: {
+    flex: 1, minWidth: 0, background: 'transparent', border: 'none', outline: 'none',
+    fontSize: 12.5, fontWeight: 700, fontFamily: 'inherit', padding: 0, letterSpacing: 0.2,
+  },
+  frameCount: {
+    fontSize: 10.5, fontWeight: 600, color: 'var(--text-dim)', fontVariantNumeric: 'tabular-nums',
+    padding: '1px 6px', borderRadius: 999, background: 'var(--bg-base)', whiteSpace: 'nowrap',
+  },
+  // ── Race ──
+  // Counter-scaled by the caller so the chip keeps a constant on-screen size at
+  // the zoomed-out altitude where attempts are actually compared.
+  raceChip: {
+    position: 'absolute', top: -30, left: 0, zIndex: 8,
+    display: 'flex', alignItems: 'center', gap: 6, padding: '2px 6px 2px 8px',
+    borderRadius: 8, background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)',
+    boxShadow: '0 4px 14px rgba(0,0,0,0.45)', whiteSpace: 'nowrap',
+    transformOrigin: '0 100%',
+  },
+  raceChipDot: { width: 7, height: 7, borderRadius: '50%', flexShrink: 0 },
+  raceChipIdx: { fontSize: 10.5, fontWeight: 700, color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' },
+  raceChipStat: { fontSize: 10.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono, monospace)' },
+  raceChipBtn: {
+    border: '1px solid var(--accent)', background: 'transparent', color: 'var(--accent)',
+    borderRadius: 6, fontSize: 10, padding: '1px 7px', cursor: 'pointer', fontFamily: 'inherit',
+  },
+  raceBar: {
+    position: 'absolute', left: '50%', bottom: 54, transform: 'translateX(-50%)', zIndex: 30,
+    display: 'flex', alignItems: 'center', gap: 8, maxWidth: 'min(880px, 90%)',
+    padding: '6px 8px 6px 12px', borderRadius: 10,
+    background: 'var(--bg-panel)', border: '1px solid var(--border-strong)',
+    boxShadow: '0 8px 26px rgba(0,0,0,0.5)', overflow: 'hidden',
+  },
+  raceBarLabel: { fontSize: 10.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--text-muted)', whiteSpace: 'nowrap' },
+  raceBarGoal: { fontSize: 11.5, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 260 },
+  raceBarSep: { width: 1, height: 16, background: 'var(--border)', flexShrink: 0 },
+  raceBarFile: {
+    fontSize: 10, fontFamily: 'var(--font-mono, monospace)', color: 'var(--text-secondary)',
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 6,
+    padding: '1px 6px', whiteSpace: 'nowrap',
+  },
+  raceBarBtn: {
+    border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)',
+    borderRadius: 6, fontSize: 10.5, padding: '2px 9px', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+  },
+  // ── Attention ──
+  attentionChip: {
+    position: 'absolute', left: '50%', bottom: 96, transform: 'translateX(-50%)', zIndex: 40,
+    display: 'flex', alignItems: 'center', gap: 8, padding: '7px 12px',
+    borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 600,
+    background: 'var(--bg-panel)', color: 'var(--text-primary)',
+    border: '1px solid #f4c95d', boxShadow: '0 10px 30px rgba(0,0,0,0.55)',
+  },
+  attentionDot: { width: 8, height: 8, borderRadius: '50%', background: '#f4c95d', flexShrink: 0 },
   tabStrip: {
     height: 26, flexShrink: 0, display: 'flex', alignItems: 'stretch', gap: 2, padding: '0 4px',
     background: 'var(--bg-panel)', borderBottom: '1px solid var(--border-subtle)',

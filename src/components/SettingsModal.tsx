@@ -138,8 +138,10 @@ export function SettingsModal() {
   const setVoiceModelStore = useWorkspaceStore(s => s.setVoiceModel)
   const storeVoicePreload = useWorkspaceStore(s => s.voicePreload)
   const storeVoiceAutoStop = useWorkspaceStore(s => s.voiceAutoStop)
+  const storeVoiceCommands = useWorkspaceStore(s => s.voiceCommands)
   const setVoicePreloadStore = useWorkspaceStore(s => s.setVoicePreload)
   const setVoiceAutoStopStore = useWorkspaceStore(s => s.setVoiceAutoStop)
+  const setVoiceCommandsStore = useWorkspaceStore(s => s.setVoiceCommands)
   const storeVoiceWakeEnabled = useWorkspaceStore(s => s.voiceWakeEnabled)
   const storeVoiceWakePhrase = useWorkspaceStore(s => s.voiceWakePhrase)
   const setVoiceWakeEnabledStore = useWorkspaceStore(s => s.setVoiceWakeEnabled)
@@ -178,6 +180,7 @@ export function SettingsModal() {
   const [voiceModelDraft, setVoiceModelDraft] = useState<VoiceModel>(storeVoiceModel)
   const [voicePreloadDraft, setVoicePreloadDraft] = useState(storeVoicePreload)
   const [voiceAutoStopDraft, setVoiceAutoStopDraft] = useState(storeVoiceAutoStop)
+  const [voiceCommandsDraft, setVoiceCommandsDraft] = useState(storeVoiceCommands)
   const [voiceWakeEnabledDraft, setVoiceWakeEnabledDraft] = useState(storeVoiceWakeEnabled)
   const [voiceWakePhraseDraft, setVoiceWakePhraseDraft] = useState(storeVoiceWakePhrase)
   const wakePhraseValid = isValidWakePhrase(voiceWakePhraseDraft)
@@ -339,6 +342,7 @@ export function SettingsModal() {
       setVoiceModelStore(voiceModelDraft)
       setVoicePreloadStore(voicePreloadDraft)
       setVoiceAutoStopStore(voiceAutoStopDraft)
+      setVoiceCommandsStore(voiceCommandsDraft)
       setVoiceWakeEnabledStore(voiceWakeEnabledDraft)
       // The store re-validates and falls back to the default, so an invalid
       // draft can never be persisted as a dead wake phrase.
@@ -381,7 +385,7 @@ export function SettingsModal() {
     setSaved(true)
     setTimeout(() => setSaved(false), 2000)
   }, [generalDirty, terminalDirty, dirtyAgents, agentConfigs, agentAccounts, shell, defaultAgent, idleSeconds, closeTray,
-      voiceModelDraft, voicePreloadDraft, voiceAutoStopDraft, voiceWakeEnabledDraft, voiceWakePhraseDraft,
+      voiceModelDraft, voicePreloadDraft, voiceAutoStopDraft, voiceCommandsDraft, voiceWakeEnabledDraft, voiceWakePhraseDraft,
       setVoiceModelStore, setVoicePreloadStore, setVoiceAutoStopStore,
       setVoiceWakeEnabledStore, setVoiceWakePhraseStore, swarmAgentKeyDraft, swarmAgentModelDraft,
       fontSize, cursorBlink, setShellStyle, setDefaultAgentId, setTerminalFontSize, setTerminalCursorBlink, setCloseToTray])
@@ -679,6 +683,22 @@ export function SettingsModal() {
                       aria-checked={voiceAutoStopDraft}
                       aria-label={t('settings.voice.autoStop')}
                       onClick={() => { setVoiceAutoStopDraft(v => !v); setGeneralDirty(true) }}
+                    />
+                  </div>
+
+                  <div style={styles.rowBetween}>
+                    <div>
+                      <FieldLabel>{t('settings.voice.commands')}</FieldLabel>
+                      <p style={{ ...styles.desc, marginTop: 2 }}>
+                        {t('settings.voice.commandsDesc')}
+                      </p>
+                    </div>
+                    <button
+                      className="settings-toggle"
+                      role="switch"
+                      aria-checked={voiceCommandsDraft}
+                      aria-label={t('settings.voice.commands')}
+                      onClick={() => { setVoiceCommandsDraft(v => !v); setGeneralDirty(true) }}
                     />
                   </div>
 

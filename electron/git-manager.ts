@@ -2,8 +2,10 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, isAbsolute } from 'path'
 import { tmpdir } from 'os'
-import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync, writeFileSync } from 'fs'
 import { randomUUID } from 'crypto'
+import { advancesHead, mergeVerdict, parseMergeTree, type MergeVerdict } from './lib/mergeTree'
+import { compareUrl, parseRemoteUrl, supportsCli, type RemoteInfo } from './lib/gitRemote'
 
 const execFileAsync = promisify(execFile)
 
@@ -250,6 +252,293 @@ export async function mergeBranch(root: string, branch: string): Promise<{ ok: t
     const conflict = /conflict/i.test(combined)
     try { await git(root, ['merge', '--abort']) } catch { /* nothing to abort */ }
     return { ok: false, conflict, error: combined || 'merge failed' }
+  }
+}
+
+// ── Merge queue (pre-flight conflict detection) ─────────────────────────────
+//
+// Merging N agent branches one at a time discovers conflicts on the merge that
+// breaks — after the earlier ones have already landed. The queue answers the
+// question up front: simulate the whole batch, in order, and report which
+// branches land clean and which collide, on which files.
+//
+// The simulation is *cumulative*, which is the only version that's actually
+// true: branch B is merged onto the result of merging A, not onto base. Two
+// branches that each merge cleanly into main can still conflict with each
+// other, and a per-branch check would call both of them green. The accumulated
+// state is carried as a synthetic commit (`commit-tree` over the merged tree,
+// parented on the previous head) so the next `merge-tree` gets a real commit to
+// three-way against, with base still as the merge base.
+//
+// Nothing here touches a working tree or writes a ref: the synthetic commits are
+// unreferenced objects that git collects on its own.
+
+/** Like git(), but never throws — the caller needs merge-tree's exit code. */
+async function gitRaw(root: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync('git', ['-C', root, ...args], {
+      windowsHide: true,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    return { code: 0, stdout, stderr }
+  } catch (err) {
+    const e = err as { code?: number; stdout?: string; stderr?: string; message?: string }
+    return {
+      code: typeof e.code === 'number' ? e.code : 1,
+      stdout: e.stdout ?? '',
+      stderr: e.stderr ?? e.message ?? '',
+    }
+  }
+}
+
+export interface MergeQueueRow {
+  branch: string
+  verdict: MergeVerdict
+  /** Files that could not be auto-merged onto the accumulated state. */
+  conflicts: string[]
+  /** Commits this branch carries that the accumulated state does not. */
+  ahead: number
+  /** Git's own message, surfaced only for the 'error' verdict. */
+  error?: string
+}
+
+export interface MergeQueuePreview {
+  base: string
+  rows: MergeQueueRow[]
+}
+
+/**
+ * Simulate merging `branches` into `baseRef`, in the given order. Order is the
+ * caller's — that's the point of a queue — so reordering in the UI and re-running
+ * this is how a user finds a sequence that lands.
+ */
+export async function mergeQueuePreview(root: string, branches: string[], baseRef?: string): Promise<MergeQueuePreview> {
+  const base = baseRef || (await getBaseBranch(root))
+  const rows: MergeQueueRow[] = []
+
+  let head: string
+  try {
+    head = await git(root, ['rev-parse', base])
+  } catch {
+    // Base won't resolve (unborn branch, bad ref) — every row is unanswerable,
+    // which is worth saying explicitly rather than showing an empty queue.
+    return { base, rows: branches.map(branch => ({ branch, verdict: 'error' as const, conflicts: [], ahead: 0, error: `cannot resolve base "${base}"` })) }
+  }
+
+  for (const branch of branches) {
+    let ahead = 0
+    try {
+      ahead = Number(await git(root, ['rev-list', '--count', `${head}..${branch}`])) || 0
+    } catch {
+      rows.push({ branch, verdict: 'error', conflicts: [], ahead: 0, error: `cannot resolve branch "${branch}"` })
+      continue
+    }
+    if (ahead <= 0) {
+      rows.push({ branch, verdict: 'empty', conflicts: [], ahead: 0 })
+      continue
+    }
+
+    const res = await gitRaw(root, ['merge-tree', '--write-tree', '--name-only', head, branch])
+    const parsed = parseMergeTree(res.stdout, res.code)
+    const verdict = mergeVerdict({ ahead, exitCode: res.code, tree: parsed.tree })
+    rows.push({
+      branch,
+      verdict,
+      conflicts: parsed.conflicts,
+      ahead,
+      ...(verdict === 'error' ? { error: (parsed.messages || res.stderr || 'merge-tree failed').trim() } : {}),
+    })
+
+    if (advancesHead(verdict) && parsed.tree) {
+      try {
+        head = await git(root, ['commit-tree', parsed.tree, '-p', head, '-m', 'swarmmind-merge-preview'])
+      } catch {
+        // Couldn't carry the state forward; the remaining rows would be measured
+        // against a stale head, so stop simulating rather than lie about them.
+        for (const rest of branches.slice(branches.indexOf(branch) + 1)) {
+          rows.push({ branch: rest, verdict: 'error', conflicts: [], ahead: 0, error: 'preview stopped: could not stage the accumulated merge' })
+        }
+        break
+      }
+    }
+  }
+
+  return { base, rows }
+}
+
+export interface MergeRunResult {
+  branch: string
+  ok: boolean
+  message: string
+  conflict: boolean
+}
+
+/**
+ * Actually merge a batch, in order, stopping at the first failure. Stopping is
+ * deliberate: `mergeBranch` aborts a conflicting merge so the checkout stays
+ * clean, but continuing past it would land later branches on top of a base the
+ * user thinks contains the skipped one.
+ */
+export async function mergeQueueRun(root: string, branches: string[]): Promise<MergeRunResult[]> {
+  const out: MergeRunResult[] = []
+  for (const branch of branches) {
+    const res = await mergeBranch(root, branch)
+    if (res.ok) {
+      out.push({ branch, ok: true, message: res.message, conflict: false })
+    } else {
+      out.push({ branch, ok: false, message: res.error, conflict: res.conflict })
+      break
+    }
+  }
+  return out
+}
+
+// ── Push & pull requests (closing the loop) ─────────────────────────────────
+//
+// Everything above stops at "merged locally", which is where a swarm run used to
+// end: the work exists, on this machine, reviewable by nobody. These three calls
+// take a branch the rest of the app already produced and turn it into something
+// a team can look at.
+//
+// The `gh` CLI is used when it's there and authenticated, and the browser
+// compare page is the fallback — deliberately, in that order. `gh` is the only
+// way to create the PR without leaving the app, but it's an optional external
+// tool, and "you must install a CLI" would make the feature unavailable on most
+// machines. Since the push already happened by then, the fallback still finishes
+// the job.
+
+export interface RemoteDescriptor extends RemoteInfo {
+  url: string
+  /** `gh` is installed AND this is a host it can talk to. */
+  cliAvailable: boolean
+}
+
+export async function getRemoteUrl(root: string, remote = 'origin'): Promise<string | null> {
+  try {
+    return (await git(root, ['remote', 'get-url', remote])) || null
+  } catch {
+    return null
+  }
+}
+
+// `gh --version` is a process spawn; the answer can't change mid-session in a
+// way worth re-checking on every render, so it's resolved once.
+let ghProbe: Promise<boolean> | null = null
+function ghInstalled(): Promise<boolean> {
+  if (!ghProbe) {
+    ghProbe = execFileAsync('gh', ['--version'], { windowsHide: true })
+      .then(() => true)
+      .catch(() => false)
+  }
+  return ghProbe
+}
+
+export async function remoteInfo(root: string, remote = 'origin'): Promise<RemoteDescriptor | null> {
+  const url = await getRemoteUrl(root, remote)
+  const info = parseRemoteUrl(url)
+  if (!url || !info) return null
+  return { ...info, url, cliAvailable: supportsCli(info) && (await ghInstalled()) }
+}
+
+export interface PushResult {
+  ok: boolean
+  message: string
+  /** True when the push failed because the remote rejected it (not a config error). */
+  rejected?: boolean
+}
+
+/**
+ * Push a branch from the worktree that holds it.
+ *
+ * `-u` on purpose: an agent's branch has never been pushed, so without an
+ * upstream every later `git push` from that worktree — by us or by the user —
+ * needs the refspec spelled out again.
+ */
+export async function pushBranch(worktreePath: string, branch: string, remote = 'origin'): Promise<PushResult> {
+  const res = await gitRaw(worktreePath, ['push', '-u', remote, `${branch}:${branch}`])
+  if (res.code === 0) return { ok: true, message: (res.stderr || res.stdout || `Pushed ${branch}`).trim() }
+  const combined = [res.stdout, res.stderr].filter(Boolean).join('\n').trim()
+  return { ok: false, message: combined || 'push failed', rejected: /rejected|non-fast-forward/i.test(combined) }
+}
+
+export interface PrResult {
+  ok: boolean
+  /** URL of the created PR, or the compare page to open when `ok` is false. */
+  url: string | null
+  message: string
+  /** The caller should open `url` in a browser instead of reporting success. */
+  fallback: boolean
+}
+
+/**
+ * Create a pull request for `head` → `base` via `gh`, falling back to the
+ * provider's compare page.
+ *
+ * The body goes through a temp file rather than `--body`: a PR body assembled
+ * from a swarm session is routinely thousands of characters with newlines and
+ * backticks in it, which is exactly the shape that hits argv limits on Windows.
+ */
+export async function createPullRequest(
+  root: string,
+  worktreePath: string,
+  opts: { title: string; body: string; base: string; head: string; draft?: boolean },
+): Promise<PrResult> {
+  const info = await remoteInfo(root)
+  if (!info) return { ok: false, url: null, message: 'no remote configured', fallback: false }
+
+  const fallbackUrl = compareUrl(info, opts.base, opts.head)
+  if (!info.cliAvailable) {
+    return { ok: false, url: fallbackUrl, message: 'gh CLI unavailable', fallback: true }
+  }
+
+  const bodyFile = join(tmpdir(), `sm-pr-${randomUUID()}.md`)
+  try {
+    writeFileSync(bodyFile, opts.body, 'utf-8')
+    const args = [
+      'pr', 'create',
+      '--title', opts.title,
+      '--body-file', bodyFile,
+      '--base', opts.base,
+      '--head', opts.head,
+      ...(opts.draft ? ['--draft'] : []),
+    ]
+    const { stdout, stderr } = await execFileAsync('gh', args, {
+      cwd: worktreePath,
+      windowsHide: true,
+      maxBuffer: 4 * 1024 * 1024,
+    })
+    // gh prints the new PR's URL on stdout; take the last URL-looking token so a
+    // preceding notice line can't be mistaken for it.
+    const url = [...`${stdout}\n${stderr}`.matchAll(/https?:\/\/\S+/g)].pop()?.[0] ?? null
+    return { ok: true, url, message: (stdout || 'pull request created').trim(), fallback: false }
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; message?: string }
+    const combined = [e.stdout, e.stderr, e.message].filter(Boolean).join('\n').trim()
+    // Not authenticated / no push access / PR already exists — all recoverable in
+    // the browser, and the branch is pushed by now, so offer the compare page.
+    return { ok: false, url: fallbackUrl, message: combined || 'gh pr create failed', fallback: true }
+  } finally {
+    try { rmSync(bodyFile, { force: true }) } catch { /* ignore */ }
+  }
+}
+
+/** Commits on `branch` that `base` doesn't have, newest first, for the PR body. */
+export async function branchCommits(
+  worktreePath: string,
+  base: string,
+  limit = 50,
+): Promise<{ hash: string; subject: string }[]> {
+  try {
+    const out = await git(worktreePath, ['log', `${base}..HEAD`, `--max-count=${limit}`, '--format=%h%x00%s'])
+    return out
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map(line => {
+        const [hash, subject] = line.split('\0')
+        return { hash, subject: subject ?? '' }
+      })
+  } catch {
+    return []
   }
 }
 

@@ -269,6 +269,14 @@ contextBridge.exposeInMainWorld('swarmmind', {
   gitWorktreeCommit: (worktreePath: string, message: string) => ipcRenderer.invoke('git:worktreeCommit', worktreePath, message),
   gitWorktreeCommitFiles: (worktreePath: string, message: string, files: string[]) => ipcRenderer.invoke('git:worktreeCommitFiles', worktreePath, message, files),
   gitMergeBranch: (root: string, branch: string) => ipcRenderer.invoke('git:mergeBranch', root, branch),
+  gitMergeQueuePreview: (root: string, branches: string[], baseRef?: string) => ipcRenderer.invoke('git:mergeQueuePreview', root, branches, baseRef),
+  gitMergeQueueRun: (root: string, branches: string[]) => ipcRenderer.invoke('git:mergeQueueRun', root, branches),
+  gitRemoteInfo: (root: string) => ipcRenderer.invoke('git:remoteInfo', root),
+  gitPush: (worktreePath: string, branch: string) => ipcRenderer.invoke('git:push', worktreePath, branch),
+  gitBranchCommits: (worktreePath: string, base: string) => ipcRenderer.invoke('git:branchCommits', worktreePath, base),
+  gitCreatePr: (root: string, worktreePath: string, opts: { title: string; body: string; base: string; head: string; draft?: boolean }) =>
+    ipcRenderer.invoke('git:createPr', root, worktreePath, opts),
+  openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
 
   // Checkpoints & Rewind
   checkpointCreate: (label?: string, trigger?: string) => ipcRenderer.invoke('checkpoint:create', label, trigger),

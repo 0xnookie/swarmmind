@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { useWorkspaceStore } from '../store/workspace'
+import { AGENT_IDS, useWorkspaceStore, type PaneLeaf, type PaneNode } from '../store/workspace'
+import { describeIntent, parseVoiceCommand } from '../lib/voiceCommand'
 import { useVoice, preloadVoiceModel, VOICE_MODELS } from '../hooks/useVoice'
 import { useWakeWord } from '../hooks/useWakeWord'
 import { useLoadingStore } from '../store/loading'
@@ -42,6 +43,10 @@ function SpinnerIcon() {
 }
 
 // ── SwarmVoice ────────────────────────────────────────────────────────────────
+
+function collectLeaves(node: PaneNode): PaneLeaf[] {
+  return node.type === 'leaf' ? [node] : node.children.flatMap(collectLeaves)
+}
 
 export function SwarmVoice() {
   const t = useT()
@@ -169,17 +174,85 @@ export function SwarmVoice() {
   const startRef = useRef(start)
   startRef.current = start
 
+  // ── Voice orchestration ────────────────────────────────────────────────────
+  // A command spoken in the same breath as the wake phrase is classified before
+  // it's typed anywhere: "hey swarm, have Codex fix the failing tests" queues a
+  // task for Codex rather than typing that sentence into whichever pane happens
+  // to be focused. Everything the parser doesn't confidently recognise falls
+  // through to dictation, so this only ever adds behaviour — which is why it can
+  // be on by default without ever swallowing text the user meant to type.
+  //
+  // Only the wake-word path is routed. Dictation opened deliberately (the pill,
+  // the shortcut) stays literal: the user is looking at a terminal and expects
+  // characters in it, and reinterpreting that would be a trap.
+  // Returns false when the command needed an active pane and there wasn't one,
+  // so the caller can say so instead of silently dropping what was said.
+  const runSpokenCommand = useCallback((command: string): boolean => {
+    const paneId = activePaneIdRef.current
+    const st = useWorkspaceStore.getState()
+
+    const intent = st.voiceCommands
+      ? parseVoiceCommand(command, AGENT_IDS)
+      : ({ kind: 'dictate', text: command } as const)
+
+    switch (intent.kind) {
+      case 'goal':
+        st.setOrchestratorGoal(intent.text)
+        if (!st.orchestratorBarOpen) st.toggleOrchestratorBar()
+        break
+      case 'task':
+        // Fire-and-forget: the task lands in the board and the conductor picks
+        // it up on its next wake, so there's nothing to await here.
+        void window.swarmmind.taskCreate(intent.text, undefined, intent.agent ?? undefined)
+        break
+      case 'control':
+        if (intent.action === 'start') {
+          // Voice starts the run, but never escalates autonomy behind the user's
+          // back: an `off` swarm comes up in `assisted`, where a human still
+          // approves each dispatch. Jumping straight to `auto` from a phrase
+          // that could be misheard is not a trade worth making.
+          if (st.orchestrationMode === 'off') st.setOrchestrationMode('assisted')
+          st.startOrchestration()
+        } else {
+          st.stopOrchestration()
+        }
+        break
+      case 'broadcast':
+        for (const leaf of collectLeaves(st.rootPane)) {
+          if (leaf.ptyStatus === 'running') window.swarmmind.ptyInput(leaf.id, intent.text)
+        }
+        break
+      case 'dictate':
+        // Only dictation actually needs somewhere to type. Orchestration
+        // commands act on the swarm, so "hey swarm, stop the swarm" has to work
+        // with no pane focused — the state this used to reject outright.
+        if (!paneId) return false
+        window.swarmmind.ptyInput(paneId, intent.text)
+        break
+    }
+    setTranscriptFlash(describeIntent(intent))
+    return true
+  }, [])
+
+  // The wake callback is created before this in source order and must not go
+  // stale when the store changes, so it reaches the handler through a ref.
+  const runSpokenCommandRef = useRef(runSpokenCommand)
+  runSpokenCommandRef.current = runSpokenCommand
+
   const handleWake = useCallback((command: string, stream: MediaStream | null) => {
+    // A command spoken with the phrase never needs the mic again — and an
+    // orchestration command doesn't need a pane either, so it's routed before
+    // the no-pane check that only dictation actually cares about.
+    if (command) {
+      stream?.getTracks().forEach(tr => tr.stop())
+      if (!runSpokenCommandRef.current(command)) showFlash(t('voice.flash.noPane'))
+      return
+    }
     if (!activePaneIdRef.current) {
       // Nothing will adopt the handed-over mic, so close it here rather than
       // leaving a live microphone owned by nobody.
       stream?.getTracks().forEach(tr => tr.stop())
       showFlash(t('voice.flash.noPane'))
-      return
-    }
-    if (command) {
-      window.swarmmind.ptyInput(activePaneIdRef.current, command)
-      setTranscriptFlash(command)
       return
     }
     // Adopt the listener's live stream — dictation is now recording without

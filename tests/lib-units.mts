@@ -36,6 +36,39 @@ import {
   applyTextEdits, offsetToLine, lineTextAt, isValidIdentifier,
 } from '../electron/lib/tsLsp.ts'
 import { toWorkspaceRelative, buildRenamePlan } from '../src/lib/rename.ts'
+import { parseMergeTree, mergeVerdict, advancesHead } from '../electron/lib/mergeTree.ts'
+import {
+  moveInList, summarizeQueue, landableBranches, canRunQueue, buildConflictTaskPrompt,
+  type QueueRow,
+} from '../src/lib/mergeQueue.ts'
+import { parseRemoteUrl, compareUrl, supportsCli } from '../electron/lib/gitRemote.ts'
+import { defaultPrTitle, buildPrBody } from '../src/lib/pullRequest.ts'
+import { renderSwarmDigest, type ExportEvent } from '../src/lib/sessionExport.ts'
+import {
+  raceEligibility, canStartRace, buildRacePrompt, attemptState, churn, contestedFiles, planWinner,
+  type RacePane,
+} from '../src/lib/race.ts'
+import { parseVoiceCommand, describeIntent } from '../src/lib/voiceCommand.ts'
+import {
+  isTileZoom, tileState, tileMetrics, tileCost, TILE_ZOOM_ENTER, TILE_ZOOM_EXIT,
+} from '../src/lib/canvasLod.ts'
+import {
+  deriveRoutes, hasRoutesFrom, relayBody, planRelay, markRelayed, emptyRelayMemo,
+  buildRelayPrompt,
+} from '../src/lib/canvasRoutes.ts'
+import {
+  frameChildren, framePanes, frameOf, nextFrameName, nextFrameColor, isFrameKind,
+  FRAME_Z, FRAME_COLORS,
+} from '../src/lib/canvasFrames.ts'
+import {
+  viewportWorldRect, isOffscreen, cameraToCenter, pickAttentionTarget, shouldFollow,
+} from '../src/lib/canvasAttention.ts'
+import { encodeMessage, decodeMessages, pathToUri, uriToPath } from '../electron/lib/lspFraming.ts'
+import { serverForPath, parseExtraServers, resolveServers, quoteForCmd } from '../electron/lib/lspServers.ts'
+import {
+  offsetToPosition, positionToOffset, normalizeSeverity, normalizeDiagnostics,
+  normalizeHoverContents, normalizeLocations, normalizeWorkspaceEdit, applyRangeEdits,
+} from '../electron/lib/lspNormalize.ts'
 import { mergeDiagnostics, normalizeMessage, summarizeDiagnostics } from '../src/lib/diagnostics.ts'
 import {
   parseDeps, depsMet, canReview, buildDispatchPrompt, sweepAction, decomposeAction,
@@ -1821,6 +1854,244 @@ t('canvasTasks: status colours are stable and distinct where it matters', () => 
   assert.equal(taskStatusColor('anything-else'), 'var(--text-muted)') // safe default
 })
 
+// ── canvasLod (semantic zoom) ────────────────────────────────────────────────
+// Below a zoom threshold a terminal card renders as a status tile instead of an
+// unreadable live view. The two things that go wrong: a single threshold makes
+// the whole board flicker when the wheel parks on it, and world-unit sizes that
+// forget the camera scale render four-pixel text.
+
+t('canvasLod: the tile threshold is hysteretic, so a nudge cannot flicker', () => {
+  // Well below / well above are unambiguous whatever the previous answer was.
+  assert.equal(isTileZoom(0.3, false), true)
+  assert.equal(isTileZoom(0.3, true), true)
+  assert.equal(isTileZoom(1.0, true), false)
+  assert.equal(isTileZoom(1.0, false), false)
+  // Inside the band the previous answer wins — that IS the hysteresis.
+  const mid = (TILE_ZOOM_ENTER + TILE_ZOOM_EXIT) / 2
+  assert.equal(isTileZoom(mid, false), false)
+  assert.equal(isTileZoom(mid, true), true)
+  // And the band is a band, not a coincidence.
+  assert.ok(TILE_ZOOM_EXIT > TILE_ZOOM_ENTER)
+})
+t('canvasLod: a dead pty never claims to be working', () => {
+  assert.equal(tileState({ ptyStatus: 'running', attention: 'waiting' }), 'waiting')
+  assert.equal(tileState({ ptyStatus: 'running', attention: 'working' }), 'working')
+  assert.equal(tileState({ ptyStatus: 'running', attention: null }), 'idle')
+  // The pane exited mid-turn: its last attention value must not survive it.
+  assert.equal(tileState({ ptyStatus: 'exited', attention: 'working' }), 'stopped')
+  assert.equal(tileState({ ptyStatus: 'idle', attention: 'working' }), 'idle')
+})
+t('canvasLod: tile sizes are world units that land at a fixed screen size', () => {
+  const big = { w: 500, h: 340 }
+  const m = tileMetrics(0.4, big)
+  // 13 screen px at zoom 0.4 is 32.5 world px — the card is big enough to take it.
+  assert.ok(Math.abs(m.title - 13 / 0.4) < 0.001)
+  assert.equal(m.showTitle, true)
+  assert.equal(m.showMeta, true)
+  // Halving the zoom doubles the world size, so the screen size is unchanged.
+  const half = tileMetrics(0.2, big)
+  assert.ok(Math.abs(half.title * 0.2 - m.title * 0.4) < 0.001)
+})
+t('canvasLod: a small card drops rows instead of overflowing them', () => {
+  const stub = { w: 140, h: 80 }
+  const m = tileMetrics(0.25, stub)
+  // 35×20 on screen: nothing legible fits, so neither row is drawn.
+  assert.equal(m.showTitle, false)
+  assert.equal(m.showMeta, false)
+  // And the font is clamped against the card rather than 13/0.25 = 52px.
+  assert.ok(m.title <= stub.h * 0.26 + 0.001)
+})
+t('canvasLod: a spend above zero never rounds away to "free"', () => {
+  assert.equal(tileCost(undefined), null)
+  assert.equal(tileCost(0), null)
+  assert.equal(tileCost(0.004), '<$0.01')   // NOT "$0.00"
+  assert.equal(tileCost(1.239), '$1.24')
+})
+
+// ── canvasRoutes (arrows between terminals = live message routes) ────────────
+// An arrow from terminal A to terminal B hands A's finished turn to B. The
+// guards are the whole module: without them a pair of mutual arrows is two CLIs
+// prompting each other forever, on the user's bill.
+
+const ROUTE_ITEMS = [
+  { id: 'cardA', kind: 'terminal', paneId: 'A' },
+  { id: 'cardB', kind: 'terminal', paneId: 'B' },
+  { id: 'cardImg', kind: 'image' },
+  { id: 'cardTask', kind: 'task' },
+]
+
+t('canvasRoutes: only terminal→terminal arrows become routes', () => {
+  const routes = deriveRoutes(ROUTE_ITEMS, [
+    { from: 'cardA', to: 'cardB' },      // a route
+    { from: 'cardImg', to: 'cardA' },    // screenshot handoff — not a route
+    { from: 'cardTask', to: 'cardTask' },// a dependency — not a route
+  ])
+  assert.deepEqual(routes, [{ from: 'A', to: 'B' }])
+})
+t('canvasRoutes: self-arrows and duplicates are dropped', () => {
+  const dupCard = [...ROUTE_ITEMS, { id: 'cardA2', kind: 'terminal', paneId: 'A' }]
+  const routes = deriveRoutes(dupCard, [
+    { from: 'cardA', to: 'cardB' },
+    { from: 'cardA2', to: 'cardB' },   // same pane pair drawn twice
+    { from: 'cardA', to: 'cardA2' },   // same pane on both ends
+  ])
+  assert.deepEqual(routes, [{ from: 'A', to: 'B' }])
+  assert.equal(hasRoutesFrom(routes, 'A'), true)
+  assert.equal(hasRoutesFrom(routes, 'B'), false)
+})
+t('canvasRoutes: relayBody drops the partial first line only when it truncated', () => {
+  const long = 'headcut\n' + 'x'.repeat(200) + '\nreal content here'
+  const cut = relayBody(long, 60)
+  assert.ok(!cut.includes('headcut'))
+  // An untruncated body keeps its first line — that line is content, not debris.
+  assert.ok(relayBody('first line\nsecond line', 1000).startsWith('first line'))
+  // Blank runs collapse; nothing substantial → nothing to relay.
+  assert.equal(relayBody('a\n\n\n\nb'.padEnd(40, 'z'), 1000).includes('\n\n\n'), false)
+  assert.equal(relayBody('ok', 1000), '')
+  assert.equal(relayBody('   \n \n  ', 1000), '')
+})
+t('canvasRoutes: a relay fans out to every downstream pane', () => {
+  const routes = [{ from: 'A', to: 'B' }, { from: 'A', to: 'C' }, { from: 'B', to: 'C' }]
+  const out = planRelay(routes, 'A', 'finished the parser', emptyRelayMemo(), 1000)
+  assert.deepEqual(out.map(r => r.to), ['B', 'C'])
+})
+t('canvasRoutes: mutual arrows cannot ping-pong', () => {
+  const routes = [{ from: 'A', to: 'B' }, { from: 'B', to: 'A' }]
+  let memo = emptyRelayMemo()
+  const first = planRelay(routes, 'A', 'body one', memo, 1000)
+  assert.deepEqual(first.map(r => r.to), ['B'])
+  memo = markRelayed(memo, 'A', first, 1000)
+  // B finishes its turn moments later — having just been handed A's output, it
+  // is almost certainly echoing it. Relaying back is the infinite loop.
+  assert.deepEqual(planRelay(routes, 'B', 'body two', memo, 2000), [])
+  // Long after the quiet window it is a genuine turn again.
+  assert.deepEqual(planRelay(routes, 'B', 'body two', memo, 1000 + 60_000).map(r => r.to), ['A'])
+})
+t('canvasRoutes: the cooldown stops one quiet moment per tool call becoming a dispatch', () => {
+  const routes = [{ from: 'A', to: 'B' }]
+  let memo = markRelayed(emptyRelayMemo(), 'A', [{ to: 'B', body: 'x' }], 1000)
+  assert.deepEqual(planRelay(routes, 'A', 'something new', memo, 1000 + 5_000), [])
+  assert.equal(planRelay(routes, 'A', 'something new', memo, 1000 + 25_000).length, 1)
+})
+t('canvasRoutes: the same tail is never sent twice down the same wire', () => {
+  const routes = [{ from: 'A', to: 'B' }]
+  const body = 'the identical report'
+  let memo = markRelayed(emptyRelayMemo(), 'A', [{ to: 'B', body }], 0)
+  // Past the cooldown, but the pane printed nothing new.
+  assert.deepEqual(planRelay(routes, 'A', body, memo, 100_000), [])
+  assert.equal(planRelay(routes, 'A', 'a different report', memo, 100_000).length, 1)
+})
+t('canvasRoutes: an empty body is never relayed, and markRelayed is pure', () => {
+  const routes = [{ from: 'A', to: 'B' }]
+  const memo = emptyRelayMemo()
+  assert.deepEqual(planRelay(routes, 'A', '', memo, 1000), [])
+  const next = markRelayed(memo, 'A', [{ to: 'B', body: 'x' }], 1000)
+  assert.notEqual(next, memo)
+  assert.deepEqual(memo.sentAt, {})            // the original is untouched
+  assert.equal(next.receivedAt.B, 1000)
+  // No relays → the same object back, so a caller can compare by identity.
+  assert.equal(markRelayed(memo, 'A', [], 1000), memo)
+})
+t('canvasRoutes: the prompt names its source and forbids replying', () => {
+  const p = buildRelayPrompt('Builder', 'line one\nline two')
+  assert.ok(p.includes('Builder'))
+  assert.ok(/do not send anything back/i.test(p))
+  // Single line: it is typed into a terminal, where a newline is Enter.
+  assert.equal(p.includes('\n'), false)
+})
+
+// ── canvasFrames (named regions that own their contents) ─────────────────────
+
+const FRAME = { id: 'f1', x: 0, y: 0, w: 400, h: 300 }
+const FRAME_ITEMS = [
+  { id: 'in1', kind: 'terminal', paneId: 'p1', x: 10, y: 10, w: 100, h: 80 },
+  // Straddling the edge, but its centre (350,150) is inside → it belongs.
+  { id: 'edge', kind: 'terminal', paneId: 'p2', x: 300, y: 100, w: 100, h: 100 },
+  // Overlapping heavily, but centred outside → it does not.
+  { id: 'out', kind: 'note', x: 380, y: 10, w: 200, h: 60 },
+  { id: 'f2', kind: 'frame', x: 20, y: 20, w: 100, h: 100 },
+  { id: 'dupPane', kind: 'terminal', paneId: 'p1', x: 40, y: 200, w: 60, h: 40 },
+]
+
+t('canvasFrames: membership is the centre, not the overlap', () => {
+  const kids = frameChildren(FRAME, FRAME_ITEMS)
+  assert.ok(kids.includes('in1'))
+  assert.ok(kids.includes('edge'))       // centre inside despite hanging over
+  assert.ok(!kids.includes('out'))       // overlaps a lot, centre outside
+})
+t('canvasFrames: a frame never contains a frame', () => {
+  // f2 sits entirely inside f1 and is still excluded — nesting would make the
+  // group move recursive, and overlapping rectangles produce cycles readily.
+  assert.ok(!frameChildren(FRAME, FRAME_ITEMS).includes('f2'))
+  assert.ok(!frameChildren(FRAME, [{ ...FRAME, kind: 'frame' }]).includes('f1'))
+})
+t('canvasFrames: framePanes is deduped, so a count cannot disagree with a send', () => {
+  const panes = framePanes(FRAME, FRAME_ITEMS)
+  assert.deepEqual(panes, ['p1', 'p2'])   // two cards on p1, one pane
+})
+t('canvasFrames: frameOf picks the innermost frame for an overlap', () => {
+  const small = { id: 'small', x: 0, y: 0, w: 100, h: 100 }
+  const big = { id: 'big', x: -50, y: -50, w: 500, h: 500 }
+  const card = { id: 'c', kind: 'note', x: 10, y: 10, w: 20, h: 20 }
+  assert.equal(frameOf(card, [big, small]), 'small')
+  assert.equal(frameOf(card, [big]), 'big')
+  assert.equal(frameOf({ ...card, x: 9000, y: 9000 }, [big, small]), null)
+})
+t('canvasFrames: default names skip the ones already taken', () => {
+  assert.equal(nextFrameName([], 'Frame'), 'Frame 1')
+  assert.equal(nextFrameName(['Frame 1', 'frame 2'], 'Frame'), 'Frame 3')
+  assert.equal(nextFrameName(['  Frame 1  '], 'Frame'), 'Frame 2')
+  // Colours cycle rather than running out.
+  assert.equal(nextFrameColor(0), nextFrameColor(FRAME_COLORS.length))
+})
+t('canvasFrames: frames paint behind everything', () => {
+  assert.ok(FRAME_Z < 0)
+  assert.equal(isFrameKind('frame'), true)
+  assert.equal(isFrameKind('terminal'), false)
+})
+
+// ── canvasAttention (finding the pane that needs you) ────────────────────────
+
+const VIEWPORT = { w: 1000, h: 600 }
+
+t('canvasAttention: the world rect is what the camera can actually see', () => {
+  const v = viewportWorldRect({ x: -200, y: -100, zoom: 2 }, VIEWPORT)
+  assert.deepEqual({ x: v.x, y: v.y, w: v.w, h: v.h }, { x: 100, y: 50, w: 500, h: 300 })
+})
+t('canvasAttention: partly-visible counts as on screen', () => {
+  const view = { id: 'v', x: 0, y: 0, w: 500, h: 300 }
+  assert.equal(isOffscreen({ id: 'a', x: 480, y: 10, w: 200, h: 50 }, view), false)
+  assert.equal(isOffscreen({ id: 'b', x: 600, y: 10, w: 200, h: 50 }, view), true)
+  // The margin makes a card clinging to the very edge count as off screen.
+  assert.equal(isOffscreen({ id: 'c', x: 495, y: 10, w: 200, h: 50 }, view, 24), true)
+})
+t('canvasAttention: a jump centres the card and keeps the zoom', () => {
+  const cam = cameraToCenter({ id: 'a', x: 100, y: 100, w: 200, h: 100 }, VIEWPORT, 0.5)
+  assert.equal(cam.zoom, 0.5)
+  // Card centre (200,150) at zoom 0.5 must land on the viewport centre.
+  assert.equal(200 * cam.zoom + cam.x, VIEWPORT.w / 2)
+  assert.equal(150 * cam.zoom + cam.y, VIEWPORT.h / 2)
+})
+t('canvasAttention: the target follows the newest question, not the item order', () => {
+  const cards = [
+    { id: 'cardB', kind: 'terminal', paneId: 'B', x: 0, y: 0, w: 10, h: 10 },
+    { id: 'cardA', kind: 'terminal', paneId: 'A', x: 0, y: 0, w: 10, h: 10 },
+    { id: 'note', kind: 'note', x: 0, y: 0, w: 10, h: 10 },
+  ]
+  // Notifications arrive newest-first, and A is newest despite being second here.
+  assert.equal(pickAttentionTarget(cards, ['A', 'B']), 'cardA')
+  assert.equal(pickAttentionTarget(cards, ['B']), 'cardB')
+  // A pane with no card on the board is skipped, not returned unreachably.
+  assert.equal(pickAttentionTarget(cards, ['ghost']), null)
+  assert.equal(pickAttentionTarget(cards, []), null)
+})
+t('canvasAttention: follow moves once, and never for something already visible', () => {
+  assert.equal(shouldFollow('cardA', null, true), true)
+  assert.equal(shouldFollow('cardA', 'cardA', true), false)   // already chased it
+  assert.equal(shouldFollow('cardA', null, false), false)     // it's on screen
+  assert.equal(shouldFollow(null, null, true), false)
+})
+
 // ---------- vad (SwarmVoice auto-stop) ----------
 const VAD = { threshold: 0.05, hangoverMs: 1000, minDurationMs: 500, maxDurationMs: 10_000 }
 // Drive the detector over a script of [level, elapsedMs] frames.
@@ -2455,6 +2726,511 @@ t('accounts: credential candidates live inside the account profile dir', () => {
   const paths = credentialCandidates('claude', '/p/a')
   assert.ok(paths.length > 0)
   assert.ok(paths.every(p => p.startsWith('/p/a') || p.startsWith('\\p\\a') || p.includes('p')))
+})
+
+// ── Merge queue: merge-tree parsing ─────────────────────────────────────────
+// The exact output shape below was captured from git 2.47 against a real
+// three-way conflict, so these assertions are a regression net for the format,
+// not a guess at it.
+
+const MT_CONFLICT = `126290ae1d09bc4aaf86332834e79ca637076edf
+f.txt
+
+Auto-merging f.txt
+CONFLICT (content): Merge conflict in f.txt`
+
+t('mergeTree: a conflicting merge names its files and keeps git\'s messages', () => {
+  const r = parseMergeTree(MT_CONFLICT, 1)
+  assert.equal(r.tree, '126290ae1d09bc4aaf86332834e79ca637076edf')
+  assert.deepEqual(r.conflicts, ['f.txt'])
+  assert.ok(r.messages.includes('CONFLICT (content)'))
+})
+t('mergeTree: a clean merge is just the tree oid', () => {
+  const r = parseMergeTree('a3b986158f8145912dd3c4daa5542a47e603b5be\n', 0)
+  assert.equal(r.tree, 'a3b986158f8145912dd3c4daa5542a47e603b5be')
+  assert.deepEqual(r.conflicts, [])
+})
+t('mergeTree: exit 0 never yields conflicts even if lines follow', () => {
+  // The exit code is authoritative; the informational block is free-form English
+  // that git may reword, so it must never be mistaken for a conflict list.
+  const r = parseMergeTree('a3b9861\nAuto-merging f.txt\n', 0)
+  assert.deepEqual(r.conflicts, [])
+})
+t('mergeTree: unrecognisable output is an error, not an empty success', () => {
+  const r = parseMergeTree('fatal: not a valid object name\n', 128)
+  assert.equal(r.tree, null)
+  assert.ok(r.messages.includes('fatal'))
+})
+t('mergeTree: a path conflicting several ways is listed once', () => {
+  const r = parseMergeTree('abc1234\nf.txt\nf.txt\ng.txt\n\nmsgs', 1)
+  assert.deepEqual(r.conflicts, ['f.txt', 'g.txt'])
+})
+t('mergeTree: verdicts distinguish "nothing to merge" from "merges clean"', () => {
+  // A branch with no commits of its own isn't a clean merge — there is nothing
+  // to land, and calling it clean would imply otherwise.
+  assert.equal(mergeVerdict({ ahead: 0, exitCode: 0, tree: 'abc' }), 'empty')
+  assert.equal(mergeVerdict({ ahead: 3, exitCode: 0, tree: 'abc' }), 'clean')
+  assert.equal(mergeVerdict({ ahead: 3, exitCode: 1, tree: 'abc' }), 'conflict')
+  assert.equal(mergeVerdict({ ahead: 3, exitCode: 128, tree: null }), 'error')
+  assert.equal(mergeVerdict({ ahead: 3, exitCode: 0, tree: null }), 'error')
+})
+t('mergeTree: only a clean merge advances the simulated head', () => {
+  assert.equal(advancesHead('clean'), true)
+  for (const v of ['conflict', 'empty', 'error'] as const) assert.equal(advancesHead(v), false)
+})
+
+// ── Merge queue: what the UI offers ─────────────────────────────────────────
+
+const QROWS: QueueRow[] = [
+  { branch: 'a', verdict: 'clean', conflicts: [], ahead: 2 },
+  { branch: 'b', verdict: 'conflict', conflicts: ['src/x.ts', 'src/y.ts'], ahead: 1 },
+  { branch: 'c', verdict: 'clean', conflicts: [], ahead: 4 },
+  { branch: 'd', verdict: 'empty', conflicts: [], ahead: 0 },
+]
+
+t('mergeQueue: reorder moves one entry and leaves the rest in order', () => {
+  assert.deepEqual(moveInList([1, 2, 3, 4], 0, 2), [2, 3, 1, 4])
+  assert.deepEqual(moveInList([1, 2, 3, 4], 3, 0), [4, 1, 2, 3])
+  assert.deepEqual(moveInList([1, 2, 3], 1, 1), [1, 2, 3])
+})
+t('mergeQueue: a drop outside the queue is not a reorder', () => {
+  // Clamping would move the row somewhere the user did not drop it.
+  assert.deepEqual(moveInList([1, 2, 3], 0, 9), [1, 2, 3])
+  assert.deepEqual(moveInList([1, 2, 3], -1, 1), [1, 2, 3])
+})
+t('mergeQueue: summary counts verdicts and collects conflicted files', () => {
+  const s = summarizeQueue(QROWS)
+  assert.equal(s.clean, 2)
+  assert.equal(s.conflict, 1)
+  assert.equal(s.empty, 1)
+  assert.equal(s.error, 0)
+  assert.deepEqual(s.conflictedFiles, ['src/x.ts', 'src/y.ts'])
+})
+t('mergeQueue: only clean rows land, and in queue order', () => {
+  // Order matters: the verdicts came from a cumulative simulation, so "c is
+  // clean" means "clean once a landed". Merging them in any other order would
+  // land a sequence nobody previewed.
+  assert.deepEqual(landableBranches(QROWS), ['a', 'c'])
+  assert.equal(canRunQueue(QROWS), true)
+  assert.equal(canRunQueue([QROWS[1], QROWS[3]]), false)
+})
+t('mergeQueue: the conflict hand-off prompt keeps the agent out of base', () => {
+  const p = buildConflictTaskPrompt(QROWS[1], 'main')
+  assert.ok(p.title.includes('b'))
+  assert.ok(p.description.includes('src/x.ts'))
+  assert.ok(/own worktree/.test(p.description))
+  assert.ok(/Do not merge into "main" yourself/.test(p.description))
+})
+t('mergeQueue: a huge conflict list is truncated, not pasted whole', () => {
+  const many = Array.from({ length: 30 }, (_, i) => `f${i}.ts`)
+  const p = buildConflictTaskPrompt({ branch: 'b', verdict: 'conflict', conflicts: many, ahead: 1 }, 'main')
+  assert.ok(p.description.includes('+18 more'))
+})
+
+// ── Remote URL parsing ──────────────────────────────────────────────────────
+// Every form here is one git actually writes into .git/config. A wrong parse
+// doesn't throw — it silently builds a link to a repo that doesn't exist.
+
+t('gitRemote: the SCP-like form is not a URL and must still parse', () => {
+  assert.deepEqual(parseRemoteUrl('git@github.com:0xnookie/swarmmind.git'), {
+    host: 'github.com', owner: '0xnookie', repo: 'swarmmind', provider: 'github',
+  })
+})
+t('gitRemote: https and ssh forms drop .git and any userinfo', () => {
+  assert.deepEqual(parseRemoteUrl('https://github.com/0xnookie/swarmmind.git')?.repo, 'swarmmind')
+  const ssh = parseRemoteUrl('ssh://git@github.com/0xnookie/swarmmind.git')
+  assert.equal(ssh?.owner, '0xnookie')  // not "git@github.com"
+  assert.equal(ssh?.host, 'github.com')
+})
+t('gitRemote: a port is not mistaken for an SCP path separator', () => {
+  const r = parseRemoteUrl('https://git.example.com:8443/team/app.git')
+  assert.equal(r?.host, 'git.example.com')
+  assert.equal(r?.owner, 'team')
+  assert.equal(r?.repo, 'app')
+})
+t('gitRemote: nested GitLab subgroups keep the repo as the last segment', () => {
+  const r = parseRemoteUrl('https://gitlab.com/group/sub/app.git')
+  assert.equal(r?.owner, 'group/sub')
+  assert.equal(r?.repo, 'app')
+  assert.equal(r?.provider, 'gitlab')
+})
+t('gitRemote: junk and incomplete paths parse to null, never a half-URL', () => {
+  assert.equal(parseRemoteUrl(''), null)
+  assert.equal(parseRemoteUrl(null), null)
+  assert.equal(parseRemoteUrl('https://github.com/onlyowner'), null)
+  assert.equal(parseRemoteUrl('not a url at all'), null)
+})
+t('gitRemote: compare URLs differ per provider, and an unknown host gets no guess', () => {
+  const gh = parseRemoteUrl('git@github.com:o/r.git')!
+  assert.equal(compareUrl(gh, 'main', 'feature'), 'https://github.com/o/r/compare/main...feature?expand=1')
+  const gl = parseRemoteUrl('https://gitlab.com/o/r.git')!
+  assert.ok(compareUrl(gl, 'main', 'feature').includes('/-/merge_requests/new'))
+  const other = parseRemoteUrl('https://git.internal/o/r.git')!
+  assert.equal(compareUrl(other, 'main', 'feature'), 'https://git.internal/o/r')
+  assert.equal(supportsCli(gh), true)
+  assert.equal(supportsCli(other), false)
+})
+t('gitRemote: branch names with slashes survive into the compare URL', () => {
+  const gh = parseRemoteUrl('git@github.com:o/r.git')!
+  assert.ok(compareUrl(gh, 'main', 'swarmmind/worker-a').includes('swarmmind%2Fworker-a'))
+})
+
+// ── Pull request composition ────────────────────────────────────────────────
+
+t('pullRequest: one commit titles the PR with its own subject', () => {
+  assert.equal(defaultPrTitle('swarmmind/worker-a', [{ hash: 'abc', subject: 'Add retry to the fetcher' }]),
+    'Add retry to the fetcher')
+})
+t('pullRequest: several commits fall back to a humanised branch name', () => {
+  const commits = [{ hash: 'a', subject: 'one' }, { hash: 'b', subject: 'two' }]
+  assert.equal(defaultPrTitle('swarmmind/fix-login_flow', commits), 'Fix login flow')
+  assert.equal(defaultPrTitle('swarmmind/worker-a', []), 'Worker a')
+})
+t('pullRequest: the body carries commits, files and provenance', () => {
+  const body = buildPrBody({
+    branch: 'swarmmind/worker-a',
+    base: 'main',
+    commits: [{ hash: 'abc1234', subject: 'Add retry' }],
+    files: [{ path: 'src/a.ts', additions: 10, deletions: 2 }],
+    paneTitle: 'Worker A',
+  })
+  assert.ok(body.includes('Worker A'))
+  assert.ok(body.includes('abc1234'))
+  assert.ok(body.includes('src/a.ts'))
+  assert.ok(body.includes('+10 −2'))
+  assert.ok(body.includes('SwarmMind'))
+})
+t('pullRequest: no digest means no swarm section (not an empty heading)', () => {
+  const body = buildPrBody({ branch: 'b', base: 'main', commits: [], files: [] })
+  assert.ok(!body.includes('## Swarm session'))
+  assert.ok(!buildPrBody({ branch: 'b', base: 'main', commits: [], files: [], swarmDigest: '   ' }).includes('## Swarm'))
+})
+t('sessionExport: the swarm digest summarises a run rather than replaying it', () => {
+  const events: ExportEvent[] = [
+    { id: '1', ts: 1000, type: 'task_create', agent_id: 'claude', pane_id: 'p1', payload: { title: 't' } },
+    { id: '2', ts: 5000, type: 'task_update', agent_id: 'codex', pane_id: 'p2', payload: { status: 'done' } },
+  ]
+  const digest = renderSwarmDigest(events)
+  assert.ok(digest.includes('## Swarm session'))
+  assert.ok(digest.includes('claude'))
+  assert.ok(digest.includes('codex'))
+  // The full per-event timeline belongs in the session export, not a PR body.
+  assert.ok(!digest.includes('### '))
+  assert.ok(digest.split('\n').length < 12)
+  // An empty log has nothing to say, and must say it as '' so the caller can
+  // drop the whole section.
+  assert.equal(renderSwarmDigest([]), '')
+})
+t('pullRequest: long commit and file lists are truncated with a count', () => {
+  const commits = Array.from({ length: 30 }, (_, i) => ({ hash: `h${i}`, subject: `s${i}` }))
+  const files = Array.from({ length: 40 }, (_, i) => ({ path: `f${i}.ts`, additions: 1, deletions: 0 }))
+  const body = buildPrBody({ branch: 'b', base: 'main', commits, files })
+  assert.ok(body.includes('…and 10 more'))
+  assert.ok(body.includes('…and 10 more'))
+})
+
+// ── Race mode ───────────────────────────────────────────────────────────────
+
+const RP = (over: Partial<RacePane> & { paneId: string }): RacePane => ({
+  agentId: 'claude', title: over.paneId, branch: `swarmmind/${over.paneId}`,
+  worktreePath: `/wt/${over.paneId}`, running: true, ...over,
+})
+
+t('race: only running, worktree-isolated panes may race', () => {
+  // Without isolation two racers would write over each other in one checkout and
+  // the "comparison" would be one incoherent mixture — so exclusion is the
+  // correctness rule, not a nicety.
+  const { eligible, ineligible } = raceEligibility([
+    RP({ paneId: 'a' }),
+    RP({ paneId: 'b', branch: null, worktreePath: null }),
+    RP({ paneId: 'c', running: false }),
+  ])
+  assert.deepEqual(eligible.map(p => p.paneId), ['a'])
+  assert.deepEqual(ineligible.map(i => [i.pane.paneId, i.reason]), [['b', 'no-worktree'], ['c', 'not-running']])
+})
+t('race: a race needs at least two racers and a goal', () => {
+  assert.equal(canStartRace(['a', 'b'], 'do the thing'), true)
+  assert.equal(canStartRace(['a'], 'do the thing'), false)
+  assert.equal(canStartRace(['a', 'b'], '   '), false)
+  assert.equal(canStartRace(['a', 'a'], 'x'), false)  // the same pane twice is one racer
+})
+t('race: the prompt forbids coordination and demands a commit', () => {
+  const p = buildRacePrompt('add retries', 2, 3)
+  assert.ok(p.includes('2/3'))
+  assert.ok(p.includes('add retries'))
+  assert.ok(/do not coordinate/i.test(p))
+  assert.ok(/COMMIT/.test(p))
+  assert.ok(/own git worktree/i.test(p))
+})
+t('race: readiness comes from changed files, not from the pane going quiet', () => {
+  const stat = { files: ['a.ts'], additions: 3, deletions: 1 }
+  assert.equal(attemptState({ running: true, working: true, stat }), 'ready')
+  assert.equal(attemptState({ running: true, working: true, stat: undefined }), 'working')
+  assert.equal(attemptState({ running: true, working: false, stat: undefined }), 'waiting')
+  // An idle pane with no diff is not an attempt to compare.
+  assert.equal(attemptState({ running: true, working: false, stat: { files: [], additions: 0, deletions: 0 } }), 'waiting')
+  assert.equal(attemptState({ running: false, working: false, stat }), 'gone')
+  assert.equal(churn(stat), 4)
+  assert.equal(churn(undefined), 0)
+})
+t('race: contested files are the ones more than one attempt touched', () => {
+  const contested = contestedFiles([
+    { paneId: 'a', stat: { files: ['src/x.ts', 'src/a.ts'], additions: 1, deletions: 0 } },
+    { paneId: 'b', stat: { files: ['src/x.ts', 'src/b.ts'], additions: 1, deletions: 0 } },
+    { paneId: 'c', stat: { files: ['src/x.ts'], additions: 1, deletions: 0 } },
+  ])
+  assert.deepEqual(contested, [{ path: 'src/x.ts', count: 3 }])
+})
+t('race: an attempt listing a file twice still counts once', () => {
+  const contested = contestedFiles([
+    { paneId: 'a', stat: { files: ['x.ts', 'x.ts'], additions: 1, deletions: 0 } },
+    { paneId: 'b', stat: undefined },
+  ])
+  assert.deepEqual(contested, [])
+})
+t('race: picking a winner merges one branch and discards exactly the others', () => {
+  const attempts = [RP({ paneId: 'a' }), RP({ paneId: 'b' }), RP({ paneId: 'c' })]
+  const plan = planWinner(attempts, 'b')!
+  assert.equal(plan.keep.branch, 'swarmmind/b')
+  assert.deepEqual(plan.discard.map(d => d.paneId), ['a', 'c'])
+})
+t('race: an unknown winner plans nothing — never "discard everything"', () => {
+  // The lenient version of this deletes every attempt the first time a racing
+  // pane is closed mid-race.
+  assert.equal(planWinner([RP({ paneId: 'a' })], 'zzz'), null)
+  assert.equal(planWinner([RP({ paneId: 'a', branch: null })], 'a'), null)
+})
+
+// ── Voice orchestration ─────────────────────────────────────────────────────
+// The asymmetry here is the whole design: a missed command costs a click, a
+// false positive silently swallows text the user meant to type into a terminal.
+// Most of these assertions are about *not* matching.
+
+const VAGENTS = ['claude', 'codex', 'cursor', 'windsurf', 'kilo', 'opencode', 'cline']
+const vc = (s: string) => parseVoiceCommand(s, VAGENTS)
+
+t('voiceCommand: an agent-directed phrase becomes a task for that agent', () => {
+  assert.deepEqual(vc('have codex fix the failing tests'), { kind: 'task', text: 'fix the failing tests', agent: 'codex' })
+  assert.deepEqual(vc('ask claude to refactor the parser'), { kind: 'task', text: 'refactor the parser', agent: 'claude' })
+  assert.deepEqual(vc('tell cline to update the README'), { kind: 'task', text: 'update the README', agent: 'cline' })
+})
+t('voiceCommand: the second word must be a REAL agent, or it is dictation', () => {
+  // Without this check "have a look at the login flow" becomes a task assigned
+  // to an agent called "a" — the failure that would make the feature untrustworthy.
+  assert.deepEqual(vc('have a look at the login flow'), { kind: 'dictate', text: 'have a look at the login flow' })
+  assert.deepEqual(vc('ask bob to review this'), { kind: 'dictate', text: 'ask bob to review this' })
+})
+t('voiceCommand: goals and unassigned tasks keep their original casing', () => {
+  assert.deepEqual(vc('set the goal to Ship the CI fix'), { kind: 'goal', text: 'Ship the CI fix' })
+  assert.deepEqual(vc('new goal: Ship v2'), { kind: 'goal', text: 'Ship v2' })
+  assert.deepEqual(vc('create a task to Bump the Deps'), { kind: 'task', text: 'Bump the Deps', agent: null })
+})
+t('voiceCommand: run control has no payload', () => {
+  assert.deepEqual(vc('start the swarm'), { kind: 'control', action: 'start' })
+  assert.deepEqual(vc('Stop the swarm.'), { kind: 'control', action: 'stop' })
+  assert.deepEqual(vc('pause the swarm'), { kind: 'control', action: 'stop' })
+})
+t('voiceCommand: broadcast wins over the agent-directed verb it starts with', () => {
+  // "tell everyone" begins with "tell"; if the agent branch ran first it would
+  // reject "everyone" and the phrase would be typed into one pane instead.
+  assert.deepEqual(vc('tell everyone to stop what they are doing'),
+    { kind: 'broadcast', text: 'stop what they are doing' })
+  assert.deepEqual(vc('tell the swarm to commit'), { kind: 'broadcast', text: 'commit' })
+})
+t('voiceCommand: commands are anchored to the start of the utterance', () => {
+  // A wake word that fired mid-sentence must not reinterpret ordinary speech.
+  assert.equal(vc('and then tell claude to look at it').kind, 'dictate')
+  assert.equal(vc('I want to set the goal to something').kind, 'dictate')
+})
+t('voiceCommand: a command prefix with no payload dictates rather than acting', () => {
+  // "set the goal to <nothing>" must not blank the goal.
+  assert.equal(vc('set the goal to').kind, 'dictate')
+  assert.equal(vc('create a task').kind, 'dictate')
+  assert.equal(vc('broadcast').kind, 'dictate')
+})
+t('voiceCommand: punctuation and casing from the speech model do not defeat it', () => {
+  assert.deepEqual(vc('Have Codex, fix the tests'), { kind: 'task', text: 'fix the tests', agent: 'codex' })
+  assert.deepEqual(vc('  START THE SWARM  '), { kind: 'control', action: 'start' })
+})
+t('voiceCommand: describeIntent says what will happen, per kind', () => {
+  assert.ok(describeIntent(vc('have codex fix the tests')).includes('codex'))
+  assert.ok(describeIntent(vc('stop the swarm')).includes('Stopping'))
+  assert.equal(describeIntent(vc('ls -la')), 'ls -la')
+})
+
+// ── LSP framing ─────────────────────────────────────────────────────────────
+// Content-Length is a BYTE count. A char-counted implementation works on ASCII
+// and desynchronises permanently the first time a hover contains a non-ASCII
+// character — which then looks like the server hanging, not failing.
+
+t('lspFraming: round-trips a message', () => {
+  const { messages, rest } = decodeMessages(encodeMessage({ jsonrpc: '2.0', id: 1, method: 'x' }))
+  assert.deepEqual(messages, [{ jsonrpc: '2.0', id: 1, method: 'x' }])
+  assert.equal(rest.length, 0)
+})
+t('lspFraming: the length header counts bytes, not characters', () => {
+  const payload = { text: 'héllo — 日本語' }
+  const buf = encodeMessage(payload)
+  const declared = Number(/Content-Length: (\d+)/.exec(buf.toString('ascii', 0, 40))![1])
+  assert.equal(declared, Buffer.byteLength(JSON.stringify(payload), 'utf-8'))
+  assert.deepEqual(decodeMessages(buf).messages, [payload])
+})
+t('lspFraming: several messages in one chunk all decode', () => {
+  const buf = Buffer.concat([encodeMessage({ a: 1 }), encodeMessage({ b: 2 }), encodeMessage({ c: 3 })])
+  assert.deepEqual(decodeMessages(buf).messages, [{ a: 1 }, { b: 2 }, { c: 3 }])
+})
+t('lspFraming: a split message is held as remainder until it completes', () => {
+  const full = Buffer.concat([encodeMessage({ a: 1 }), encodeMessage({ b: 2 })])
+  const cut = Math.floor(full.length * 0.7)
+  const first = decodeMessages(full.subarray(0, cut))
+  assert.deepEqual(first.messages, [{ a: 1 }])
+  const second = decodeMessages(Buffer.concat([first.rest, full.subarray(cut)]))
+  assert.deepEqual(second.messages, [{ b: 2 }])
+})
+t('lspFraming: a malformed body does not stall the stream', () => {
+  const bad = Buffer.from('Content-Length: 5\r\n\r\n{{{{{', 'utf-8')
+  const buf = Buffer.concat([bad, encodeMessage({ ok: true })])
+  assert.deepEqual(decodeMessages(buf).messages, [{ ok: true }])
+})
+t('lspFraming: file URIs round-trip, including Windows drive letters', () => {
+  assert.equal(pathToUri('D:\\swarmmind\\src\\a.py'), 'file:///D:/swarmmind/src/a.py')
+  assert.equal(uriToPath('file:///D:/swarmmind/src/a.py'), 'D:/swarmmind/src/a.py')
+  assert.equal(uriToPath(pathToUri('/home/u/a.py')), '/home/u/a.py')
+  // Spaces must be escaped on the way out and restored on the way back, or a
+  // definition in "My Project" opens nothing.
+  assert.ok(pathToUri('/home/My Project/a.py').includes('%20'))
+  assert.equal(uriToPath(pathToUri('/home/My Project/a.py')), '/home/My Project/a.py')
+})
+
+// ── LSP server registry ─────────────────────────────────────────────────────
+
+t('lspServers: a path maps to the server for its extension', () => {
+  assert.equal(serverForPath('/a/b.py')?.id, 'python')
+  assert.equal(serverForPath('/a/b.rs')?.id, 'rust')
+  assert.equal(serverForPath('D:\\a\\b.GO')?.id, 'go')
+  assert.equal(serverForPath('/a/b.ts'), null)   // handled in-process, never here
+  assert.equal(serverForPath('/a/Makefile'), null)
+  assert.equal(serverForPath('/a/.gitignore'), null)  // leading dot is not an extension
+})
+t('lspServers: user entries override a built-in for the same extension', () => {
+  const extra = parseExtraServers('[{"id":"mypy","command":"x","args":["--stdio"],"extensions":[".py"],"languageId":"python"}]')
+  assert.equal(extra.length, 1)
+  assert.equal(serverForPath('/a/b.py', resolveServers(extra))?.id, 'mypy')
+})
+t('lspServers: one malformed entry does not discard its neighbours', () => {
+  const parsed = parseExtraServers('[{"id":"a"},{"id":"b","command":"c","extensions":[".x"],"languageId":"l"}]')
+  assert.deepEqual(parsed.map(s => s.id), ['b'])
+  // Junk must never take the built-in servers down with it.
+  assert.deepEqual(parseExtraServers('not json'), [])
+  assert.deepEqual(parseExtraServers(null), [])
+  assert.equal(serverForPath('/a/b.py', resolveServers(parseExtraServers('{'))) ?.id, 'python')
+})
+
+t('lspServers: a server path with spaces survives the Windows shell', () => {
+  // Windows needs shell:true to launch a .cmd shim, which makes Node join the
+  // command line — so an unquoted "C:\Program Files\..." splits at the space and
+  // fails as ENOENT, indistinguishable from "not installed". Found by
+  // lsp-stdio-verify, which could not spawn node.exe from Program Files.
+  assert.equal(quoteForCmd('C:\\Program Files\\nodejs\\node.exe'), '"C:\\Program Files\\nodejs\\node.exe"')
+  assert.equal(quoteForCmd('pyright-langserver'), 'pyright-langserver')
+  assert.equal(quoteForCmd('--stdio'), '--stdio')
+  // An already-quoted token from a hand-written settings entry is left alone.
+  assert.equal(quoteForCmd('"C:\\a b\\x.cmd"'), '"C:\\a b\\x.cmd"')
+  assert.equal(quoteForCmd(''), '""')
+})
+
+// ── LSP response normalisation ──────────────────────────────────────────────
+
+const DOC = 'line one\nline two\nline three\n'
+
+t('lspNormalize: offsets and positions round-trip', () => {
+  assert.deepEqual(offsetToPosition(DOC, 0), { line: 0, character: 0 })
+  assert.deepEqual(offsetToPosition(DOC, 9), { line: 1, character: 0 })
+  assert.deepEqual(offsetToPosition(DOC, 13), { line: 1, character: 4 })
+  assert.equal(positionToOffset(DOC, { line: 1, character: 4 }), 13)
+  assert.equal(positionToOffset(DOC, { line: 0, character: 0 }), 0)
+})
+t('lspNormalize: an out-of-range position clamps instead of throwing', () => {
+  // Servers report positions from the file on disk while the editor holds a
+  // shorter unsaved buffer; throwing would drop a whole diagnostics batch.
+  assert.equal(positionToOffset(DOC, { line: 99, character: 0 }), DOC.length)
+  assert.equal(positionToOffset(DOC, { line: 0, character: 500 }), 8) // clamped to end of line
+  // DOC ends in a newline, so the very end of the file is the empty line 3.
+  assert.deepEqual(offsetToPosition(DOC, 9999), { line: 3, character: 0 })
+  assert.deepEqual(offsetToPosition(DOC, -5), { line: 0, character: 0 })
+})
+t('lspNormalize: severities map, and a missing one is an error', () => {
+  assert.equal(normalizeSeverity(1), 'error')
+  assert.equal(normalizeSeverity(2), 'warning')
+  assert.equal(normalizeSeverity(3), 'info')
+  assert.equal(normalizeSeverity(undefined), 'error')
+})
+t('lspNormalize: a zero-width diagnostic still has something to underline', () => {
+  const diags = normalizeDiagnostics(
+    [{ range: { start: { line: 1, character: 2 }, end: { line: 1, character: 2 } }, message: 'x', severity: 1 }],
+    DOC,
+  )
+  assert.equal(diags[0].to, diags[0].from + 1)
+})
+t('lspNormalize: every hover shape in the spec flattens to markdown', () => {
+  assert.equal(normalizeHoverContents('plain'), 'plain')
+  assert.equal(normalizeHoverContents({ kind: 'markdown', value: '**b**' }), '**b**')
+  assert.equal(normalizeHoverContents({ language: 'python', value: 'def f()' }), '```python\ndef f()\n```')
+  assert.ok(normalizeHoverContents([{ language: 'rust', value: 'fn f()' }, 'docs']).includes('```rust'))
+  assert.equal(normalizeHoverContents(null), '')
+})
+t('lspNormalize: Location, Location[] and LocationLink[] all flatten', () => {
+  const range = { start: { line: 3, character: 1 }, end: { line: 3, character: 5 } }
+  assert.deepEqual(normalizeLocations({ uri: 'file:///a', range }), [{ uri: 'file:///a', range }])
+  assert.equal(normalizeLocations([{ uri: 'file:///a', range }, { uri: 'file:///b', range }]).length, 2)
+  // LocationLink names its fields differently; servers send them regardless of
+  // the capability we declare.
+  assert.deepEqual(
+    normalizeLocations([{ targetUri: 'file:///c', targetSelectionRange: range }]),
+    [{ uri: 'file:///c', range }],
+  )
+  assert.deepEqual(normalizeLocations(null), [])
+})
+t('lspNormalize: a workspace edit is read from either representation', () => {
+  const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } }
+  const fromChanges = normalizeWorkspaceEdit({ changes: { 'file:///a': [{ range, newText: 'X' }] } })
+  assert.deepEqual(fromChanges, [{ uri: 'file:///a', edits: [{ range, newText: 'X' }] }])
+  const fromDocChanges = normalizeWorkspaceEdit({
+    documentChanges: [{ textDocument: { uri: 'file:///b', version: 1 }, edits: [{ range, newText: 'Y' }] }],
+  })
+  assert.deepEqual(fromDocChanges.map(f => f.uri), ['file:///b'])
+})
+t('lspNormalize: file create/rename/delete operations are dropped', () => {
+  // These ride in documentChanges next to real text edits. The rename flow feeds
+  // a "you see it first" diff pipeline, so a filesystem operation must never
+  // slip through it.
+  const edits = normalizeWorkspaceEdit({
+    documentChanges: [
+      { kind: 'create', uri: 'file:///new' },
+      { kind: 'delete', uri: 'file:///old' },
+    ],
+  })
+  assert.deepEqual(edits, [])
+})
+t('lspNormalize: edits apply right-to-left so earlier ones do not shift later ones', () => {
+  const text = 'aaa bbb ccc'
+  const out = applyRangeEdits(text, [
+    { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } }, newText: 'LONGER' },
+    { range: { start: { line: 0, character: 8 }, end: { line: 0, character: 11 } }, newText: 'Z' },
+  ])
+  assert.equal(out, 'LONGER bbb Z')
+})
+t('lspNormalize: overlapping edits are refused, not silently merged', () => {
+  const text = 'abcdef'
+  const out = applyRangeEdits(text, [
+    { range: { start: { line: 0, character: 0 }, end: { line: 0, character: 4 } }, newText: 'X' },
+    { range: { start: { line: 0, character: 2 }, end: { line: 0, character: 6 } }, newText: 'Y' },
+  ])
+  assert.equal(out, null)
+})
+t('lspNormalize: a pure insertion does not swallow the next character', () => {
+  const at = { line: 0, character: 3 }
+  assert.equal(applyRangeEdits('abcdef', [{ range: { start: at, end: at }, newText: 'XY' }]), 'abcXYdef')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

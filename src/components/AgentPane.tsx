@@ -137,7 +137,12 @@ interface AgentPaneProps {
   transparentBg?: boolean
 }
 
-export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSplitV, onClose, isExpanded, isVisible = true, onToggleExpand, onPaneDragStart, onPaneDragEnd, transparentBg = false }: AgentPaneProps) {
+// Memoised: this is the heaviest component in the app (its own toolbar, account
+// resolution, context menus, session picker) and it owns a live xterm. Both
+// places that render it — the CenterArea grid and a canvas terminal card — sit
+// under parents that re-render for reasons that have nothing to do with the
+// pane, so skipping on unchanged props keeps that cost off the terminal.
+export const AgentPane = React.memo(function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSplitV, onClose, isExpanded, isVisible = true, onToggleExpand, onPaneDragStart, onPaneDragEnd, transparentBg = false }: AgentPaneProps) {
   const t = useT()
   const containerRef = useRef<HTMLDivElement>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null)
@@ -1179,7 +1184,7 @@ export function AgentPane({ paneId, agentId, ptyStatus, paneCwd, onSplitH, onSpl
       )}
     </div>
   )
-}
+})
 
 // ── Skill input modal ─────────────────────────────────────────────────────────
 // Collects one value per {{input:Label}} token before a skill is injected.

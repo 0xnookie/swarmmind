@@ -19,6 +19,7 @@ import { registerBenchmarkHandlers } from './ipc/benchmarks'
 import { registerSwarmAgentHandlers } from './ipc/swarmagent'
 import { registerLspHandlers } from './ipc/lsp'
 import { shutdownLsp } from './lsp/client'
+import { shutdownStdioServers } from './lsp/stdio'
 import { registerUpdater } from './updater'
 import { killAll } from './pty-manager'
 import { existsSync, mkdirSync } from 'fs'
@@ -395,6 +396,9 @@ app.on('before-quit', async () => {
   tray = null
   killAll()
   shutdownLsp()
+  // External language servers are child processes; without an explicit shutdown
+  // they outlive the app as orphans.
+  shutdownStdioServers()
   await stopMcpServer()
   closeAll()
 })

@@ -25,7 +25,7 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 | Agentic chat that edits (chat → applyable diffs) | ✅ | ✅ | SwarmAgent's **`propose_edits` tool**: the chat assistant reads the code (search_code/read_file), then hands a full change plan to the Composer's diff/checkpoint/apply/verify pipeline. Nothing writes until the user applies — Cursor's agent mode, but on SwarmMind's reversibility rails |
 | Terminal→editor bridge (clickable path:line) | ✅ | ✅ | File references in agent terminal output (`src/foo.ts:12`, `D:\x\y.py(3,1)`) are validated against the FS and **Ctrl/Cmd+Click** opens the file at that line in the editor. Pure matcher `terminalLinks.ts` (unit-tested), resolves against worktree → pane cwd → root |
 | Fresh semantic index while agents work | ✅ | ⬜ | The vector index **re-embeds just the touched files** on the file-watcher's `file_changed` events (debounced, capped, write-locked against full rebuilds). Cursor's index doesn't watch other agents' edits; ours does. Pure merge/plan logic `indexUpdate.ts` (unit-tested) |
-| Real language intelligence (LSP) | ✅ | ✅ | **TypeScript language service in a worker thread** (`electron/lsp/*`): live type diagnostics as you type (free, no tokens), hover types, Ctrl/⌘+Click / F12 go-to-definition, Shift+F12 find-references, and compiler-exact F2 rename. No external language server to install — the `typescript` package *is* the engine. Off the main thread, so a cold program build never stalls the PTYs |
+| Real language intelligence (LSP) | ✅ | ✅ | TS/JS: **TypeScript language service in a worker thread**. Other languages: a **generic stdio LSP client** (`electron/lsp/stdio.ts`) that drives whatever server the user has installed (pyright, rust-analyzer, gopls, clangd, or a user-configured one) through the *same* channels — so Python and Rust inherit diagnostics→"Fix with AI" and the compiler-exact rename pipeline unchanged. Nothing bundled; an absent server degrades to "no results". Details: **TypeScript language service in a worker thread** (`electron/lsp/*`): live type diagnostics as you type (free, no tokens), hover types, Ctrl/⌘+Click / F12 go-to-definition, Shift+F12 find-references, and compiler-exact F2 rename. No external language server to install — the `typescript` package *is* the engine. Off the main thread, so a cold program build never stalls the PTYs |
 | Type error → one-click AI fix | ✅ | 🟡 | Compiler diagnostics merge into the *same* lint list as the AI diagnostics (`mergeDiagnostics`, unit-tested), so **every real type error inherits the existing "Fix with AI" action** → prefilled Cmd-K inline edit. The checker finds it, the model fixes it |
 
 ## Differentiators SwarmMind has and Cursor/BridgeMind do not
@@ -45,6 +45,14 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 | ⭐ Focus mode + ambient audio cues | ✅ | Opt-in: auto-spotlight the pane that just asked a question; quiet WebAudio pings for needs-you / turn-done / contention (rate-limited) |
 | ⭐ Bring your own model (any provider, incl. local) | ✅ | One `runChat` entry point backs every AI surface: Groq, **Anthropic (Claude, official SDK)**, OpenAI, or any OpenAI-compatible base URL — Ollama / LM Studio / OpenRouter / vLLM, key-free. Keys stored per provider, so switching costs nothing. Cursor ties you to its own backend; SwarmMind's editor AI can run entirely on a local model |
 | ⭐ Spend budget on autonomous runs | ✅ | An optional per-run ceiling pauses `auto`-mode dispatch once the swarm's reported cost reaches it (running agents finish). The one feature that spends money unattended now has a stop |
+| ⭐ Merge queue with pre-flight conflict detection | ✅ | The payoff moment of a swarm run stops being its weakest. `git merge-tree --write-tree` simulates the whole batch **cumulatively** (each branch onto the result of the ones above it) without touching a working tree, so you see which branches land clean and which collide *on which files* before committing to anything. Reordering the queue and re-simulating is free; a conflicting branch can be handed to its own agent as a resolve task. Nothing else merges N agent branches as a batch |
+| ⭐ Race mode — N-way attempts on one task | ✅ | Best-of-N at **agent** granularity: Claude Code, Codex and a local model attempt the same task at once, each in its own worktree, then you compare the diffs and keep one (merge the winner, discard the rest). Cursor structurally cannot do this — one backend, one agent. Pure `race.ts` enforces the invariants (worktree-isolated racers, no coordination, never "discard everything") |
+| ⭐ Push + PR from the swarm | ✅ | Work no longer stops at "merged locally": push and open a pull request from the Review bar, with the body prefilled from the branch's commits **and the swarm's own session digest** (same `buildSessionStats` as the exported report). `gh` when installed, the provider's compare page as the fallback |
+| ⭐ Voice orchestration | ✅ | "Hey swarm, have Codex fix the failing tests" queues a task for Codex instead of typing that sentence into a terminal — plus goal-setting, run start/stop and broadcast. Unmatched speech still dictates, so it can be on by default |
+| ⭐ Canvas semantic zoom (board as dashboard) | ✅ | The infinite board stopped paying off at the pane count that makes a swarm interesting: eight terminals on screen is eight unreadable smears. Below a zoom threshold each terminal renders as a **status tile** — agent, state, current task, spend — and above it, the live terminal returns. The pane is hidden, never unmounted, so crossing the threshold costs nothing; the threshold is hysteretic so a wheel nudge can't flicker the whole board. Zoomed out you're reading a dashboard of your own swarm, and it's the same cards |
+| ⭐ Canvas routes (draw the wiring, it runs) | ✅ | An arrow from one terminal card to another **is** the wiring: when the source finishes a turn, the tail of its output is handed to the target. Reviewer downstream of builder, drawn once instead of re-typed every turn. Delivery is published to the store and runs from `App`, so it keeps working with the board closed. Mutual arrows are legal and cannot ping-pong (a pane that just received a relay can't emit one), and the same tail is never sent twice |
+| ⭐ Canvas frames (named regions that own their panes) | ✅ | "The auth work" stops being a spatial convention in your head: a frame moves its contents with it and knows which *agents* are inside, so one instruction goes to all of them. Membership is by centre so a straddling card belongs to exactly one frame; the interior is pointer-transparent so the region you organise in doesn't swallow the gestures you organise with |
+| ⭐ Attention camera on the board | ✅ | The infinite board breaks its own premise — an agent three screens away asking a question is invisible. The minimap pulses it, an off-screen chip offers the jump (**J**), and an opt-in follow camera pans to it. Driven by the *question-gated* notification, not by idleness, so it settles instead of chasing every finished turn |
 | ⭐ Session export (shareable swarm report) | ✅ | One click in the Swarm Timeline exports the event log as a **self-contained HTML report** (stat tiles, agent legend, day-grouped timeline — no external assets, everything escaped) or a Markdown digest for PRs/issues. Pure `sessionExport.ts` (unit-tested); save-dialog picks the format by extension |
 
 ## Engineering quality bar
@@ -53,9 +61,9 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
 |---|---|
 | Type gate | `npm run typecheck` clean (two tsconfig projects) |
 | CI gates | `unit` (Node 22; no `npm ci` — the pure suite is dependency-free by design, so it runs in seconds), `typecheck`, then `build` → `smoke` → `pty-verify` on Windows |
-| Pure-logic unit tests | `npm test` — 194 assertions over pure modules (incl. `nextEdit`, `codeBlocks`, `retrieval` lexical+vector, `verify`, `conductor` orchestration decisions, `terminalLinks`, `indexUpdate`, `devServerUrl`, `recipes`, `tsLsp` incl. span edits, `rename`, `diagnostics`, `sessionExport`), no build step |
+| Pure-logic unit tests | `npm test` — 423 assertions over pure modules (incl. `canvasLod`/`canvasRoutes`/`canvasFrames`/`canvasAttention`, `mergeTree`/`mergeQueue`, `gitRemote`, `pullRequest`, `race`, `voiceCommand`, `lspFraming`/`lspServers`/`lspNormalize`) (incl. `nextEdit`, `codeBlocks`, `retrieval` lexical+vector, `verify`, `conductor` orchestration decisions, `terminalLinks`, `indexUpdate`, `devServerUrl`, `recipes`, `tsLsp` incl. span edits, `rename`, `diagnostics`, `sessionExport`), no build step |
 | Constrained exec | `verify:run` only runs the workspace's declared npm scripts (allowlist + strict charset), execFile without a shell — no arbitrary command surface |
-| Boot/integration | `npm run smoke`, `node tests/editor-verify.mjs`, `npm run lsp-verify` (Playwright on the built app — the last drives a real type error to a rendered squiggle + Fix-with-AI action, cross-file F12, Shift+F12 references across files, and an F2 rename landing as a two-file Composer plan) |
+| Boot/integration | `npm run smoke`, `node tests/editor-verify.mjs`, `npm run lsp-verify` (Playwright on the built app — the last drives a real type error to a rendered squiggle + Fix-with-AI action, cross-file F12, Shift+F12 references across files, and an F2 rename landing as a two-file Composer plan), `npm run lsp-stdio-verify` (drives the generic LSP client against a real server process — handshake, document sync, push-based diagnostics, all three response shapes — with nothing installed), `npm run canvas-board-verify` (semantic zoom without unmounting a pane, a frame carrying its contents, note→task, and a route relaying a finished turn **with the board closed**) |
 | Terminal throughput | `npm run pty-verify` drives a real shell: output arrives complete and in order, **and** stays coalesced into frame-sized IPC batches (400 lines → single-digit messages), so the batching can't be silently refactored away |
 | Spawn safety | HMAC-signed agent config, shell-quoted argv, per-workspace MCP token |
 
@@ -96,10 +104,20 @@ Legend: ✅ shipped · 🟡 partial · ⬜ not yet · ⭐ SwarmMind differentiat
    `isWakeEvent` gate, ~150ms coalescing) instead of a fixed 1.5s poll; a 5s
    heartbeat survives only for the time-based watchdogs. Lower latency, near-zero
    idle cost, scales with pane count.
-12. **Other languages** — the language service covers TS/JS/TSX only. Python/Rust
-   would each need a real external language server; worth it only if users ask.
+12. ~~**Other languages**~~ — ✅ shipped, but not the way this line originally
+   framed it. "One in-process service per language" doesn't scale past the
+   first, so the client became generic instead: `electron/lsp/stdio.ts` speaks
+   real LSP to whatever server the user already has (pyright/pylsp,
+   rust-analyzer, gopls, clangd, plus user-configured entries), with the
+   TypeScript worker kept as the in-process fast path. Nothing is bundled or
+   auto-installed — an absent binary degrades to "no results". Diagnostics,
+   hover, go-to-definition, references and rename all ride the existing
+   channels, so every language inherits "Fix with AI" and the Composer's
+   rename pipeline for free.
 13. **LSP-backed completions** — symbol-exact completion popups from the language
-   service; ghost-text covers the AI side of this surface today.
+   service; ghost-text covers the AI side of this surface today. Now cheaper
+   than it was: the stdio client makes it one more request type rather than a
+   per-language problem.
 14. ~~**Provider lock-in**~~ — ✅ shipped: the whole AI stack was wired to a single
    vendor, capping quality on exactly the workloads that most reward a frontier
    model (Composer plans, agentic chat) and taking every AI surface down with one

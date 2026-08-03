@@ -244,6 +244,17 @@ declare global {
       gitWorktreeCommit: (worktreePath: string, message: string) => Promise<{ hash: string | null } | { error: string }>
       gitWorktreeCommitFiles: (worktreePath: string, message: string, files: string[]) => Promise<{ hash: string | null } | { error: string }>
       gitMergeBranch: (root: string, branch: string) => Promise<{ ok: true; message: string } | { ok: false; conflict: boolean; error: string }>
+      gitMergeQueuePreview: (root: string, branches: string[], baseRef?: string) => Promise<MergeQueuePreview>
+      gitMergeQueueRun: (root: string, branches: string[]) => Promise<MergeRunResult[]>
+      gitRemoteInfo: (root: string) => Promise<RemoteDescriptor | null>
+      gitPush: (worktreePath: string, branch: string) => Promise<{ ok: boolean; message: string; rejected?: boolean }>
+      gitBranchCommits: (worktreePath: string, base: string) => Promise<{ hash: string; subject: string }[]>
+      gitCreatePr: (
+        root: string,
+        worktreePath: string,
+        opts: { title: string; body: string; base: string; head: string; draft?: boolean },
+      ) => Promise<{ ok: boolean; url: string | null; message: string; fallback: boolean }>
+      openExternal: (url: string) => Promise<{ ok: boolean }>
       // Checkpoints & Rewind
       checkpointCreate: (label?: string, trigger?: string) => Promise<CheckpointRecord | { error: string }>
       checkpointList: () => Promise<CheckpointRecord[]>
@@ -329,6 +340,35 @@ declare global {
   interface WorktreeInfo {
     path: string
     branch: string
+  }
+
+  interface MergeQueueRow {
+    branch: string
+    verdict: 'clean' | 'conflict' | 'empty' | 'error'
+    conflicts: string[]
+    ahead: number
+    error?: string
+  }
+
+  interface MergeQueuePreview {
+    base: string
+    rows: MergeQueueRow[]
+  }
+
+  interface RemoteDescriptor {
+    host: string
+    owner: string
+    repo: string
+    provider: 'github' | 'gitlab' | 'bitbucket' | 'other'
+    url: string
+    cliAvailable: boolean
+  }
+
+  interface MergeRunResult {
+    branch: string
+    ok: boolean
+    message: string
+    conflict: boolean
   }
 
   interface AgentMessage {

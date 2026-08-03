@@ -63,6 +63,7 @@ function TerminalCard({ leafId, isExpanded, isVisible = true, dockedTop = false,
   })
 
   const handleSplitH = useCallback(() => splitPane(leafId, 'horizontal'), [leafId, splitPane])
+  const handleSplitV = useCallback(() => splitPane(leafId, 'vertical'), [leafId, splitPane])
   const handleClose = useCallback(() => closePane(leafId), [leafId, closePane])
 
   const handlePaneDragStart = useCallback((e: React.DragEvent) => {
@@ -146,7 +147,7 @@ function TerminalCard({ leafId, isExpanded, isVisible = true, dockedTop = false,
         ptyStatus={ptyStatus}
         paneCwd={paneCwd}
         onSplitH={handleSplitH}
-        onSplitV={() => splitPane(leafId, 'vertical')}
+        onSplitV={handleSplitV}
         onClose={handleClose}
         isExpanded={isExpanded}
         isVisible={isVisible}

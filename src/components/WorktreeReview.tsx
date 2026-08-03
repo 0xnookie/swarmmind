@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useWorkspaceStore, type PaneNode } from '../store/workspace'
 import { UnifiedDiff } from './UnifiedDiff'
+import { MergeQueue } from './MergeQueue'
 import { confirmDialog } from './ConfirmDialog'
+import { buildPrBody, defaultPrTitle } from '../lib/pullRequest'
+import { renderSwarmDigest, type ExportEvent } from '../lib/sessionExport'
 import { useT } from '../i18n'
 
 // ── Worktree Review ─────────────────────────────────────────────────────────
@@ -58,6 +61,15 @@ export function WorktreeReview() {
   const [busy, setBusy] = useState(false)
   // Files ticked to commit selectively; empty = commit everything (the default).
   const [staged, setStaged] = useState<Set<string>>(new Set())
+  // Review one branch, or queue them all up and see which land together.
+  const [view, setView] = useState<'review' | 'queue'>('review')
+  // Push / pull-request state. `remote` is null when the repo has no usable
+  // origin — in which case neither action is offered rather than failing on click.
+  const [remote, setRemote] = useState<RemoteDescriptor | null>(null)
+  const [prOpen, setPrOpen] = useState(false)
+  const [prTitle, setPrTitle] = useState('')
+  const [prBody, setPrBody] = useState('')
+  const [prDraft, setPrDraft] = useState(false)
 
   const paneMeta = useMemo(() => {
     const out: Record<string, PaneMeta> = {}
@@ -69,10 +81,12 @@ export function WorktreeReview() {
     if (!root) return
     setLoading(true)
     try {
-      const [list, b] = await Promise.all([
+      const [list, b, rem] = await Promise.all([
         window.swarmmind.gitListWorktrees(root),
         window.swarmmind.gitBaseBranch(root),
+        window.swarmmind.gitRemoteInfo(root),
       ])
+      setRemote(rem)
       const managed = list.filter(w => isManaged(w.path))
       setBase(b)
       setRows(managed)
@@ -149,6 +163,84 @@ export function WorktreeReview() {
     return next
   })
 
+  // ── Push & PR ──────────────────────────────────────────────────────────────
+  // The last two steps of the loop. Both act on the *worktree*, not the main
+  // checkout: the branch is checked out there, and pushing from the root would
+  // need an explicit refspec and still leave `gh` guessing at the head branch.
+
+  const doPush = async () => {
+    if (!selectedRow) return
+    setBusy(true)
+    setNotice(null)
+    const res = await window.swarmmind.gitPush(selectedRow.path, selectedRow.branch)
+    setBusy(false)
+    setNotice(res.ok
+      ? { kind: 'ok', text: t('pr.pushed', { branch: selectedRow.branch }) }
+      : { kind: 'err', text: t('pr.pushFailed', { error: res.message }) })
+  }
+
+  // Prefill from what the branch actually contains, so the common case is
+  // "glance, then click create" rather than writing a description from scratch.
+  const openPrForm = async () => {
+    if (!selectedRow) { return }
+    if (prOpen) { setPrOpen(false); return }
+    setPrOpen(true)
+    setBusy(true)
+    const [commits, events] = await Promise.all([
+      window.swarmmind.gitBranchCommits(selectedRow.path, base),
+      // Best-effort: the swarm digest is a bonus section, never a blocker.
+      window.swarmmind.eventsList(undefined, 500).catch(() => [] as SwarmEvent[]),
+    ])
+    setBusy(false)
+    const meta = paneMeta[selectedRow.branch]
+    setPrTitle(defaultPrTitle(selectedRow.branch, commits))
+    setPrBody(buildPrBody({
+      branch: selectedRow.branch,
+      base,
+      commits,
+      files: selectedStat?.files ?? [],
+      agent: meta?.agentId ?? null,
+      paneTitle: meta?.title ?? null,
+      swarmDigest: renderSwarmDigest(events as unknown as ExportEvent[]),
+    }))
+  }
+
+  const doCreatePr = async () => {
+    if (!root || !selectedRow) return
+    setBusy(true)
+    setNotice(null)
+    // Push first: `gh pr create` (and the compare page) both need the branch to
+    // exist on the remote, and a user who clicked "Create pull request" has
+    // unambiguously asked for it to be published.
+    const push = await window.swarmmind.gitPush(selectedRow.path, selectedRow.branch)
+    if (!push.ok) {
+      setBusy(false)
+      setNotice({ kind: 'err', text: t('pr.pushFailed', { error: push.message }) })
+      return
+    }
+    const res = await window.swarmmind.gitCreatePr(root, selectedRow.path, {
+      title: prTitle.trim() || selectedRow.branch,
+      body: prBody,
+      base,
+      head: selectedRow.branch,
+      draft: prDraft,
+    })
+    setBusy(false)
+    if (res.ok) {
+      setPrOpen(false)
+      setNotice({ kind: 'ok', text: t('pr.created', { url: res.url ?? '' }) })
+      if (res.url) void window.swarmmind.openExternal(res.url)
+    } else if (res.fallback && res.url) {
+      // gh missing or unauthenticated — the branch is pushed, so the compare
+      // page still finishes the job.
+      setPrOpen(false)
+      setNotice({ kind: 'ok', text: t('pr.openedCompare') })
+      void window.swarmmind.openExternal(res.url)
+    } else {
+      setNotice({ kind: 'err', text: t('pr.failed', { error: res.message }) })
+    }
+  }
+
   const doDiscard = async () => {
     if (!root || !selectedRow) return
     if (!(await confirmDialog({
@@ -173,9 +265,29 @@ export function WorktreeReview() {
       <div style={styles.header}>
         <span style={styles.title}>{t('worktree.title')}</span>
         {base && <span style={styles.baseTag}>{t('worktree.base', { branch: base })}</span>}
+        <div style={styles.tabs}>
+          <button
+            style={{ ...styles.tab, ...(view === 'review' ? styles.tabActive : {}) }}
+            onClick={() => setView('review')}
+          >{t('worktree.tabReview')}</button>
+          <button
+            style={{ ...styles.tab, ...(view === 'queue' ? styles.tabActive : {}) }}
+            onClick={() => setView('queue')}
+          >{t('worktree.tabQueue')}</button>
+        </div>
         <button style={styles.iconBtn} onClick={refresh} disabled={loading}>{t('worktree.refresh')}</button>
       </div>
 
+      {view === 'queue' ? (
+        <MergeQueue
+          root={root}
+          base={base}
+          worktrees={rows}
+          stats={stats}
+          paneMeta={paneMeta}
+          onMerged={refresh}
+        />
+      ) : (
       <div style={styles.body}>
         {/* Branch list */}
         <div style={styles.sidebar}>
@@ -225,6 +337,16 @@ export function WorktreeReview() {
                 <button style={styles.actBtn} disabled={busy} onClick={() => setCommitOpen(o => !o)}>
                   {staged.size > 0 ? t('worktree.commitSelected', { n: staged.size }) : t('worktree.commitAll')}
                 </button>
+                {remote && (
+                  <>
+                    <button style={styles.actBtn} disabled={busy} onClick={doPush} title={t('pr.pushTitle', { remote: remote.url })}>
+                      {t('pr.push')}
+                    </button>
+                    <button style={{ ...styles.actBtn, ...styles.prBtn }} disabled={busy} onClick={openPrForm}>
+                      {t('pr.open')}
+                    </button>
+                  </>
+                )}
                 <button style={{ ...styles.actBtn, ...styles.mergeBtn }} disabled={busy} onClick={doMerge}>{t('worktree.mergeInto', { base })}</button>
                 <button style={{ ...styles.actBtn, ...styles.discardBtn }} disabled={busy} onClick={doDiscard}>{t('worktree.discard')}</button>
               </div>
@@ -240,6 +362,38 @@ export function WorktreeReview() {
                     autoFocus
                   />
                   <button style={styles.actBtn} disabled={busy} onClick={doCommit}>{t('worktree.commit')}</button>
+                </div>
+              )}
+
+              {prOpen && (
+                <div style={styles.prPanel}>
+                  <input
+                    style={styles.commitInput}
+                    placeholder={t('pr.titlePlaceholder')}
+                    value={prTitle}
+                    onChange={e => setPrTitle(e.target.value)}
+                    autoFocus
+                  />
+                  <textarea
+                    style={styles.prBody}
+                    value={prBody}
+                    onChange={e => setPrBody(e.target.value)}
+                    spellCheck={false}
+                  />
+                  <div style={styles.prActions}>
+                    <label style={styles.prCheck}>
+                      <input type="checkbox" style={styles.fileCheck} checked={prDraft} onChange={e => setPrDraft(e.target.checked)} />
+                      {t('pr.draft')}
+                    </label>
+                    <span style={styles.prHint}>
+                      {remote?.cliAvailable ? t('pr.viaCli') : t('pr.viaBrowser')}
+                    </span>
+                    <div style={{ flex: 1 }} />
+                    <button style={styles.actBtn} disabled={busy} onClick={() => setPrOpen(false)}>{t('common.cancel')}</button>
+                    <button style={{ ...styles.actBtn, ...styles.prBtn }} disabled={busy} onClick={doCreatePr}>
+                      {t('pr.create')}
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -286,6 +440,7 @@ export function WorktreeReview() {
           )}
         </div>
       </div>
+      )}
     </div>
   )
 }
@@ -298,6 +453,12 @@ const styles: Record<string, React.CSSProperties> = {
   },
   title: { fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' },
   baseTag: { fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-elevated)', padding: '2px 8px', borderRadius: 'var(--radius)' },
+  tabs: { display: 'flex', gap: 2, marginLeft: 8 },
+  tab: {
+    background: 'transparent', border: '1px solid transparent', borderRadius: 'var(--radius)',
+    color: 'var(--text-muted)', padding: '3px 10px', cursor: 'pointer', fontSize: 11,
+  },
+  tabActive: { background: 'var(--accent-subtle)', borderColor: 'var(--accent)', color: 'var(--text-primary)' },
   iconBtn: {
     marginLeft: 'auto', background: 'transparent', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
     color: 'var(--text-muted)', padding: '3px 10px', cursor: 'pointer', fontSize: 11,
@@ -327,6 +488,19 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-secondary)', padding: '4px 10px', cursor: 'pointer', fontSize: 11, whiteSpace: 'nowrap',
   },
   mergeBtn: { borderColor: 'var(--accent)', color: 'var(--accent)' },
+  prBtn: { borderColor: 'var(--accent)', color: 'var(--accent)' },
+  prPanel: {
+    display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 12px',
+    borderBottom: '1px solid var(--border)', flexShrink: 0, background: 'var(--bg-panel)',
+  },
+  prBody: {
+    minHeight: 150, resize: 'vertical', background: 'var(--bg-base)', border: '1px solid var(--border)',
+    borderRadius: 'var(--radius)', color: 'var(--text-primary)', padding: '6px 9px',
+    fontSize: 11, fontFamily: 'var(--font-mono, monospace)', outline: 'none', lineHeight: 1.5,
+  },
+  prActions: { display: 'flex', alignItems: 'center', gap: 10 },
+  prCheck: { display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' },
+  prHint: { fontSize: 10, color: 'var(--text-dim)' },
   discardBtn: { color: '#ff7b72', borderColor: 'rgba(248,81,73,0.4)' },
   commitRow: { display: 'flex', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 },
   commitInput: {

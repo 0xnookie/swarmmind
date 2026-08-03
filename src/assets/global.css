@@ -677,3 +677,23 @@ h5.md-heading, h6.md-heading { font-size: 0.96em; color: var(--text-secondary); 
   color: var(--text-primary);
 }
 .md-codeblock pre code { font-family: inherit; background: none; border: none; padding: 0; }
+
+/* ── Canvas: attention pulse ────────────────────────────────────────────────
+   A pane that asked a question can be three screens away on an infinite board,
+   where the TopBar bell is the only thing that knows. These mark it on the
+   minimap and on the jump chip so the signal has somewhere spatial to land.
+   Opacity/transform only — the minimap redraws on every camera move, and an
+   animation on a paint-heavy property would ride along with it. */
+@keyframes canvas-attention-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+.canvas-attention-dot { animation: canvas-attention-pulse 1.15s ease-in-out infinite; }
+/* The chip is centred with `left: 50%`, so the horizontal half-shift has to
+   live inside the keyframes — an animated `transform` replaces any static one,
+   and splitting them would slide the chip off-centre for the whole animation. */
+@keyframes canvas-attention-chip {
+  0%, 100% { transform: translate(-50%, 0); }
+  50%      { transform: translate(-50%, -2px); }
+}
+.canvas-attention-chip { animation: canvas-attention-chip 1.6s ease-in-out infinite; }
